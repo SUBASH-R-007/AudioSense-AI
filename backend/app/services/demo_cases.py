@@ -1,0 +1,148 @@
+"""Five curated demo cases (+ a progression pair) for instant loading."""
+
+DEMO_CASES = [
+    {
+        "id": "normal",
+        "label": "Normal Hearing",
+        "description": "29-year-old software engineer, thresholds within normal limits",
+        "record": {
+            "patient": {"name": "Ananya Krishnan", "age": 29, "sex": "female",
+                        "occupation": "Software Engineer", "test_date": "2026-07-20"},
+            "right": {"ac": {250: 10, 500: 5, 1000: 10, 2000: 5, 4000: 10, 8000: 15},
+                      "bc": {250: 5, 500: 5, 1000: 5, 2000: 5, 4000: 10}},
+            "left": {"ac": {250: 5, 500: 10, 1000: 5, 2000: 10, 4000: 15, 8000: 10},
+                     "bc": {250: 5, 500: 5, 1000: 5, 2000: 5, 4000: 10}},
+        },
+    },
+    {
+        "id": "noise_notch",
+        "label": "Noise Notch — Factory Worker",
+        "description": "42-year-old textile-mill worker with classic 4 kHz notches",
+        "record": {
+            "patient": {"name": "Murugan Selvam", "age": 42, "sex": "male",
+                        "occupation": "Factory Worker — Textile Mill",
+                        "test_date": "2026-07-18"},
+            "right": {"ac": {250: 15, 500: 15, 1000: 20, 2000: 25, 4000: 60, 8000: 30},
+                      "bc": {250: 10, 500: 10, 1000: 15, 2000: 20, 4000: 55}},
+            "left": {"ac": {250: 10, 500: 15, 1000: 20, 2000: 30, 4000: 55, 8000: 25},
+                     "bc": {250: 10, 500: 10, 1000: 15, 2000: 25, 4000: 50}},
+        },
+    },
+    {
+        "id": "presbycusis",
+        "label": "Presbycusis",
+        "description": "71-year-old with gradually sloping high-frequency loss",
+        "record": {
+            "patient": {"name": "Raman Iyer", "age": 71, "sex": "male",
+                        "occupation": "Retired Teacher", "test_date": "2026-07-15"},
+            "right": {"ac": {250: 20, 500: 25, 1000: 35, 2000: 50, 4000: 65, 8000: 75},
+                      "bc": {250: 15, 500: 20, 1000: 30, 2000: 45, 4000: 60}},
+            "left": {"ac": {250: 20, 500: 30, 1000: 40, 2000: 55, 4000: 70, 8000: 80},
+                     "bc": {250: 15, 500: 25, 1000: 35, 2000: 50, 4000: 65}},
+        },
+    },
+    {
+        "id": "conductive",
+        "label": "Conductive — Otitis Media",
+        "description": "8-year-old with bilateral middle-ear effusion (large air-bone gap)",
+        "record": {
+            "patient": {"name": "Priya Lakshmi", "age": 8, "sex": "female",
+                        "occupation": "Student", "test_date": "2026-07-22"},
+            "right": {"ac": {250: 45, 500: 45, 1000: 40, 2000: 40, 4000: 35, 8000: 30},
+                      "bc": {250: 10, 500: 10, 1000: 5, 2000: 10, 4000: 5},
+                      "masked": True,
+                      # Flat trace, normal canal volume = fluid behind the drum.
+                      "tymp_pressure": None, "tymp_compliance": 0.1, "tymp_ecv": 0.9,
+                      "reflexes": {"ipsi": None, "contra": None}},
+            "left": {"ac": {250: 40, 500: 45, 1000: 45, 2000: 35, 4000: 40, 8000: 35},
+                     "bc": {250: 5, 500: 10, 1000: 10, 2000: 5, 4000: 10},
+                     "masked": True,
+                     "tymp_pressure": None, "tymp_compliance": 0.1, "tymp_ecv": 0.8,
+                     "reflexes": {"ipsi": None, "contra": None}},
+        },
+    },
+    {
+        "id": "sudden_asymmetric",
+        "label": "🚨 Sudden Asymmetric Loss",
+        "description": "38-year-old, hearing lost overnight in one ear — an ENT emergency",
+        "record": {
+            "patient": {"name": "Deepa Ravi", "age": 38, "sex": "female",
+                        "occupation": "Bank Manager", "test_date": "2026-07-28",
+                        "onset": "sudden", "symptoms": ["tinnitus", "aural fullness"]},
+            "right": {"ac": {250: 10, 500: 10, 1000: 15, 2000: 10, 4000: 15, 8000: 20},
+                      "bc": {250: 5, 500: 10, 1000: 10, 2000: 10, 4000: 15},
+                      "srt": 10, "wrs": [{"level": 50, "score": 96}], "masked": True},
+            "left": {"ac": {250: 55, 500: 65, 1000: 70, 2000: 75, 4000: 80, 8000: 85},
+                     "bc": {250: 50, 500: 60, 1000: 65, 2000: 70, 4000: 75},
+                     "srt": 70, "wrs": [{"level": 90, "score": 44},
+                                        {"level": 105, "score": 20}], "masked": True},
+        },
+    },
+    {
+        "id": "preclinical_nihl",
+        "label": "🔬 Pre-clinical Noise Damage",
+        "description": "26-year-old welder — normal audiogram, but the cochlea is already failing",
+        "record": {
+            "patient": {"name": "Vignesh Kumar", "age": 26, "sex": "male",
+                        "occupation": "Welder — Shipyard", "test_date": "2026-07-27",
+                        "onset": "gradual", "symptoms": ["tinnitus after shifts"]},
+            "right": {
+                "ac": {250: 10, 500: 10, 1000: 10, 2000: 15, 4000: 15, 8000: 15},
+                "bc": {250: 5, 500: 10, 1000: 10, 2000: 10, 4000: 15},
+                "masked": True,
+                "tymp_pressure": -10, "tymp_compliance": 0.7, "tymp_ecv": 1.2,
+                "reflexes": {"ipsi": 85, "contra": 90},
+                # Emissions already gone at 4k/8k despite normal thresholds.
+                "oae": [{"freq": 1000, "amplitude": 12, "noise_floor": -5},
+                        {"freq": 2000, "amplitude": 10, "noise_floor": -6},
+                        {"freq": 4000, "amplitude": -3, "noise_floor": -6},
+                        {"freq": 8000, "amplitude": -4, "noise_floor": -7}],
+            },
+            "left": {
+                "ac": {250: 10, 500: 15, 1000: 10, 2000: 15, 4000: 20, 8000: 20},
+                "bc": {250: 10, 500: 10, 1000: 10, 2000: 15, 4000: 15},
+                "masked": True,
+                "tymp_pressure": 0, "tymp_compliance": 0.8, "tymp_ecv": 1.3,
+                "reflexes": {"ipsi": 90, "contra": 90},
+                "oae": [{"freq": 1000, "amplitude": 11, "noise_floor": -5},
+                        {"freq": 2000, "amplitude": 8, "noise_floor": -5},
+                        {"freq": 4000, "amplitude": -2, "noise_floor": -5},
+                        {"freq": 8000, "amplitude": -6, "noise_floor": -6}],
+            },
+        },
+    },
+    {
+        "id": "profound",
+        "label": "Profound Loss",
+        "description": "34-year-old with corner audiogram — residual low-frequency hearing only",
+        "record": {
+            "patient": {"name": "Karthik Raja", "age": 34, "sex": "male",
+                        "occupation": "Farmer", "test_date": "2026-07-10"},
+            "right": {"ac": {250: 85, 500: 95, 1000: 110, 2000: "NR", 4000: "NR", 8000: "NR"},
+                      "bc": {250: "NR", 500: "NR", 1000: "NR", 2000: "NR", 4000: "NR"}},
+            "left": {"ac": {250: 90, 500: 100, 1000: "NR", 2000: "NR", 4000: "NR", 8000: "NR"},
+                     "bc": {250: "NR", 500: "NR", 1000: "NR", 2000: "NR", 4000: "NR"}},
+        },
+    },
+]
+
+#: Two dated tests of the same noise-exposed worker for the Progression page.
+PROGRESSION_PAIR = {
+    "label": "Demo: 3-year shift in a machine operator",
+    "baseline": {
+        "patient": {"name": "Suresh Kumar", "age": 38, "sex": "male",
+                    "occupation": "Machine Operator", "test_date": "2023-06-12"},
+        "right": {"ac": {250: 10, 500: 15, 1000: 15, 2000: 20, 4000: 35, 8000: 25},
+                  "bc": {250: 10, 500: 10, 1000: 10, 2000: 15, 4000: 30}},
+        "left": {"ac": {250: 10, 500: 10, 1000: 15, 2000: 15, 4000: 30, 8000: 20},
+                 "bc": {250: 5, 500: 10, 1000: 10, 2000: 10, 4000: 25}},
+    },
+    "current": {
+        "patient": {"name": "Suresh Kumar", "age": 41, "sex": "male",
+                    "occupation": "Machine Operator", "test_date": "2026-07-01"},
+        "right": {"ac": {250: 15, 500: 15, 1000: 20, 2000: 35, 4000: 55, 8000: 35},
+                  "bc": {250: 10, 500: 10, 1000: 15, 2000: 30, 4000: 50}},
+        "left": {"ac": {250: 10, 500: 15, 1000: 20, 2000: 30, 4000: 50, 8000: 30},
+                 "bc": {250: 10, 500: 10, 1000: 15, 2000: 25, 4000: 45}},
+    },
+}
