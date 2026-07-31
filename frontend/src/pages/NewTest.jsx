@@ -151,7 +151,7 @@ export default function NewTest() {
       </p>
 
       {/* demo cases */}
-      <div className="mt-5 flex flex-wrap gap-2">
+      <div className="mt-5 flex flex-wrap gap-2" data-tour="demo-cases">
         {demoCases.map((c) => (
           <button key={c.id} onClick={() => loadDemo(c)} title={c.description}
             className="rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-[12.5px] font-medium text-slate-600 shadow-sm transition hover:border-teal-400 hover:text-teal-700">
@@ -203,7 +203,8 @@ export default function NewTest() {
         </div>
 
         {/* digitize */}
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm lg:col-span-2">
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm lg:col-span-2"
+          data-tour="digitize">
           <div className="flex items-center justify-between">
             <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
               Snap-to-Digitize

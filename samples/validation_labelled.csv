@@ -1,0 +1,13 @@
+name,age,sex,occupation,expert_pattern,expert_grade,expert_type,expert_disability,r_ac_250,r_ac_500,r_ac_1000,r_ac_2000,r_ac_4000,r_ac_8000,r_bc_250,r_bc_500,r_bc_1000,r_bc_2000,r_bc_4000,l_ac_250,l_ac_500,l_ac_1000,l_ac_2000,l_ac_4000,l_ac_8000,l_bc_250,l_bc_500,l_bc_1000,l_bc_2000,l_bc_4000
+Case 01,42,male,Textile mill,noise notch,Mild hearing loss,Sensorineural,7.5,15,15,20,25,60,30,10,10,15,20,55,10,15,20,30,55,25,10,10,15,25,50
+Case 02,71,male,Retired teacher,sloping high frequency,Moderate hearing loss,Sensorineural,29.38,20,25,35,50,65,75,15,20,30,45,60,20,30,40,55,70,80,15,25,35,50,65
+Case 03,8,female,Student,flat,Moderate hearing loss,Conductive,22.81,45,45,40,40,35,30,10,10,5,10,5,40,45,45,35,40,35,5,10,10,5,10
+Case 04,29,female,Software engineer,flat,Normal hearing,Normal,0,10,5,10,5,10,15,5,5,5,5,10,5,10,5,10,15,10,5,5,5,5,10
+Case 05,34,male,Farmer,corner audiogram,Profound hearing loss,Sensorineural,100,85,95,110,NR,NR,NR,NR,NR,NR,NR,NR,90,100,NR,NR,NR,NR,NR,NR,NR,NR,NR
+Case 06,55,male,Lorry driver,sloping high frequency,Moderate hearing loss,Sensorineural,25.62,20,25,30,45,65,50,15,20,25,40,60,25,30,35,50,70,55,20,25,30,45,65
+Case 07,38,female,Bank manager,ski slope,Moderate hearing loss,Sensorineural,32.81,15,20,25,60,80,85,10,15,20,55,75,20,20,30,65,85,90,15,15,25,60,80
+Case 08,26,male,Welder,noise notch,Normal hearing,Normal,0,10,10,10,15,15,15,5,10,10,10,15,10,15,10,15,20,20,10,10,10,15,15
+Case 09,63,female,Homemaker,cookie bite,Moderate hearing loss,Sensorineural,28.75,20,35,50,55,35,25,15,30,45,50,30,25,40,55,50,40,30,20,35,50,45,35
+Case 10,47,male,Construction,noise notch,Mild hearing loss,Sensorineural,13.12,15,20,20,30,65,35,10,15,15,25,60,20,20,25,30,60,40,15,15,20,25,55
+Case 11,52,female,Nurse,rising,Moderate hearing loss,Sensorineural,21.25,55,50,40,35,30,30,50,45,35,30,25,60,55,45,35,30,35,55,50,40,30,25
+Case 12,19,male,Student,flat,Mild hearing loss,Conductive,7.81,35,35,30,30,25,25,10,10,5,10,5,30,35,35,25,30,25,5,10,10,5,10

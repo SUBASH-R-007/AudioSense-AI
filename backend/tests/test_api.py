@@ -109,8 +109,11 @@ def test_batch_csv():
     assert r.status_code == 200
     body = r.json()
     assert body["count"] == 2
-    assert body["results"][0]["right"]["grade"] == "Normal hearing"
-    assert body["results"][1]["binaural_disability_pct"] is not None
+    # Results come back as a triage-ordered worklist, not in CSV row order.
+    by_name = {r["name"]: r for r in body["results"]}
+    assert by_name["Test One"]["right"]["grade"] == "Normal hearing"
+    assert by_name["Test Two"]["binaural_disability_pct"] is not None
+    assert body["results"][0]["name"] == "Test Two"  # worse hearing seen first
 
 
 def test_pdf_generation_and_verify_roundtrip():
