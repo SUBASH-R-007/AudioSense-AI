@@ -1,56 +1,88 @@
-# Deployment — Vercel (frontend) + a free backend host
+# Deployment — Vercel (frontend) + any Docker host (backend)
 
 **Local development is unaffected by any of this.** With no environment
 variables set, the frontend keeps using relative `/api` paths through the Vite
 dev proxy exactly as before. The production settings are additive.
 
+There is **one** backend deployment path: `backend/Dockerfile`. It is
+self-contained, reads `$PORT`, and works unchanged on every platform below —
+no per-platform config files to drift out of sync.
+
+---
+
+## How the split works
+
+```
+Vercel  ──  static React build          (https://your-app.vercel.app)
+                │  fetch(VITE_API_BASE_URL + '/api/...')
+                ▼
+Docker host ──  FastAPI + model          (https://your-api.example.com)
+```
+
+Two settings connect them, and they must agree:
+
+| Where | Variable | Value |
+|---|---|---|
+| Frontend host | `VITE_API_BASE_URL` | the backend URL |
+| Backend host | `CORS_ORIGINS` | the frontend URL |
+
+Get either wrong and the browser blocks every request. **Deploy the backend
+first** so you have its URL.
+
 ---
 
 ## Picking a free backend host
 
-The frontend is trivial to host — Vercel's free tier covers it comfortably.
-The backend is the part with constraints: Python, ~250 MB of dependencies
-(scikit-learn, OpenCV, matplotlib, reportlab), and a 7.5 MB model to load.
+The backend needs Python, ~250 MB of dependencies (scikit-learn, OpenCV,
+matplotlib, reportlab) and a 7.5 MB model to load.
 
-**The model artifacts are committed to the repository (~8 MB total.)** Training
-peaks near 500 MB of memory, which is at or above the ceiling of most free
-tiers, so building the model on deploy fails unpredictably. Shipping it makes
-every option below viable and keeps deploys fast.
+**The model artifacts are committed (~9 MB).** Training peaks near 500 MB of
+memory — at or above the ceiling of most free tiers — so building the model on
+deploy fails unpredictably. Shipping it makes every option below viable.
 
-| Platform | Free tier | Sleeps? | Verdict for this project |
+| Platform | Free tier | Sleeps? | Verdict |
 |---|---|---|---|
 | **Hugging Face Spaces** | 2 vCPU, **16 GB RAM** | after long inactivity | **Best choice.** Most memory by far, no card required, and an ML project hosted on HF reads well to a technical jury |
-| **Render** | 512 MB RAM | after ~15 min idle, ~50 s cold start | Closest to Railway. Works because the model is pre-built. `render.yaml` is included |
 | **Koyeb** | 512 MB, 1 service | no | Good if you want it always warm |
-| **Fly.io** | small shared VM | configurable | Solid, but needs a card and more setup |
-| **Google Cloud Run** | generous always-free | scales to zero | Very reliable; needs a GCP account with billing enabled |
-| **Oracle Cloud Always Free** | 4 ARM cores, 24 GB | no | Most powerful, but you administer a whole VM |
-| **Vercel Python functions** | — | — | **Not viable.** The dependency bundle far exceeds the size limit, and there is no persistent filesystem |
+| **Render** | 512 MB | ~15 min idle, ~50 s cold start | Reliable; just point it at the Dockerfile |
+| **Fly.io** | small shared VM | configurable | Solid, needs a card |
+| **Google Cloud Run** | generous always-free | scales to zero | Very reliable; needs GCP billing enabled |
+| **Back4App Containers** | free container tier | varies | Straightforward Docker deploy |
+| **Oracle Cloud Always Free** | 4 ARM cores, 24 GB | no | Most powerful, but you administer a VM |
+| **Vercel Python functions** | — | — | **Not viable** — the dependency bundle far exceeds the size limit |
 
-> Free-tier terms change often. Check the current limits before relying on any
-> of them for a judged demo.
-
-**Recommendation:** Hugging Face Spaces for the backend, Vercel for the
-frontend. Instructions for both are below, and the included `Dockerfile` also
-works unchanged on Koyeb, Fly, Cloud Run and Back4App.
+> Free-tier terms change often. Check current limits before relying on any of
+> them for a judged demo.
 
 ---
 
-## Option A — Hugging Face Spaces (recommended)
+## Step 1 — backend
 
-1. Go to **huggingface.co → New Space**.
-   - **SDK: Docker** → *Blank*
-   - Visibility: **Public** (private Spaces sleep more aggressively)
-2. The Space is a git repository. Push the backend into it:
+### Test the image locally first
 
 ```bash
-git clone https://huggingface.co/spaces/<your-username>/audiosense-api
+docker build -t audiosense-api ./backend
+docker run -p 8000:8000 -e PORT=8000 audiosense-api
+```
+
+Open <http://localhost:8000/> — you should see
+`{"service":"AudioSense AI","status":"ok","model_trained":true}`.
+If that works, it will work anywhere.
+
+### Hugging Face Spaces (recommended)
+
+1. **huggingface.co → New Space → SDK: Docker → Blank**, visibility **Public**
+   (private Spaces sleep more aggressively).
+2. A Space is a git repository. Copy the backend into it:
+
+```bash
+git clone https://huggingface.co/spaces/<username>/audiosense-api
 cd audiosense-api
 cp -r /path/to/AudioSense-AI/backend/* .
 ```
 
-3. Spaces expect the container to listen on **7860**, so add this line to the
-   top of the copied `README.md` (create it if absent):
+3. Spaces route to port **7860**, so create a `README.md` in the Space with
+   this header:
 
 ```yaml
 ---
@@ -60,174 +92,108 @@ app_port: 7860
 ---
 ```
 
-4. Set the port and push:
+4. Point the container at that port and push:
 
 ```bash
 echo "ENV PORT=7860" >> Dockerfile
 git add -A && git commit -m "AudioSense AI backend" && git push
 ```
 
-5. In **Settings → Variables and secrets**, add `CORS_ORIGINS` with your Vercel
-   URL once you have it.
+5. **Settings → Variables and secrets** → add `CORS_ORIGINS` once you have the
+   frontend URL.
 
-Your API is at `https://<username>-audiosense-api.hf.space`.
+Your API lands at `https://<username>-audiosense-api.hf.space`.
 
-## Option B — Render
+### Koyeb / Render / Fly / Cloud Run / Back4App
 
-1. **New → Blueprint**, point it at the repo. `render.yaml` at the root
-   configures everything (root directory, build, start command, health check).
-2. Or **New → Web Service** manually: **Root Directory `backend`**,
-   build `pip install -r requirements.txt && python -m scripts.ensure_model`,
-   start `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
-3. Add `CORS_ORIGINS` in the dashboard once the frontend is deployed.
+All of them accept the Dockerfile directly:
 
-**Note the cold start.** A free Render service sleeps after ~15 minutes idle
-and takes roughly 50 seconds to wake. Open the backend URL a minute before
-demoing.
+- **Koyeb** — Create Service → GitHub → Dockerfile, work directory `backend`
+- **Render** — New Web Service → Runtime **Docker**, root directory `backend`
+- **Fly.io** — `cd backend && fly launch` (it detects the Dockerfile)
+- **Cloud Run** — `gcloud run deploy --source backend --allow-unauthenticated`
+- **Back4App** — New Container App → repo → Dockerfile path `backend/Dockerfile`
 
-## Option C — anything that takes a Dockerfile
-
-`backend/Dockerfile` is self-contained and reads `$PORT`:
-
-```bash
-docker build -t audiosense-api ./backend
-docker run -p 8000:8000 -e PORT=8000 audiosense-api
-```
-
-Koyeb, Fly.io, Cloud Run and Back4App all accept it as-is. Set `CORS_ORIGINS`
-in whichever dashboard you use.
-
----
-
-## How the split works
-
-```
-Vercel  ──  static React build            (https://your-app.vercel.app)
-                │  fetch(VITE_API_BASE_URL + '/api/...')
-                ▼
-Railway ──  FastAPI + model artifacts     (https://your-api.up.railway.app)
-```
-
-Two settings connect them, and they must agree:
-
-| Where | Variable | Value |
-|---|---|---|
-| Vercel | `VITE_API_BASE_URL` | the Railway URL |
-| Railway | `CORS_ORIGINS` | the Vercel URL |
-
-Get either wrong and the browser blocks every request. Deploy the backend
-first so you have its URL.
-
----
-
-## Option D — Railway (if you still have credit)
-
-1. **New Project → Deploy from GitHub repo →** select `AudioSense-AI`.
-2. Open the service → **Settings**:
-   - **Root Directory:** `backend`  ← *required, or Railway will not find the app*
-   - Build and start commands come from `backend/railway.json` automatically.
-3. **Variables** → add:
-
-   | Variable | Value |
-   |---|---|
-   | `CORS_ORIGINS` | `https://your-app.vercel.app` *(fill in after step 2; redeploy then)* |
-   | `CORS_ORIGIN_REGEX` | `https://.*\.vercel\.app` *(optional — allows Vercel preview builds)* |
-   | `MPLCONFIGDIR` | `/tmp` *(keeps matplotlib quiet on a read-only home)* |
-
-4. **Settings → Networking → Generate Domain.** Copy the URL.
-
-### What the build does
-
-`backend/railway.json` runs `python -m scripts.ensure_model`, which finds the
-committed artifacts and exits immediately. If they are ever missing it trains
-them instead, so a slim checkout still deploys.
-
-### Verify
-
-Open `https://your-api.up.railway.app/` — you should see:
-
-```json
-{ "service": "AudioSense AI", "status": "ok", "model_trained": true }
-```
-
-`"model_trained": false` means training did not finish — see troubleshooting.
-Interactive API docs are at `/docs`.
+Set `CORS_ORIGINS` in whichever dashboard you use. Nothing else is required —
+`$PORT` and the health check at `/` are already handled.
 
 ---
 
 ## Step 2 — Vercel (frontend)
 
-1. **Add New → Project →** import the same repo.
-2. Configure:
-   - **Root Directory:** `frontend`  ← *required*
-   - Framework preset: **Vite** (auto-detected)
-   - Build command `npm run build`, output `dist` — already in `frontend/vercel.json`
-3. **Environment Variables** → add for **all** environments:
+1. **Add New → Project** → import the repo.
+2. **Root Directory: `frontend`** ← required.
+   Framework preset **Vite** is detected; build and output come from
+   `frontend/vercel.json`.
+3. **Environment Variables**, for all environments:
 
    | Variable | Value |
    |---|---|
-   | `VITE_API_BASE_URL` | `https://your-api.up.railway.app` (no trailing slash) |
+   | `VITE_API_BASE_URL` | your backend URL, no trailing slash |
 
 4. **Deploy.**
 
-> `VITE_API_BASE_URL` is read at **build** time, not runtime. If you change it
-> you must redeploy — restarting does nothing.
+> `VITE_API_BASE_URL` is read at **build** time. Changing it requires a
+> redeploy — restarting does nothing.
 
 ---
 
 ## Step 3 — close the loop
 
-Go back to Railway and set `CORS_ORIGINS` to your real Vercel URL, then
-redeploy the backend. Until you do, the browser will block requests with a
-CORS error even though the API itself is healthy.
+Set `CORS_ORIGINS` on the backend to your real Vercel URL and redeploy it.
+Until you do, the browser blocks requests even though the API is healthy.
+
+To also allow Vercel's per-branch preview URLs, set:
+
+```
+CORS_ORIGIN_REGEX = https://.*\.vercel\.app
+```
 
 ---
 
-## Verify the deployment
+## Verify
 
-1. Open the Vercel URL. The sidebar should show **Offline mode**.
-2. **New Test → Noise Notch → Analyze.** A verdict banner appears.
-3. Open DevTools → Network: requests should go to the Railway host, not Vercel.
-4. **Listening Lab** and **Simulator** need HTTPS for microphone and audio —
-   both platforms serve HTTPS, so this works.
+1. Open the Vercel URL — the sidebar should show **Offline mode**.
+2. **New Test → Noise Notch → Analyze** — a verdict banner appears.
+3. DevTools → Network: requests go to the backend host, not Vercel.
+4. **Simulator** and **Listening Lab** need HTTPS for audio and microphone;
+   both platforms serve HTTPS.
 
 ---
 
 ## Troubleshooting
 
 **CORS error in the console**
-The Vercel URL is not in `CORS_ORIGINS`. Check for a trailing slash, `http` vs
-`https`, and that you redeployed Railway after changing it. Visit the backend
-root — it echoes `allowed_origins` so you can see exactly what it accepts.
+The frontend URL is not in `CORS_ORIGINS`. Check for a trailing slash, `http`
+vs `https`, and that you redeployed after changing it. The backend root route
+echoes `allowed_origins`, so you can see exactly what it accepts.
 
-**Requests go to the Vercel domain instead of Railway**
+**Requests go to the frontend domain instead of the backend**
 `VITE_API_BASE_URL` was missing at build time. Set it and **redeploy**.
 
 **`"model_trained": false`**
-The committed `backend/data/model_bundle.joblib` did not reach the server —
-usually a wrong root directory, or a `.dockerignore`/`.gitignore` in a copied
-Space that excludes it. Confirm the file is present in the deployed tree. As a
-last resort, `python -m scripts.ensure_model` will retrain it, but that needs
+`backend/data/model_bundle.joblib` did not reach the container — usually a
+wrong build context or a `.dockerignore` in a copied Space that excludes it.
+As a last resort `python -m scripts.ensure_model` retrains it, but that needs
 roughly 500 MB of memory and will fail on a 512 MB tier.
 
-**Build fails with `ImportError: libGL.so.1`**
-An OpenCV system dependency. The included `Dockerfile` installs `libgl1` and
-`libglib2.0-0`; if you are on a buildpack platform without them, switch that
-service to the Dockerfile.
+**`ImportError: libGL.so.1`**
+An OpenCV system dependency. The Dockerfile installs `libgl1` and
+`libglib2.0-0`; this only appears if you deploy without the Dockerfile.
 
 **Patient records disappear after a redeploy**
-Expected. Railway's filesystem is ephemeral, so `records.db`, saved handouts
-and clinician feedback reset on every deploy. Attach a Railway **Volume**
-mounted at `/app/data` for persistence — the demo does not need it.
+Expected — container filesystems are ephemeral, so `records.db`, handouts and
+clinician feedback reset. Mount a volume at `/app/data` for persistence; the
+demo does not need it.
 
 **Tamil text missing from the PDF**
-The Linux container has no Tamil font, so the PDF prints a note instead. The
-Tamil counselling sheet still displays and reads aloud correctly in the app.
-To fix, add a Noto Tamil font to the image and point `pdf.py` at it.
+The Linux image has no Tamil font, so the PDF prints a note instead. The Tamil
+counselling sheet still displays and reads aloud correctly in the app. Add a
+Noto Tamil font to the image to fix it.
 
 **Cold starts**
-Railway may sleep an idle service on some plans. Open the backend URL a minute
-before demoing so the first real request is fast.
+Free tiers sleep. Open the backend URL a minute before demoing so the first
+real request is fast.
 
 ---
 
@@ -246,44 +212,43 @@ cd frontend
 npm run dev
 ```
 
-To test a production build locally without deploying:
+To test a production build locally:
 
 ```bash
 cd frontend
 npm run build
-npm run preview          # serves on :4173, already an allowed CORS origin
+npm run preview          # :4173, already an allowed CORS origin
 ```
 
 ---
 
-## Environment variables reference
+## Environment variables
 
-### Backend (Railway)
+### Backend
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `PORT` | auto | Injected by Railway; the start command uses it |
+| `PORT` | auto | Injected by the platform; the Dockerfile uses it |
 | `CORS_ORIGINS` | yes in prod | Comma-separated allowed origins |
-| `CORS_ORIGIN_REGEX` | no | Regex for Vercel preview domains |
-| `MPLCONFIGDIR` | recommended | `/tmp` |
+| `CORS_ORIGIN_REGEX` | no | Regex for preview domains |
+| `MPLCONFIGDIR` | set in image | `/tmp/matplotlib` |
 | `GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY` / `OPENROUTER_API_KEY` | no | Setting any one switches the AI engine to API mode on boot. Leave unset for the offline engine. |
 
-### Frontend (Vercel)
+### Frontend
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `VITE_API_BASE_URL` | yes in prod | Railway backend URL, no trailing slash |
+| `VITE_API_BASE_URL` | yes in prod | Backend URL, no trailing slash |
 
 ---
 
 ## A note for the demo
 
-The app is **offline-first by design**: the deployed version works fully with
-no API key. If you set a provider key on Railway, the backend boots into API
-mode and every report makes a network round-trip. Should that key have no
-quota, the request fails and falls back to the offline engine — correct
-behaviour, but it costs a wasted round-trip and shows a warning toast.
+The app is **offline-first by design** and works fully with no API key. If you
+set a provider key, the backend boots into API mode and every report makes a
+network round-trip; if that key has no quota the request fails and falls back
+to the offline engine — correct behaviour, but it costs a wasted round-trip
+and shows a warning toast.
 
-For a clean demo, either leave the provider keys unset, or open **AI Engine →
-Offline Mode → Save** in the app once (a saved setting overrides the
-environment variable).
+For a clean demo, leave provider keys unset, or open **AI Engine → Offline
+Mode → Save** once in the app (a saved setting overrides the environment).

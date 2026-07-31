@@ -4,7 +4,7 @@
 // Vite dev proxy forwards /api to the backend on :8000 — nothing changes.
 //
 // In production the frontend and backend live on different hosts (Vercel and
-// Railway), so the base URL is injected at build time and prefixed here. This
+// a container host), so the base URL is injected at build time here. This
 // is the only place that needs to know, which is why every call in the app
 // goes through this module.
 

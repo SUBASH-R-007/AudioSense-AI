@@ -71,7 +71,7 @@ def test_origin_regex_supports_vercel_previews(monkeypatch):
 
 
 def test_root_route_is_a_usable_health_check():
-    """Railway's healthcheckPath points here."""
+    """Container platforms point their health check here."""
     r = client.get("/")
     assert r.status_code == 200
     body = r.json()
@@ -85,16 +85,6 @@ def test_api_health_still_works():
 
 
 # ------------------------------------------------------- config files ------
-
-def test_railway_config_is_valid_and_binds_the_platform_port():
-    cfg = json.loads((ROOT / "backend" / "railway.json").read_text(encoding="utf-8"))
-    start = cfg["deploy"]["startCommand"]
-    assert "--host 0.0.0.0" in start, "must bind all interfaces, not localhost"
-    assert "$PORT" in start, "must use the platform-assigned port"
-    assert cfg["deploy"]["healthcheckPath"] == "/"
-    # Artifacts are committed, so the build only has to confirm they exist.
-    assert "scripts.ensure_model" in cfg["build"]["buildCommand"]
-
 
 def test_model_artifacts_are_committed_not_ignored():
     """Free tiers cap memory below what training needs — ship the model."""
@@ -123,17 +113,19 @@ def test_dockerfile_binds_the_platform_port():
     assert "libgl1" in dockerfile, "OpenCV needs libGL at runtime"
 
 
-def test_render_blueprint_is_valid():
-    import re
-    text = (ROOT / "render.yaml").read_text(encoding="utf-8")
-    assert "rootDir: backend" in text
-    assert "--host 0.0.0.0" in text and "$PORT" in text
-    assert re.search(r"healthCheckPath:\s*/", text)
+def test_docker_is_the_only_deployment_config():
+    """One build path. Buildpack configs would drift out of sync unnoticed."""
+    for stale in ("backend/railway.json", "backend/Procfile",
+                  "backend/runtime.txt", "render.yaml"):
+        assert not (ROOT / stale).exists(), (
+            f"{stale} reintroduces a second deployment path — the Dockerfile "
+            "is the single source of truth")
 
 
-def test_procfile_matches_the_railway_start_command():
-    proc = (ROOT / "backend" / "Procfile").read_text(encoding="utf-8")
-    assert "0.0.0.0" in proc and "$PORT" in proc
+def test_dockerignore_excludes_patient_data():
+    text = (ROOT / "backend" / ".dockerignore").read_text(encoding="utf-8")
+    for private in ("records.db", "handouts.json", "ai_config.json"):
+        assert private in text, f"{private} must never be baked into an image"
 
 
 def test_vercel_config_rewrites_spa_routes():
