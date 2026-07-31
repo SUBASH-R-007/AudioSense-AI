@@ -1,0 +1,21 @@
+AudioSense AI — Pattern Classifier Accuracy Report
+====================================================
+Dataset: 12000 synthetic audiograms, 7 patterns
+Model:   RandomForest(300) + sigmoid calibration (cv=5)
+Hold-out accuracy: 0.9988
+
+                        precision    recall  f1-score   support
+
+           cookie_bite       1.00      0.99      1.00       343
+      corner_audiogram       1.00      1.00      1.00       343
+                  flat       0.99      1.00      1.00       342
+        noise_notch_4k       1.00      1.00      1.00       343
+                rising       1.00      1.00      1.00       343
+             ski_slope       1.00      1.00      1.00       343
+sloping_high_frequency       1.00      1.00      1.00       343
+
+              accuracy                           1.00      2400
+             macro avg       1.00      1.00      1.00      2400
+          weighted avg       1.00      1.00      1.00      2400
+
+OOD detector: IsolationForest, threshold=-0.5971 (1st percentile of training scores)

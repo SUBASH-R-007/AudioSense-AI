@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+backend/.venv/
+.pytest_cache/
+
+# Generated ML artifacts (regenerate: python -m app.ml.generate_dataset && python -m app.ml.train)
+backend/data/dataset.csv
+backend/data/model_bundle.joblib
+
+# Runtime state — API keys, patient records and issued handouts
+backend/data/ai_config.json
+backend/data/verify_store.json
+backend/data/records.db
+backend/data/handouts.json
+backend/data/feedback.jsonl
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Misc
+.DS_Store
+*.log
