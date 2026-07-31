@@ -20,6 +20,16 @@ class LLMError(RuntimeError):
     pass
 
 
+#: Providers that speak the OpenAI chat-completions dialect, and the base URL
+#: each one serves it from. Adding another is a single line here plus an entry
+#: in PROVIDERS — the request and response handling is identical.
+OPENAI_COMPATIBLE = {
+    "openai": "https://api.openai.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+
 def ai_enabled() -> bool:
     cfg = get_config()
     if cfg.mode != "api":
@@ -47,7 +57,7 @@ def call_llm(
             return _gemini(cfg, prompt, system, image_b64, image_mime, max_tokens, timeout)
         if cfg.provider == "anthropic":
             return _anthropic(cfg, prompt, system, image_b64, image_mime, max_tokens, timeout)
-        if cfg.provider in ("groq", "openrouter"):
+        if cfg.provider in OPENAI_COMPATIBLE:
             return _openai_style(cfg, prompt, system, image_b64, image_mime, max_tokens, timeout)
         if cfg.provider == "ollama":
             return _ollama(cfg, prompt, system, image_b64, timeout)
@@ -111,8 +121,7 @@ def _anthropic(cfg, prompt, system, image_b64, image_mime, max_tokens, timeout) 
 
 
 def _openai_style(cfg, prompt, system, image_b64, image_mime, max_tokens, timeout) -> str:
-    base = ("https://api.groq.com/openai/v1" if cfg.provider == "groq"
-            else "https://openrouter.ai/api/v1")
+    base = OPENAI_COMPATIBLE[cfg.provider]
     if image_b64:
         user_content: object = [
             {"type": "text", "text": prompt},

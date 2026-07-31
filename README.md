@@ -4,6 +4,9 @@
 
 Enter (or photograph!) an audiogram → get WHO-2021 grading, conductive/sensorineural typing, India RPwD Act 2016 disability percentage, an ML pattern classification with calibrated confidence + out-of-distribution flagging, a phoneme-level functional impact map, a verified clinical report with a Tamil+English patient counseling sheet — and then **hear the world through the patient's ears** with the Web Audio hearing loss simulator.
 
+📖 **[WALKTHROUGH.md](WALKTHROUGH.md)** — complete explanation of every part of the project
+🎤 **[PITCH.md](PITCH.md)** — the jury presentation, with a timed 3-minute demo running order
+
 ## 🎯 Against the problem statement
 
 The brief asks for automatic analysis, pattern classification, degree and type prediction, disability estimation and an AI-generated report — because interpretation is *time-consuming*, *expertise-dependent*, and delays diagnosis in *high-volume settings*. All five features are built; these are the numbers behind the justification:
@@ -22,6 +25,9 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 
 | | |
 |---|---|
+| 🧭 **Spatial hearing test** | HRTF-rendered sound placed around the listener, each ear through its own loss. With normal ears the interaural difference **flips sign** with direction; with asymmetric loss it stays positive whichever side the sound came from — the cue is gone, which is why the patient turns the wrong way. Measured, not asserted |
+| 🍽 **Digits-in-noise** | The adaptive digit-triplet test behind national screening programmes. Only the speech-to-noise *ratio* matters, so it works on uncalibrated equipment — and it catches the patient with a clean audiogram who still cannot follow a conversation |
+| 🔔 **Tinnitus matching + notched therapy** | Match pitch and loudness, then generate a notched masker that carves a half-octave hole at exactly that pitch while leaving its neighbours intact |
 | 🎯 **The answer, first** | The dashboard opens with one plain sentence, the figures that carry the decision, and the single next step — everything below it is the evidence |
 | 🧭 **Guided tour** | "Show me around" spotlights each part of the interface and says why it exists, so the software explains itself |
 | 📅 **Hearing age (ISO 7029)** | "These ears are performing like a typical 55-year-old's — 29 years older than the patient." One line that does more counseling work than a page of decibels |
@@ -45,6 +51,7 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 | 🍌 **Phoneme map + SII** | The speech banana on the audiogram, plus a band-importance-weighted **Speech Intelligibility Index** in quiet, in noise, and aided |
 | 🐚 **Cochlear damage map** | Greenwood frequency-place mapping shows *where on the basilar membrane* the loss sits — the 4 kHz notch as a glowing lesion at the basal turn |
 | 📈 **5-year forecast** | Projects continued exposure vs effective hearing protection, with an uncertainty band and preventable-loss figure in dB |
+| 🧠 **Deep ensemble, honestly benchmarked** | Five networks whose disagreement separates "this is hard" from "I have never seen this". Run head-to-head with the forest: the ensemble is marginally more accurate, the **forest is better calibrated**, and the forest stays primary — the comparison is in the app at `/api/model/comparison` |
 | 🧠 **ML pattern classifier** | RandomForest, calibrated probabilities, 7 clinical configurations, per-frequency explanation glow on the chart, IsolationForest OOD → "atypical — priority human review" |
 | 🤔 **Counterfactuals + case retrieval** | "If 4 kHz were 10 dB better, this would classify as flat" — plus the 12 nearest reference audiograms and how many agree |
 | ✍️ **Clinician correction loop** | Disagree with the AI and the override is logged with its thresholds for the next training run — human-in-the-loop MLOps, not a black box |
@@ -56,7 +63,7 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 | 📮 **One-click ENT referral** | A referral letter carrying the exact red-flag criteria met, the audiogram findings and the battery result |
 | 📢 **Noise-dose calculator** | OSHA and NIOSH dose from real task exposures, with NRR derating — grounding the forecast in exposure rather than trend alone |
 | 🗺 **Population atlas** | PCA projection of all 12,000 training audiograms with the patient plotted, making the out-of-distribution flag visual |
-| 🔌 **Offline ↔ API toggle** | Fully functional with **zero API keys**. Optional providers: Gemini (free tier), Anthropic, Groq, OpenRouter, Ollama — with automatic fallback to offline if a call fails |
+| 🔌 **Offline ↔ API toggle** | Fully functional with **zero API keys**. Optional providers: Gemini (free tier), OpenAI, Anthropic, Groq, OpenRouter, Ollama — with automatic fallback to offline if a call fails |
 
 ## 🏗 Architecture
 
@@ -79,7 +86,7 @@ flowchart LR
         DIG[/api/digitize/] --> CV[OpenCV grid + symbol detection]
         REP[/api/report/] --> ENGINE{AI mode?}
         ENGINE -- offline --> TPL[Template engine<br/>+ deterministic verifier]
-        ENGINE -- api --> LLM[Gemini / Claude / Groq /<br/>OpenRouter / Ollama<br/>generator → verifier]
+        ENGINE -- api --> LLM[Gemini / OpenAI / Claude / Groq /<br/>OpenRouter / Ollama<br/>generator → verifier]
         PROGAPI[/api/progression/] --> OSHA[OSHA STS + ASHA criteria<br/>+ exposed vs protected forecast]
         PDF[/api/pdf/] --> RL[reportlab + QR verification hash]
     end
@@ -100,6 +107,7 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python -m app.ml.generate_dataset
 .venv\Scripts\python -m app.ml.train
+.venv\Scripts\python -m app.ml.deep
 .venv\Scripts\python -m uvicorn app.main:app --port 8000
 ```
 
@@ -113,7 +121,7 @@ npm run dev
 
 Open **http://localhost:5173**. No API key needed — everything works offline. To enable LLM narratives, click the **AI Engine** panel (bottom-left gear) and paste a free Gemini key from [aistudio.google.com](https://aistudio.google.com).
 
-**Tests** (268 tests: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
+**Tests** (316 tests: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
 
 ```bash
 cd backend
@@ -140,6 +148,8 @@ Training artifacts land in `backend/data/`: `confusion_matrix.png` + `accuracy_r
 
 **2:25 — Prevention.** Progression page: OSHA STS flagged after 3 years of noise exposure; the 5-year projection shows *Moderate if exposure continues* vs *Mild with protection* — **15.6 dB of preventable hearing**, disability rising 6% → 33%.
 
+**2:25 — The Listening Lab.** Hand a judge headphones and open **Spatial hearing**. On *normal ears* they place the noise burst easily. Switch to *this patient's ears* — with the asymmetric case the sound now seems to come from the good side no matter where it actually is, and their localization error triples. "This is why he steps into traffic." Then **Speech in noise** — the digit test that catches a clean audiogram with real disability — and **Tinnitus**, matched and then notched live.
+
 **2:40 — Scale + reach.** Batch page: 8-patient CSV clears in **5 seconds — 89 audiograms a minute** — and comes back as a *worklist*: two flagged for an audiologist, six drafts auto-releasable. Then **🔬 Validate vs expert labels**: rules 100% (κ=1.0), ML pattern 83.3% (κ=0.795) — "we quote the number measured against experts, not the one measured against our own generator." Camp view adds *"38% of this cohort shows a 4 kHz noise notch"*. Counseling in six languages, read aloud, or handed over as a **QR the patient scans onto their own phone**. The **Screening Test** page measures a judge's own hearing live into the same pipeline. Installable and offline-capable; add any LLM key for narrative reports, with automatic fallback so the demo can't die.
 
 **2:55 — Close.** "Deterministic clinical core, calibrated ML with an honesty flag, and empathy you can hear. AudioSense AI."
@@ -151,6 +161,7 @@ backend/
   app/clinical/    rules.py (WHO/ABG/RPwD, cited docstrings) · progression.py (OSHA/ASHA)
                    safety.py (red flags + masking validity) · speech_audiometry.py (SRT/WRS/rollover)
                    triage.py (priority + auto-release routing) · norms.py (ISO 7029)
+                   listening_lab.py (localization · speech-in-noise · tinnitus)
                    immittance.py (tympanograms + reflexes) · oae.py (emissions)
                    consistency.py (cross-modal reconciliation) · noise_dose.py (OSHA/NIOSH)
                    prescription.py (NAL-R + aided verification) · forecast.py (5-year projection)
@@ -160,7 +171,7 @@ backend/
                    report.py (template+LLM, verifier) · languages.py (6 languages)
                    records.py (SQLite visits) · referral.py (ENT letter)
                    validation.py (expert-label agreement, Cohen's kappa)
-                   llm_provider.py (5 providers) · ai_config.py · pdf.py (QR hash)
+                   llm_provider.py (6 providers) · ai_config.py · pdf.py (QR hash)
   app/routers/     analyze · prescription · speech-words · digitize · report · progression
                    batch · pdf · settings · feedback · handout (QR) · clinic (records,
                    noise-dose, referral, atlas)

@@ -8,6 +8,7 @@ import Simulator from './pages/Simulator.jsx'
 import Progression from './pages/Progression.jsx'
 import Batch from './pages/Batch.jsx'
 import Records from './pages/Records.jsx'
+import ListeningLab from './pages/ListeningLab.jsx'
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/simulator" element={<Simulator />} />
         <Route path="/progression" element={<Progression />} />
         <Route path="/batch" element={<Batch />} />
+        <Route path="/listening-lab" element={<ListeningLab />} />
         <Route path="/records" element={<Records />} />
       </Routes>
       </ErrorBoundary>

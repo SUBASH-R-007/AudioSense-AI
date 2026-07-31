@@ -137,6 +137,36 @@ export const api = {
       body: JSON.stringify(ear),
     }).then(json),
 
+  localization: (trials, right_ac, left_ac) =>
+    fetch('/api/listening/localization', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trials, right_ac, left_ac }),
+    }).then(json),
+
+  predictLocalization: (right_ac, left_ac) =>
+    fetch('/api/listening/predict-localization', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ right_ac, left_ac }),
+    }).then(json),
+
+  digitsInNoise: (reversals, right_ac, left_ac) =>
+    fetch('/api/listening/digits-in-noise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reversals, right_ac, left_ac }),
+    }).then(json),
+
+  tinnitus: (payload) =>
+    fetch('/api/listening/tinnitus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
+  modelComparison: () => fetch('/api/model/comparison').then(json),
+
   aiSettings: () => fetch('/api/settings/ai').then(json),
   updateAiSettings: (update) =>
     fetch('/api/settings/ai', {
