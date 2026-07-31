@@ -4,6 +4,9 @@
 
 Enter (or photograph!) an audiogram → get WHO-2021 grading, conductive/sensorineural typing, India RPwD Act 2016 disability percentage, an ML pattern classification with calibrated confidence + out-of-distribution flagging, a phoneme-level functional impact map, a verified clinical report with a Tamil+English patient counseling sheet — and then **hear the world through the patient's ears** with the Web Audio hearing loss simulator.
 
+📖 **[WALKTHROUGH.md](WALKTHROUGH.md)** — complete explanation of every part of the project
+🎤 **[PITCH.md](PITCH.md)** — the jury presentation, with a timed 3-minute demo running order
+
 ## 🎯 Against the problem statement
 
 The brief asks for automatic analysis, pattern classification, degree and type prediction, disability estimation and an AI-generated report — because interpretation is *time-consuming*, *expertise-dependent*, and delays diagnosis in *high-volume settings*. All five features are built; these are the numbers behind the justification:
