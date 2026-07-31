@@ -53,6 +53,28 @@ export const api = {
     return fetch('/api/batch', { method: 'POST', body: fd }).then(json)
   },
 
+  validate: (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return fetch('/api/validate', { method: 'POST', body: fd }).then(json)
+  },
+
+  batchPhotos: (files) => {
+    const fd = new FormData()
+    for (const f of files) fd.append('files', f)
+    return fetch('/api/batch-photos', { method: 'POST', body: fd }).then(json)
+  },
+
+  bulkReports: async (cases) => {
+    const res = await fetch('/api/bulk-reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cases }),
+    })
+    if (!res.ok) throw new Error(`Bulk export failed: ${res.status}`)
+    return res.blob()
+  },
+
   pdf: async (payload) => {
     const res = await fetch('/api/pdf', {
       method: 'POST',

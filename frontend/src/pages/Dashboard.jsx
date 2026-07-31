@@ -287,6 +287,27 @@ export default function Dashboard() {
           <p className="mt-0.5 text-[13px] text-slate-500">
             {patient.age} y · {patient.sex} · {patient.occupation || 'occupation n/a'} · tested {patient.test_date || '—'}
           </p>
+          {analysis.triage && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <span className={`rounded-md px-2 py-0.5 text-[10.5px] font-bold uppercase ${
+                analysis.triage.level === 'critical' ? 'bg-rose-600 text-white'
+                : analysis.triage.level === 'urgent' ? 'bg-orange-500 text-white'
+                : analysis.triage.level === 'review' ? 'bg-amber-400 text-amber-950'
+                : 'bg-emerald-100 text-emerald-700'}`}>
+                {analysis.triage.label}
+              </span>
+              <span className="text-[12px] text-slate-500">
+                {analysis.triage.auto_releasable
+                  ? 'draft can be released'
+                  : `audiologist review required · ${analysis.triage.sla}`}
+              </span>
+              {analysis.timing && (
+                <span className="text-[11.5px] text-slate-400">
+                  interpreted in {analysis.timing.interpretation_ms} ms
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex gap-2">
           <Link to="/simulator"

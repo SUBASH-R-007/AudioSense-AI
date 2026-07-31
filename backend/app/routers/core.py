@@ -1,6 +1,8 @@
 """Core endpoints: health, demo cases, full analysis."""
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Body
 
 from app.clinical import rules
@@ -10,6 +12,7 @@ from app.clinical.oae import analyze_oae
 from app.clinical.prescription import prescribe, verify_fitting
 from app.clinical.safety import safety_review, sort_alerts
 from app.clinical.speech_audiometry import analyze_speech
+from app.clinical.triage import triage_case
 from app.ml import classifier
 from app.models.schemas import EarData, TestRecord, ear_to_numeric
 from app.services.demo_cases import DEMO_CASES, PROGRESSION_PAIR
@@ -32,6 +35,7 @@ def demo_cases():
 @router.post("/analyze")
 def analyze(record: TestRecord):
     """Full pipeline: rules engine + ML pattern + phoneme audibility."""
+    started = time.perf_counter()
     rules_result = rules.analyze_test(
         record.right.ac, record.right.bc, record.left.ac, record.left.bc
     )
@@ -141,7 +145,7 @@ def analyze(record: TestRecord):
             safety["has_urgent"] = True
     sort_alerts(safety["alerts"])
 
-    return {
+    result = {
         "patient": record.patient.model_dump(),
         "thresholds": {
             "right": {"ac": record.right.ac, "bc": record.right.bc},
@@ -161,6 +165,12 @@ def analyze(record: TestRecord):
         "battery": battery,
         "fitting": fitting,
     }
+    result["triage"] = triage_case(result)
+    result["timing"] = {
+        "interpretation_ms": round((time.perf_counter() - started) * 1000, 1),
+        "note": "Server-side interpretation time, excluding network and rendering.",
+    }
+    return result
 
 
 @router.post("/prescription")

@@ -4,10 +4,26 @@
 
 Enter (or photograph!) an audiogram → get WHO-2021 grading, conductive/sensorineural typing, India RPwD Act 2016 disability percentage, an ML pattern classification with calibrated confidence + out-of-distribution flagging, a phoneme-level functional impact map, a verified clinical report with a Tamil+English patient counseling sheet — and then **hear the world through the patient's ears** with the Web Audio hearing loss simulator.
 
+## 🎯 Against the problem statement
+
+The brief asks for automatic analysis, pattern classification, degree and type prediction, disability estimation and an AI-generated report — because interpretation is *time-consuming*, *expertise-dependent*, and delays diagnosis in *high-volume settings*. All five features are built; these are the numbers behind the justification:
+
+| Claim in the brief | What this system does | Measured |
+|---|---|---|
+| "time-consuming" | Full interpretation per audiogram | **~670 ms**, 89 cases/minute on a laptop |
+| "high-patient-volume" | Triage worklist ordered by clinical priority, not upload order | 8-case batch → 2 flagged for review, **75% of drafts auto-releasable** |
+| "dependent on audiologist availability" | Explicit auto-release vs review routing, with reasons | Conservative by design: anything atypical, provisional or entitlement-bearing routes to a human |
+| "more consistent" | Guideline conformance swept across the entire input space + reproducibility proof | 261 WHO grade checks, 323 AC/BC type combinations, 625 disability combinations, 50× identical-output runs |
+| Accuracy | Validation harness against expert-labelled audiograms | Rules **100% (κ=1.0)**; ML pattern **83.3% (κ=0.795, "substantial")** on the bundled labelled set |
+
+**On the 99.9% figure.** That is hold-out accuracy on synthetic data and means only that the model learned its own generator — it is not clinical accuracy and this README will not present it as such. The number worth quoting comes from `/api/validate` run on real expert-labelled audiograms; `samples/validation_labelled.csv` shows the format. Degree, type and disability are deterministic implementations of published guidelines, so they are validated by conformance rather than by statistics — hence κ=1.0 and a 0.00% disability error.
+
 ## ✨ Signature features
 
 | | |
 |---|---|
+| 🚦 **Triage worklist** | A batch comes back ordered by who needs a clinician first, each case carrying an explicit *review required* or *auto-releasable* decision with its reasons — the actual bottleneck in a high-volume clinic |
+| 📷 **Bulk paper ingestion** | Drop a folder of photographed audiograms and get a triaged worklist; the department's paper backlog becomes a queue |
 | 🔬 **Cross-modal test battery** | Tympanometry, acoustic reflexes and otoacoustic emissions reconciled against the audiogram — the engine reports whether the tests **agree**, and names the pattern when they don't (effusion confirmed, otosclerosis, auditory neuropathy, non-organic) |
 | ⏳ **Damage before the audiogram moves** | Absent emissions with normal thresholds = **pre-clinical cochlear damage**. This is the difference between screening for injury already done and injury still preventable |
 | 📐 **Bayesian screening** | A QUEST/ZEST posterior over threshold: every result carries a **95% credible interval**, plus silent catch trials that flag a patient responding to nothing |
@@ -94,7 +110,7 @@ npm run dev
 
 Open **http://localhost:5173**. No API key needed — everything works offline. To enable LLM narratives, click the **AI Engine** panel (bottom-left gear) and paste a free Gemini key from [aistudio.google.com](https://aistudio.google.com).
 
-**Tests** (134 tests: boundary-pinned clinical rules, red-flag and masking logic, speech audiometry, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
+**Tests** (240 tests: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
 
 ```bash
 cd backend
@@ -121,7 +137,7 @@ Training artifacts land in `backend/data/`: `confusion_matrix.png` + `accuracy_r
 
 **2:25 — Prevention.** Progression page: OSHA STS flagged after 3 years of noise exposure; the 5-year projection shows *Moderate if exposure continues* vs *Mild with protection* — **15.6 dB of preventable hearing**, disability rising 6% → 33%.
 
-**2:40 — Scale + reach.** Batch page: 8-patient CSV → *"38% of this cohort shows a 4 kHz noise notch"*, with age-band prevalence and benchmark-disability counts. Counseling in six languages, read aloud, or handed over as a **QR the patient scans onto their own phone**. The **Screening Test** page measures a judge's own hearing live into the same pipeline. Installable and offline-capable; add any LLM key for narrative reports, with automatic fallback so the demo can't die.
+**2:40 — Scale + reach.** Batch page: 8-patient CSV clears in **5 seconds — 89 audiograms a minute** — and comes back as a *worklist*: two flagged for an audiologist, six drafts auto-releasable. Then **🔬 Validate vs expert labels**: rules 100% (κ=1.0), ML pattern 83.3% (κ=0.795) — "we quote the number measured against experts, not the one measured against our own generator." Camp view adds *"38% of this cohort shows a 4 kHz noise notch"*. Counseling in six languages, read aloud, or handed over as a **QR the patient scans onto their own phone**. The **Screening Test** page measures a judge's own hearing live into the same pipeline. Installable and offline-capable; add any LLM key for narrative reports, with automatic fallback so the demo can't die.
 
 **2:55 — Close.** "Deterministic clinical core, calibrated ML with an honesty flag, and empathy you can hear. AudioSense AI."
 
@@ -131,6 +147,7 @@ Training artifacts land in `backend/data/`: `confusion_matrix.png` + `accuracy_r
 backend/
   app/clinical/    rules.py (WHO/ABG/RPwD, cited docstrings) · progression.py (OSHA/ASHA)
                    safety.py (red flags + masking validity) · speech_audiometry.py (SRT/WRS/rollover)
+                   triage.py (priority + auto-release routing)
                    immittance.py (tympanograms + reflexes) · oae.py (emissions)
                    consistency.py (cross-modal reconciliation) · noise_dose.py (OSHA/NIOSH)
                    prescription.py (NAL-R + aided verification) · forecast.py (5-year projection)
@@ -139,6 +156,7 @@ backend/
   app/services/    phonemes.py · sii.py (SII + word audibility) · vision.py (OpenCV)
                    report.py (template+LLM, verifier) · languages.py (6 languages)
                    records.py (SQLite visits) · referral.py (ENT letter)
+                   validation.py (expert-label agreement, Cohen's kappa)
                    llm_provider.py (5 providers) · ai_config.py · pdf.py (QR hash)
   app/routers/     analyze · prescription · speech-words · digitize · report · progression
                    batch · pdf · settings · feedback · handout (QR) · clinic (records,

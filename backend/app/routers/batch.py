@@ -7,6 +7,8 @@ l_bc_250 ... l_bc_4000. Values: integer dB, "NR", or blank (untested).
 from __future__ import annotations
 
 import io
+import statistics
+import time
 from typing import Dict, List
 
 import pandas as pd
@@ -14,6 +16,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.clinical import rules
 from app.clinical.safety import safety_review
+from app.clinical.triage import sort_worklist, triage_case, worklist_summary
 from app.ml import classifier
 from app.models.schemas import AC_FREQS, BC_FREQS, EarData
 
@@ -50,7 +53,10 @@ async def batch(file: UploadFile = File(...)):
         raise HTTPException(400, f"could not parse CSV: {exc}")
 
     results = []
+    timings: List[float] = []
+    batch_started = time.perf_counter()
     for i, row in df.iterrows():
+        case_started = time.perf_counter()
         r_ac = _thresholds(row, "r_ac", AC_FREQS)
         r_bc = _thresholds(row, "r_bc", BC_FREQS)
         l_ac = _thresholds(row, "l_ac", AC_FREQS)
@@ -80,6 +86,11 @@ async def batch(file: UploadFile = File(...)):
         safety = safety_review(
             EarData(ac=r_ac, bc=r_bc), EarData(ac=l_ac, bc=l_bc)
         )
+        # Triage needs the same shape the single-case endpoint produces.
+        triage = triage_case({"safety": safety, "rules": rr, "ml": ml, "battery": {}})
+        elapsed_ms = round((time.perf_counter() - case_started) * 1000, 1)
+        timings.append(elapsed_ms)
+
         results.append({
             "row": int(i) + 1,
             "name": str(row.get("name", f"Row {i+1}")),
@@ -91,9 +102,40 @@ async def batch(file: UploadFile = File(...)):
             "benchmark_disability": disability.get("benchmark_disability"),
             "urgent": safety["has_urgent"],
             "alerts": [a["title"] for a in safety["alerts"] if a["level"] in ("emergency", "urgent")],
+            "triage": triage,
+            "interpretation_ms": elapsed_ms,
         })
-    return {"count": len(results), "results": results,
-            "summary": camp_summary(results)}
+
+    ordered = sort_worklist(results)
+    total_s = time.perf_counter() - batch_started
+    return {
+        "count": len(results),
+        "results": ordered,
+        "summary": camp_summary(results),
+        "worklist": worklist_summary(results),
+        "performance": _performance(timings, total_s),
+    }
+
+
+def _performance(timings: List[float], total_s: float) -> dict:
+    """Throughput evidence — the claim this project is built on.
+
+    A clinic does not care that interpretation is 'automatic'; it cares
+    how many audiograms an hour it clears. These are measured numbers,
+    not estimates.
+    """
+    if not timings:
+        return {"cases": 0}
+    return {
+        "cases": len(timings),
+        "total_seconds": round(total_s, 2),
+        "mean_ms": round(statistics.mean(timings), 1),
+        "median_ms": round(statistics.median(timings), 1),
+        "slowest_ms": round(max(timings), 1),
+        "cases_per_minute": round(len(timings) / total_s * 60) if total_s > 0 else None,
+        "note": ("Measured server-side interpretation time. Manual interpretation of a "
+                 "single audiogram by an audiologist typically takes several minutes."),
+    }
 
 
 AGE_BANDS = [(0, 18, "0–17"), (18, 30, "18–29"), (30, 45, "30–44"),

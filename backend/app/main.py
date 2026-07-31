@@ -18,6 +18,7 @@ from app.routers import (
     progression_router,
     report_router,
     settings,
+    validation_router,
 )
 
 app = FastAPI(
@@ -35,5 +36,5 @@ app.add_middleware(
 )
 
 for r in (core, digitize, report_router, progression_router, batch,
-          pdf_router, settings, feedback, handout, clinic):
+          pdf_router, settings, feedback, handout, clinic, validation_router):
     app.include_router(r.router)
