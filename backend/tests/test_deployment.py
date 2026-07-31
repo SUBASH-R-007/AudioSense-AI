@@ -92,10 +92,43 @@ def test_railway_config_is_valid_and_binds_the_platform_port():
     assert "--host 0.0.0.0" in start, "must bind all interfaces, not localhost"
     assert "$PORT" in start, "must use the platform-assigned port"
     assert cfg["deploy"]["healthcheckPath"] == "/"
-    # The model artifacts are gitignored, so the build has to create them.
-    build = cfg["build"]["buildCommand"]
-    assert "app.ml.generate_dataset" in build
-    assert "app.ml.train" in build
+    # Artifacts are committed, so the build only has to confirm they exist.
+    assert "scripts.ensure_model" in cfg["build"]["buildCommand"]
+
+
+def test_model_artifacts_are_committed_not_ignored():
+    """Free tiers cap memory below what training needs — ship the model."""
+    import subprocess
+    for artifact in ("backend/data/model_bundle.joblib", "backend/data/dataset.csv"):
+        result = subprocess.run(
+            ["git", "check-ignore", artifact], cwd=ROOT,
+            capture_output=True, text=True)
+        assert result.returncode != 0, f"{artifact} is gitignored but must ship"
+
+
+def test_ensure_model_script_is_idempotent_when_artifacts_exist(capsys):
+    """On deploy it must be a no-op, not a retrain."""
+    from scripts.ensure_model import MODEL, main
+    if not MODEL.exists():
+        import pytest
+        pytest.skip("artifacts not built locally")
+    assert main() == 0
+    assert "skipping training" in capsys.readouterr().out
+
+
+def test_dockerfile_binds_the_platform_port():
+    dockerfile = (ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    assert "--host 0.0.0.0" in dockerfile
+    assert "${PORT" in dockerfile, "must expand the platform-assigned port"
+    assert "libgl1" in dockerfile, "OpenCV needs libGL at runtime"
+
+
+def test_render_blueprint_is_valid():
+    import re
+    text = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    assert "rootDir: backend" in text
+    assert "--host 0.0.0.0" in text and "$PORT" in text
+    assert re.search(r"healthCheckPath:\s*/", text)
 
 
 def test_procfile_matches_the_railway_start_command():

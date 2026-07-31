@@ -1,8 +1,101 @@
-# Deployment — Vercel (frontend) + Railway (backend)
+# Deployment — Vercel (frontend) + a free backend host
 
 **Local development is unaffected by any of this.** With no environment
 variables set, the frontend keeps using relative `/api` paths through the Vite
 dev proxy exactly as before. The production settings are additive.
+
+---
+
+## Picking a free backend host
+
+The frontend is trivial to host — Vercel's free tier covers it comfortably.
+The backend is the part with constraints: Python, ~250 MB of dependencies
+(scikit-learn, OpenCV, matplotlib, reportlab), and a 7.5 MB model to load.
+
+**The model artifacts are committed to the repository (~8 MB total.)** Training
+peaks near 500 MB of memory, which is at or above the ceiling of most free
+tiers, so building the model on deploy fails unpredictably. Shipping it makes
+every option below viable and keeps deploys fast.
+
+| Platform | Free tier | Sleeps? | Verdict for this project |
+|---|---|---|---|
+| **Hugging Face Spaces** | 2 vCPU, **16 GB RAM** | after long inactivity | **Best choice.** Most memory by far, no card required, and an ML project hosted on HF reads well to a technical jury |
+| **Render** | 512 MB RAM | after ~15 min idle, ~50 s cold start | Closest to Railway. Works because the model is pre-built. `render.yaml` is included |
+| **Koyeb** | 512 MB, 1 service | no | Good if you want it always warm |
+| **Fly.io** | small shared VM | configurable | Solid, but needs a card and more setup |
+| **Google Cloud Run** | generous always-free | scales to zero | Very reliable; needs a GCP account with billing enabled |
+| **Oracle Cloud Always Free** | 4 ARM cores, 24 GB | no | Most powerful, but you administer a whole VM |
+| **Vercel Python functions** | — | — | **Not viable.** The dependency bundle far exceeds the size limit, and there is no persistent filesystem |
+
+> Free-tier terms change often. Check the current limits before relying on any
+> of them for a judged demo.
+
+**Recommendation:** Hugging Face Spaces for the backend, Vercel for the
+frontend. Instructions for both are below, and the included `Dockerfile` also
+works unchanged on Koyeb, Fly, Cloud Run and Back4App.
+
+---
+
+## Option A — Hugging Face Spaces (recommended)
+
+1. Go to **huggingface.co → New Space**.
+   - **SDK: Docker** → *Blank*
+   - Visibility: **Public** (private Spaces sleep more aggressively)
+2. The Space is a git repository. Push the backend into it:
+
+```bash
+git clone https://huggingface.co/spaces/<your-username>/audiosense-api
+cd audiosense-api
+cp -r /path/to/AudioSense-AI/backend/* .
+```
+
+3. Spaces expect the container to listen on **7860**, so add this line to the
+   top of the copied `README.md` (create it if absent):
+
+```yaml
+---
+title: AudioSense AI API
+sdk: docker
+app_port: 7860
+---
+```
+
+4. Set the port and push:
+
+```bash
+echo "ENV PORT=7860" >> Dockerfile
+git add -A && git commit -m "AudioSense AI backend" && git push
+```
+
+5. In **Settings → Variables and secrets**, add `CORS_ORIGINS` with your Vercel
+   URL once you have it.
+
+Your API is at `https://<username>-audiosense-api.hf.space`.
+
+## Option B — Render
+
+1. **New → Blueprint**, point it at the repo. `render.yaml` at the root
+   configures everything (root directory, build, start command, health check).
+2. Or **New → Web Service** manually: **Root Directory `backend`**,
+   build `pip install -r requirements.txt && python -m scripts.ensure_model`,
+   start `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
+3. Add `CORS_ORIGINS` in the dashboard once the frontend is deployed.
+
+**Note the cold start.** A free Render service sleeps after ~15 minutes idle
+and takes roughly 50 seconds to wake. Open the backend URL a minute before
+demoing.
+
+## Option C — anything that takes a Dockerfile
+
+`backend/Dockerfile` is self-contained and reads `$PORT`:
+
+```bash
+docker build -t audiosense-api ./backend
+docker run -p 8000:8000 -e PORT=8000 audiosense-api
+```
+
+Koyeb, Fly.io, Cloud Run and Back4App all accept it as-is. Set `CORS_ORIGINS`
+in whichever dashboard you use.
 
 ---
 
@@ -27,7 +120,7 @@ first so you have its URL.
 
 ---
 
-## Step 1 — Railway (backend)
+## Option D — Railway (if you still have credit)
 
 1. **New Project → Deploy from GitHub repo →** select `AudioSense-AI`.
 2. Open the service → **Settings**:
@@ -45,18 +138,9 @@ first so you have its URL.
 
 ### What the build does
 
-`backend/railway.json` runs, in order:
-
-```
-python -m app.ml.generate_dataset   # 12,000 synthetic audiograms
-python -m app.ml.train              # RandomForest + calibration + OOD
-python -m app.ml.deep               # optional neural ensemble
-```
-
-The model artifacts are gitignored, so **the build creates them**. Expect the
-first deploy to take roughly 3–5 minutes. The deep-ensemble step is wrapped so
-that if it fails, the deploy still succeeds — only `/api/model/comparison`
-returns 503.
+`backend/railway.json` runs `python -m scripts.ensure_model`, which finds the
+committed artifacts and exits immediately. If they are ever missing it trains
+them instead, so a slim checkout still deploys.
 
 ### Verify
 
@@ -120,15 +204,16 @@ root — it echoes `allowed_origins` so you can see exactly what it accepts.
 `VITE_API_BASE_URL` was missing at build time. Set it and **redeploy**.
 
 **`"model_trained": false`**
-Training was skipped or ran out of memory. Check the Railway build log. On a
-low-memory plan, commit the artifacts instead:
+The committed `backend/data/model_bundle.joblib` did not reach the server —
+usually a wrong root directory, or a `.dockerignore`/`.gitignore` in a copied
+Space that excludes it. Confirm the file is present in the deployed tree. As a
+last resort, `python -m scripts.ensure_model` will retrain it, but that needs
+roughly 500 MB of memory and will fail on a 512 MB tier.
 
-```bash
-git add -f backend/data/model_bundle.joblib backend/data/dataset.csv
-git commit -m "Commit model artifacts for low-memory deployment"
-```
-
-Then remove the training steps from `railway.json`'s `buildCommand`.
+**Build fails with `ImportError: libGL.so.1`**
+An OpenCV system dependency. The included `Dockerfile` installs `libgl1` and
+`libglib2.0-0`; if you are on a buildpack platform without them, switch that
+service to the Dockerfile.
 
 **Patient records disappear after a redeploy**
 Expected. Railway's filesystem is ephemeral, so `records.db`, saved handouts

@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+
+# Runtime state — never bake a developer's local records into the image.
+data/records.db
+data/handouts.json
+data/feedback.jsonl
+data/ai_config.json
+data/verify_store.json
