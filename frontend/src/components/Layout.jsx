@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
 import { useApp } from '../lib/store.jsx'
 import AISettingsPanel from './AISettingsPanel.jsx'
+import GuidedTour from './GuidedTour.jsx'
 
 const NAV = [
   { to: '/new-test', label: 'New Test', icon: 'M12 4v16m8-8H4' },
@@ -37,16 +38,47 @@ function Logo() {
 export default function Layout({ children }) {
   const { aiStatus, toast } = useApp()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [navOpen, setNavOpen] = useState(false)
+  const [tourOpen, setTourOpen] = useState(false)
+  const location = useLocation()
   const apiMode = aiStatus?.config?.mode === 'api'
+
+  // On a phone the drawer must close when you navigate, or it covers the page.
+  useEffect(() => { setNavOpen(false) }, [location.pathname])
   const providerLabel = apiMode
     ? aiStatus?.providers?.[aiStatus.config.provider]?.label || aiStatus.config.provider
     : null
 
   return (
     <div className="flex min-h-screen">
-      <aside className="fixed inset-y-0 left-0 z-20 flex w-60 flex-col border-r border-slate-200/80 bg-white px-4 py-5">
+      {/* mobile top bar — the sidebar becomes a drawer below lg */}
+      <header className="fixed inset-x-0 top-0 z-30 flex items-center gap-3 border-b border-slate-200 bg-white/95 px-4 py-2.5 backdrop-blur lg:hidden print:hidden">
+        <button onClick={() => setNavOpen(true)} aria-label="Open navigation"
+          aria-expanded={navOpen} aria-controls="main-nav"
+          className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-teal-600">
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor"
+            strokeWidth="2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
         <Logo />
-        <nav className="mt-8 flex flex-1 flex-col gap-1">
+      </header>
+
+      {navOpen && (
+        <div className="fixed inset-0 z-30 bg-slate-900/40 lg:hidden"
+          onClick={() => setNavOpen(false)} aria-hidden="true" />
+      )}
+
+      <aside id="main-nav"
+        className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-slate-200/80 bg-white px-4 py-5 transition-transform duration-200 lg:translate-x-0 print:hidden ${
+          navOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="flex items-center justify-between">
+          <Logo />
+          <button onClick={() => setNavOpen(false)} aria-label="Close navigation"
+            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 lg:hidden">
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <nav className="mt-8 flex flex-1 flex-col gap-1" aria-label="Main">
           {NAV.map((n) => (
             <NavLink
               key={n.to}
@@ -67,6 +99,13 @@ export default function Layout({ children }) {
             </NavLink>
           ))}
         </nav>
+
+        <button
+          onClick={() => setTourOpen(true)}
+          className="mb-2 flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50/60 px-3 py-2.5 text-left text-[13px] font-semibold text-teal-800 transition hover:bg-teal-100/60"
+        >
+          <span aria-hidden="true">🧭</span> Show me around
+        </button>
 
         <button
           onClick={() => setSettingsOpen(true)}
@@ -92,9 +131,13 @@ export default function Layout({ children }) {
         </div>
       </aside>
 
-      <main className="ml-60 flex-1 px-8 py-7">{children}</main>
+      <main id="main-content"
+        className="flex-1 px-4 pb-10 pt-16 sm:px-6 lg:ml-60 lg:px-8 lg:pt-7 print:ml-0 print:pt-0">
+        {children}
+      </main>
 
       {settingsOpen && <AISettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {tourOpen && <GuidedTour onClose={() => setTourOpen(false)} />}
 
       {toast && (
         <div

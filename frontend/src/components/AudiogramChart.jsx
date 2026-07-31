@@ -133,6 +133,59 @@ const PhonemeLayer = (phonemes) => (props) => {
   )
 }
 
+/**
+ * Plain-language callouts placed on the chart itself.
+ *
+ * The audiogram is a specialist instrument — it assumes you already know
+ * that a dip at 4 kHz means noise. These annotations say it in words, at
+ * the place on the chart where it is true.
+ */
+export function deriveAnnotations(data) {
+  const out = []
+  const at = (f) => data.find((d) => Number(d.freq) === f)
+  const worst = (d) => Math.max(d?.rAC ?? -99, d?.lAC ?? -99)
+
+  const k2 = worst(at(2000))
+  const k4 = worst(at(4000))
+  const k8 = worst(at(8000))
+  const low = Math.max(worst(at(250)), worst(at(500)))
+
+  // A 4 kHz notch: worse than both neighbours by a clear margin.
+  if (k4 > 0 && k4 - k2 >= 15 && k4 - k8 >= 10) {
+    out.push({ freq: 4000, db: k4, text: 'noise notch', tone: '#b45309' })
+  } else if (k8 > 0 && k8 - low >= 30) {
+    out.push({ freq: 6000, db: (k4 + k8) / 2, text: 'high-frequency loss', tone: '#b45309' })
+  }
+  if (low >= 40 && low - k4 >= 15) {
+    out.push({ freq: 350, db: low, text: 'low-frequency loss', tone: '#b45309' })
+  }
+  return out
+}
+
+const AnnotationLayer = (annotations) => (props) => {
+  const { xOf, yOf } = makeScales(props)
+  return (
+    <g pointerEvents="none">
+      {annotations.map((a) => {
+        const x = xOf(a.freq)
+        const y = yOf(a.db)
+        const labelY = y + 34
+        return (
+          <g key={a.text}>
+            <path d={`M${x},${y + 12} L${x},${labelY - 10}`} stroke={a.tone}
+              strokeWidth="1.2" strokeDasharray="3 2" opacity="0.8" />
+            <rect x={x - a.text.length * 3.3 - 6} y={labelY - 9} rx="4"
+              width={a.text.length * 6.6 + 12} height="17"
+              fill="#fffbeb" stroke={a.tone} strokeOpacity="0.4" />
+            <text x={x} y={labelY + 3} textAnchor="middle" fontSize="10.5"
+              fontWeight="600" fill={a.tone}>{a.text}</text>
+          </g>
+        )
+      })}
+    </g>
+  )
+}
+
 const GlowLayer = (data) => (props) => {
   const { xOf, xMap, yMap } = makeScales(props)
   return (
@@ -162,8 +215,10 @@ export default function AudiogramChart({
   showBanana = false,
   showPhonemes = false,
   showGlow = true,
+  showAnnotations = true,
   height = 440,
 }) {
+  const annotations = showAnnotations ? deriveAnnotations(data) : []
   return (
     <ResponsiveContainer width="100%" height={height}>
       <ComposedChart data={data} margin={{ top: 12, right: 24, bottom: 8, left: 4 }}>
@@ -190,6 +245,7 @@ export default function AudiogramChart({
         {showGlow && <Customized component={GlowLayer(data)} />}
         {showBanana && <Customized component={BananaLayer} />}
         {showPhonemes && phonemes && <Customized component={PhonemeLayer(phonemes)} />}
+        {annotations.length > 0 && <Customized component={AnnotationLayer(annotations)} />}
 
         <Tooltip
           formatter={(v, name) => [`${v} dB HL`, name]}

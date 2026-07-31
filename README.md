@@ -22,6 +22,9 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 
 | | |
 |---|---|
+| 🎯 **The answer, first** | The dashboard opens with one plain sentence, the figures that carry the decision, and the single next step — everything below it is the evidence |
+| 🧭 **Guided tour** | "Show me around" spotlights each part of the interface and says why it exists, so the software explains itself |
+| 📅 **Hearing age (ISO 7029)** | "These ears are performing like a typical 55-year-old's — 29 years older than the patient." One line that does more counseling work than a page of decibels |
 | 🚦 **Triage worklist** | A batch comes back ordered by who needs a clinician first, each case carrying an explicit *review required* or *auto-releasable* decision with its reasons — the actual bottleneck in a high-volume clinic |
 | 📷 **Bulk paper ingestion** | Drop a folder of photographed audiograms and get a triaged worklist; the department's paper backlog becomes a queue |
 | 🔬 **Cross-modal test battery** | Tympanometry, acoustic reflexes and otoacoustic emissions reconciled against the audiogram — the engine reports whether the tests **agree**, and names the pattern when they don't (effusion confirmed, otosclerosis, auditory neuropathy, non-organic) |
@@ -110,7 +113,7 @@ npm run dev
 
 Open **http://localhost:5173**. No API key needed — everything works offline. To enable LLM narratives, click the **AI Engine** panel (bottom-left gear) and paste a free Gemini key from [aistudio.google.com](https://aistudio.google.com).
 
-**Tests** (240 tests: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
+**Tests** (268 tests: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
 
 ```bash
 cd backend
@@ -123,7 +126,7 @@ Training artifacts land in `backend/data/`: `confusion_matrix.png` + `accuracy_r
 
 **0:00 — The hook.** "One in five people has hearing loss; audiologists are scarce. AudioSense turns any audiometer printout into a full clinical interpretation." Open **New Test**.
 
-**0:10 — The one nobody else catches.** Load **🔬 Pre-clinical Noise Damage**. The audiogram is *completely normal* — every threshold within limits. Then the battery panel: emissions are absent at 4 and 8 kHz. "This 26-year-old welder's cochlea is already dying, and every conventional screening in the country would send him back to the shipyard. We can still save this hearing."
+**0:10 — The one nobody else catches.** Load **🔬 Pre-clinical Noise Damage**. The verdict banner answers before you read anything else: *"Hearing thresholds are still normal, but the cochlea is already being damaged — this loss is still preventable."* The audiogram is completely normal; emissions are absent at 4 and 8 kHz; **hearing age 55 against an actual age of 26**. "Every conventional screening in the country would send this welder back to the shipyard."
 
 **0:25 — The save.** Load the **🚨 Sudden Asymmetric Loss** demo case. The dashboard opens with a pulsing red banner: *possible sudden sensorineural hearing loss — steroids are time-critical*, plus an asymmetry flag recommending MRI and a rollover finding suggesting retrocochlear pathology. Say it plainly: "most audiogram tools would have called this 'moderate sensorineural loss' and booked a hearing-aid fitting."
 
@@ -147,7 +150,7 @@ Training artifacts land in `backend/data/`: `confusion_matrix.png` + `accuracy_r
 backend/
   app/clinical/    rules.py (WHO/ABG/RPwD, cited docstrings) · progression.py (OSHA/ASHA)
                    safety.py (red flags + masking validity) · speech_audiometry.py (SRT/WRS/rollover)
-                   triage.py (priority + auto-release routing)
+                   triage.py (priority + auto-release routing) · norms.py (ISO 7029)
                    immittance.py (tympanograms + reflexes) · oae.py (emissions)
                    consistency.py (cross-modal reconciliation) · noise_dose.py (OSHA/NIOSH)
                    prescription.py (NAL-R + aided verification) · forecast.py (5-year projection)

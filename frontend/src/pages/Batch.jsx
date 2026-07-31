@@ -99,7 +99,7 @@ export default function Batch() {
         ordered by who needs a clinician first.
       </p>
 
-      <div className="mt-5 flex flex-wrap items-center gap-3">
+      <div className="mt-5 flex flex-wrap items-center gap-3" data-tour="batch-actions">
         <button onClick={() => fileRef.current?.click()} disabled={busy}
           className="rounded-lg bg-teal-600 px-4 py-2 text-[13px] font-semibold text-white shadow-sm hover:bg-teal-700 disabled:opacity-50">
           {busy ? 'Analyzing…' : 'Upload CSV'}

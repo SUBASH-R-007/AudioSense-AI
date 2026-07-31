@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import Layout from './components/Layout.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import NewTest from './pages/NewTest.jsx'
 import Screening from './pages/Screening.jsx'
 import Dashboard from './pages/Dashboard.jsx'
@@ -11,6 +12,10 @@ import Records from './pages/Records.jsx'
 export default function App() {
   return (
     <Layout>
+      <a href="#main-content" className="skip-link rounded-lg bg-teal-600 px-3 py-2 text-[13px] font-semibold text-white">
+        Skip to main content
+      </a>
+      <ErrorBoundary>
       <Routes>
         <Route path="/" element={<Navigate to="/new-test" replace />} />
         <Route path="/new-test" element={<NewTest />} />
@@ -21,6 +26,7 @@ export default function App() {
         <Route path="/batch" element={<Batch />} />
         <Route path="/records" element={<Records />} />
       </Routes>
+      </ErrorBoundary>
     </Layout>
   )
 }

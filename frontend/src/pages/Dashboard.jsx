@@ -5,6 +5,7 @@ import { useApp } from '../lib/store.jsx'
 import { captureSvgAsPng } from '../lib/svgCapture.js'
 import AudiogramChart, { buildChartData } from '../components/AudiogramChart.jsx'
 import CochleaMap from '../components/CochleaMap.jsx'
+import VerdictBanner from '../components/VerdictBanner.jsx'
 import { speak, stopSpeaking, voiceAvailable } from '../lib/speech.js'
 
 const Card = ({ title, children, badge }) => (
@@ -242,6 +243,11 @@ export default function Dashboard() {
 
   return (
     <div className="mx-auto max-w-6xl">
+      {/* the answer, before any of the evidence */}
+      <div className="mb-4">
+        <VerdictBanner verdict={analysis.verdict} />
+      </div>
+
       {/* safety alerts — these outrank everything else on the page */}
       {analysis.safety?.alerts?.length > 0 && (
         <div className="mb-4 space-y-2">
@@ -333,7 +339,8 @@ export default function Dashboard() {
 
       <div className="mt-5 grid gap-5 xl:grid-cols-3">
         {/* chart */}
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm xl:col-span-2">
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm xl:col-span-2"
+          data-tour="chart">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">Clinical Audiogram</h2>
             <div className="flex gap-1.5">
@@ -341,7 +348,8 @@ export default function Dashboard() {
               <Toggle on={showPhonemes} set={setShowPhonemes}>Phonemes</Toggle>
             </div>
           </div>
-          <div ref={chartRef} className="mt-2">
+          <div ref={chartRef} className="mt-2" role="img"
+            aria-label={`Audiogram. ${analysis.verdict?.headline || ''} Threshold values are listed in the table below.`}>
             <AudiogramChart
               data={chartData}
               phonemes={betterPhonemes?.phonemes}
@@ -350,6 +358,31 @@ export default function Dashboard() {
               showGlow
             />
           </div>
+
+          {/* The same data as a table, for screen readers and for printing. */}
+          <table className="sr-only print:not-sr-only print:mt-3 print:w-full print:text-left print:text-[11px]">
+            <caption>Air-conduction thresholds in decibels hearing level</caption>
+            <thead>
+              <tr>
+                <th scope="col">Ear</th>
+                {chartData.map((d) => <th key={d.freq} scope="col">{d.freq} Hz</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Right</th>
+                {chartData.map((d) => (
+                  <td key={d.freq}>{d.rAC_nr ? 'No response' : d.rAC ?? 'not tested'}</td>
+                ))}
+              </tr>
+              <tr>
+                <th scope="row">Left</th>
+                {chartData.map((d) => (
+                  <td key={d.freq}>{d.lAC_nr ? 'No response' : d.lAC ?? 'not tested'}</td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-slate-500">
             <span><span className="font-bold text-red-600">O / [</span> right AC / BC</span>
             <span><span className="font-bold text-blue-600">X / ]</span> left AC / BC</span>
@@ -507,6 +540,43 @@ export default function Dashboard() {
             </Card>
           )}
 
+          {analysis.norms && (
+            <div data-tour="norms">
+              <Card title="Compared with peers"
+                badge={<span className="text-[10px] font-medium text-slate-400">ISO 7029</span>}>
+                {analysis.norms.hearing_age != null && (
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-bold text-slate-900">
+                      {analysis.norms.hearing_age}
+                    </span>
+                    <span className="text-[12.5px] text-slate-500">
+                      hearing age · actual {patient.age}
+                    </span>
+                    {analysis.norms.age_gap > 3 && (
+                      <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                        +{analysis.norms.age_gap} yrs
+                      </span>
+                    )}
+                  </div>
+                )}
+                {['right', 'left'].map((side) => {
+                  const n = analysis.norms[side]
+                  if (!n) return null
+                  return (
+                    <p key={side} className="mt-2 text-[12.5px] leading-snug text-slate-600">
+                      <b className={side === 'right' ? 'text-red-600' : 'text-blue-600'}>
+                        {side.charAt(0).toUpperCase()}:
+                      </b>{' '}{n.summary}
+                    </p>
+                  )
+                })}
+                <p className="mt-2 text-[10.5px] leading-snug text-slate-400">
+                  {analysis.norms.right?.caveat || analysis.norms.left?.caveat}
+                </p>
+              </Card>
+            </div>
+          )}
+
           <Card title="Cochlear damage map"
             badge={
               <div className="flex rounded-lg bg-slate-100 p-0.5">
@@ -554,7 +624,8 @@ export default function Dashboard() {
 
       {/* cross-modal test battery */}
       {analysis.battery?.tests_run > 1 && (
-        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+          data-tour="battery">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
               Test battery — do the tests agree?

@@ -236,6 +236,28 @@ export default function Progression() {
 
       {result && !busy && (
         <>
+          {result.progression.narrative && (
+            <div className={`mt-5 rounded-2xl border p-5 shadow-sm ${
+              result.progression.narrative.flagged
+                ? 'border-rose-200 bg-rose-50/50' : 'border-emerald-200 bg-emerald-50/40'}`}>
+              <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+                What changed
+              </h2>
+              <p className={`mt-1 text-[15px] font-semibold ${
+                result.progression.narrative.flagged ? 'text-rose-800' : 'text-emerald-800'}`}>
+                {result.progression.narrative.headline}
+              </p>
+              <ul className="mt-2 space-y-1.5">
+                {result.progression.narrative.lines.map((line, i) => (
+                  <li key={i} className="flex gap-2 text-[13.5px] leading-relaxed text-slate-700">
+                    <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-slate-400" />
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">

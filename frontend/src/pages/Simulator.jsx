@@ -302,7 +302,8 @@ export default function Simulator() {
 
       {/* The big three-state toggle */}
       <div className="mt-6 rounded-3xl border border-slate-200/80 bg-white p-6 shadow-sm">
-        <div className="relative mx-auto grid max-w-2xl grid-cols-3 rounded-2xl bg-slate-100 p-2">
+        <div className="relative mx-auto grid max-w-2xl grid-cols-3 rounded-2xl bg-slate-100 p-2"
+          data-tour="ab-toggle" role="group" aria-label="Listening mode">
           <div
             className={`absolute inset-y-2 w-[calc(33.333%-5.5px)] rounded-xl bg-white shadow-md ring-1 transition-all duration-300 ${TONE[MODES.find((m) => m.id === mode).tone].ring}`}
             style={{ left: `calc(${MODES.findIndex((m) => m.id === mode) * 33.333}% + 8px)` }}

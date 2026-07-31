@@ -111,7 +111,81 @@ def compare_tests(baseline: dict, current: dict) -> dict:
 
     ``baseline``/``current`` are dicts with 'right'/'left' -> {'ac': {...}}.
     """
-    return {
+    result = {
         "right": compare_ears(baseline["right"]["ac"], current["right"]["ac"]),
         "left": compare_ears(baseline["left"]["ac"], current["left"]["ac"]),
+    }
+    result["narrative"] = narrate(result)
+    return result
+
+
+def narrate(progression: dict) -> dict:
+    """Say in words what the delta chart shows.
+
+    A bar chart of threshold shifts requires the reader to already know
+    which shifts matter. This states it: what changed, where, whether it
+    meets a monitoring criterion, and what that implies.
+    """
+    lines: List[str] = []
+    flagged = False
+
+    for side in ("right", "left"):
+        p = progression[side]
+        deltas = {f: d for f, d in p["deltas"].items() if d is not None}
+        if not deltas:
+            lines.append(f"{side.capitalize()} ear: no paired frequencies to compare.")
+            continue
+
+        worsened = {f: d for f, d in deltas.items() if d >= 10}
+        improved = {f: d for f, d in deltas.items() if d <= -10}
+
+        if not worsened and not improved:
+            lines.append(
+                f"{side.capitalize()} ear: stable — every frequency is within 10 dB of "
+                "the baseline, which is ordinary test-retest variation."
+            )
+            continue
+
+        if worsened:
+            worst_freq = max(worsened, key=lambda f: worsened[f])
+            freq_list = ", ".join(f"{f} Hz" for f in sorted(worsened))
+            lines.append(
+                f"{side.capitalize()} ear: hearing has worsened at {freq_list}, most at "
+                f"{worst_freq} Hz ({worsened[worst_freq]:+g} dB)."
+            )
+            if all(f >= 2000 for f in worsened):
+                lines.append(
+                    f"The change is confined to the high frequencies — the pattern "
+                    "noise exposure and ageing both produce."
+                )
+        if improved:
+            lines.append(
+                f"{side.capitalize()} ear: thresholds improved at "
+                f"{', '.join(f'{f} Hz' for f in sorted(improved))}, which usually means "
+                "a resolved middle-ear problem or a difference in test conditions."
+            )
+
+        if p["osha_sts"]["flag"]:
+            flagged = True
+            lines.append(
+                f"This meets the OSHA standard threshold shift criterion "
+                f"({p['osha_sts']['avg_shift']:g} dB average at 2k/4k Hz) — it is a "
+                "recordable occupational shift, not incidental variation."
+            )
+        if p["asha_ototoxicity"]["flag"]:
+            flagged = True
+            lines.append(
+                "It also meets ASHA ototoxicity-monitoring criteria: "
+                + "; ".join(p["asha_ototoxicity"]["triggers"]) + "."
+            )
+
+    return {
+        "lines": lines,
+        "flagged": flagged,
+        "headline": (
+            "Significant change since the baseline — this shift meets a formal "
+            "monitoring criterion."
+            if flagged else
+            "No shift meets a formal monitoring criterion."
+        ),
     }

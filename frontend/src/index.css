@@ -24,3 +24,57 @@ body {
 .animate-pulse-soft {
   animation: pulse-soft 2.2s ease-in-out infinite;
 }
+
+/* A hearing-health tool that ignores accessibility fails on its own terms. */
+
+/* Visible focus for keyboard users on every interactive element. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-teal-600, #0d9488);
+  outline-offset: 2px;
+  border-radius: 0.375rem;
+}
+
+/* Content that only a screen reader should reach. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Skip link — the first thing a keyboard user meets. */
+.skip-link {
+  position: absolute;
+  left: 0.5rem;
+  top: -3rem;
+  z-index: 100;
+  transition: top 0.15s;
+}
+.skip-link:focus {
+  top: 0.5rem;
+}
+
+/* Respect a stated preference for less motion — vestibular symptoms often
+   travel with hearing loss, so this audience is more likely to need it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  body { background: white; }
+  .print\:hidden { display: none !important; }
+  main { padding: 0 !important; margin: 0 !important; }
+  section, .rounded-2xl { break-inside: avoid; box-shadow: none !important; }
+}

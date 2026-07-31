@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body
 from app.clinical import rules
 from app.clinical.consistency import battery_review, reconcile_ear
 from app.clinical.immittance import analyze_immittance
+from app.clinical.norms import analyze_norms
 from app.clinical.oae import analyze_oae
 from app.clinical.prescription import prescribe, verify_fitting
 from app.clinical.safety import safety_review, sort_alerts
@@ -18,6 +19,7 @@ from app.models.schemas import EarData, TestRecord, ear_to_numeric
 from app.services.demo_cases import DEMO_CASES, PROGRESSION_PAIR
 from app.services.phonemes import phoneme_audibility
 from app.services.sii import sii_bundle, word_intelligibility
+from app.services.verdict import build_verdict
 
 router = APIRouter(prefix="/api")
 
@@ -164,8 +166,13 @@ def analyze(record: TestRecord):
         "oae": oae,
         "battery": battery,
         "fitting": fitting,
+        "norms": analyze_norms(
+            record.right.ac, record.left.ac,
+            record.patient.age, record.patient.sex,
+        ),
     }
     result["triage"] = triage_case(result)
+    result["verdict"] = build_verdict(result)
     result["timing"] = {
         "interpretation_ms": round((time.perf_counter() - started) * 1000, 1),
         "note": "Server-side interpretation time, excluding network and rendering.",
