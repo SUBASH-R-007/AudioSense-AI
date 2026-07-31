@@ -56,7 +56,7 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 | 📮 **One-click ENT referral** | A referral letter carrying the exact red-flag criteria met, the audiogram findings and the battery result |
 | 📢 **Noise-dose calculator** | OSHA and NIOSH dose from real task exposures, with NRR derating — grounding the forecast in exposure rather than trend alone |
 | 🗺 **Population atlas** | PCA projection of all 12,000 training audiograms with the patient plotted, making the out-of-distribution flag visual |
-| 🔌 **Offline ↔ API toggle** | Fully functional with **zero API keys**. Optional providers: Gemini (free tier), Anthropic, Groq, OpenRouter, Ollama — with automatic fallback to offline if a call fails |
+| 🔌 **Offline ↔ API toggle** | Fully functional with **zero API keys**. Optional providers: Gemini (free tier), OpenAI, Anthropic, Groq, OpenRouter, Ollama — with automatic fallback to offline if a call fails |
 
 ## 🏗 Architecture
 
@@ -79,7 +79,7 @@ flowchart LR
         DIG[/api/digitize/] --> CV[OpenCV grid + symbol detection]
         REP[/api/report/] --> ENGINE{AI mode?}
         ENGINE -- offline --> TPL[Template engine<br/>+ deterministic verifier]
-        ENGINE -- api --> LLM[Gemini / Claude / Groq /<br/>OpenRouter / Ollama<br/>generator → verifier]
+        ENGINE -- api --> LLM[Gemini / OpenAI / Claude / Groq /<br/>OpenRouter / Ollama<br/>generator → verifier]
         PROGAPI[/api/progression/] --> OSHA[OSHA STS + ASHA criteria<br/>+ exposed vs protected forecast]
         PDF[/api/pdf/] --> RL[reportlab + QR verification hash]
     end
@@ -160,7 +160,7 @@ backend/
                    report.py (template+LLM, verifier) · languages.py (6 languages)
                    records.py (SQLite visits) · referral.py (ENT letter)
                    validation.py (expert-label agreement, Cohen's kappa)
-                   llm_provider.py (5 providers) · ai_config.py · pdf.py (QR hash)
+                   llm_provider.py (6 providers) · ai_config.py · pdf.py (QR hash)
   app/routers/     analyze · prescription · speech-words · digitize · report · progression
                    batch · pdf · settings · feedback · handout (QR) · clinic (records,
                    noise-dose, referral, atlas)

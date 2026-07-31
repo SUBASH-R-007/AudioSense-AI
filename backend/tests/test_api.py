@@ -137,10 +137,22 @@ def test_pdf_generation_and_verify_roundtrip():
     assert client.get("/api/verify/deadbeef00000000").json()["valid"] is False
 
 
+def _isolate_provider_env(monkeypatch):
+    """Clear any provider keys the developer happens to have exported.
+
+    Without this the default-mode assertions depend on the machine: a
+    real OPENAI_API_KEY in the environment legitimately seeds API mode.
+    """
+    import app.services.ai_config as ai_config
+    for env, _ in ai_config.ENV_SEEDS:
+        monkeypatch.delenv(env, raising=False)
+
+
 def test_ai_settings_toggle_and_persistence(tmp_path, monkeypatch):
     import app.services.ai_config as ai_config
     monkeypatch.setattr(ai_config, "CONFIG_PATH", tmp_path / "ai_config.json")
     monkeypatch.setattr(ai_config, "_current", None)
+    _isolate_provider_env(monkeypatch)
 
     r = client.get("/api/settings/ai")
     assert r.status_code == 200

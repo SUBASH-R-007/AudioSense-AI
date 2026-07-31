@@ -32,6 +32,14 @@ PROVIDERS = {
         "free_tier": False,
         "key_hint": "Key from console.anthropic.com",
     },
+    "openai": {
+        "label": "OpenAI",
+        "default_model": "gpt-4o",
+        "needs_key": True,
+        "supports_vision": True,
+        "free_tier": False,
+        "key_hint": "Key from platform.openai.com",
+    },
     "groq": {
         "label": "Groq",
         "default_model": "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -61,6 +69,7 @@ PROVIDERS = {
 ENV_SEEDS = [
     ("GEMINI_API_KEY", "gemini"),
     ("ANTHROPIC_API_KEY", "anthropic"),
+    ("OPENAI_API_KEY", "openai"),
     ("GROQ_API_KEY", "groq"),
     ("OPENROUTER_API_KEY", "openrouter"),
 ]
