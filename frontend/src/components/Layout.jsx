@@ -9,6 +9,7 @@ const NAV = [
   { to: '/screening', label: 'Screening Test', icon: 'M12 18.5a6.5 6.5 0 100-13 6.5 6.5 0 000 13zm0-9.5a3 3 0 100 6 3 3 0 000-6z' },
   { to: '/dashboard', label: 'Results Dashboard', icon: 'M3 13h4v8H3zm7-9h4v17h-4zm7 5h4v12h-4z' },
   { to: '/simulator', label: 'Hearing Simulator', icon: 'M3 10v4m4-8v12m4-15v18m4-14v10m4-7v4' },
+  { to: '/listening-lab', label: 'Listening Lab', icon: 'M12 3v18M8 7v10M4 10v4M16 6v12M20 9v6' },
   { to: '/progression', label: 'Progression', icon: 'M3 17l6-6 4 4 8-8m0 0v5m0-5h-5' },
   { to: '/batch', label: 'Batch Analysis', icon: 'M4 6h16M4 12h16M4 18h10' },
   { to: '/records', label: 'Patient Records', icon: 'M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2zM8 9h4m-4 4h8m-8 4h8' },

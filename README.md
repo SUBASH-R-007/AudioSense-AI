@@ -22,6 +22,9 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 
 | | |
 |---|---|
+| 🧭 **Spatial hearing test** | HRTF-rendered sound placed around the listener, each ear through its own loss. With normal ears the interaural difference **flips sign** with direction; with asymmetric loss it stays positive whichever side the sound came from — the cue is gone, which is why the patient turns the wrong way. Measured, not asserted |
+| 🍽 **Digits-in-noise** | The adaptive digit-triplet test behind national screening programmes. Only the speech-to-noise *ratio* matters, so it works on uncalibrated equipment — and it catches the patient with a clean audiogram who still cannot follow a conversation |
+| 🔔 **Tinnitus matching + notched therapy** | Match pitch and loudness, then generate a notched masker that carves a half-octave hole at exactly that pitch while leaving its neighbours intact |
 | 🎯 **The answer, first** | The dashboard opens with one plain sentence, the figures that carry the decision, and the single next step — everything below it is the evidence |
 | 🧭 **Guided tour** | "Show me around" spotlights each part of the interface and says why it exists, so the software explains itself |
 | 📅 **Hearing age (ISO 7029)** | "These ears are performing like a typical 55-year-old's — 29 years older than the patient." One line that does more counseling work than a page of decibels |
@@ -45,6 +48,7 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 | 🍌 **Phoneme map + SII** | The speech banana on the audiogram, plus a band-importance-weighted **Speech Intelligibility Index** in quiet, in noise, and aided |
 | 🐚 **Cochlear damage map** | Greenwood frequency-place mapping shows *where on the basilar membrane* the loss sits — the 4 kHz notch as a glowing lesion at the basal turn |
 | 📈 **5-year forecast** | Projects continued exposure vs effective hearing protection, with an uncertainty band and preventable-loss figure in dB |
+| 🧠 **Deep ensemble, honestly benchmarked** | Five networks whose disagreement separates "this is hard" from "I have never seen this". Run head-to-head with the forest: the ensemble is marginally more accurate, the **forest is better calibrated**, and the forest stays primary — the comparison is in the app at `/api/model/comparison` |
 | 🧠 **ML pattern classifier** | RandomForest, calibrated probabilities, 7 clinical configurations, per-frequency explanation glow on the chart, IsolationForest OOD → "atypical — priority human review" |
 | 🤔 **Counterfactuals + case retrieval** | "If 4 kHz were 10 dB better, this would classify as flat" — plus the 12 nearest reference audiograms and how many agree |
 | ✍️ **Clinician correction loop** | Disagree with the AI and the override is logged with its thresholds for the next training run — human-in-the-loop MLOps, not a black box |
@@ -100,6 +104,7 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python -m app.ml.generate_dataset
 .venv\Scripts\python -m app.ml.train
+.venv\Scripts\python -m app.ml.deep
 .venv\Scripts\python -m uvicorn app.main:app --port 8000
 ```
 
@@ -113,7 +118,7 @@ npm run dev
 
 Open **http://localhost:5173**. No API key needed — everything works offline. To enable LLM narratives, click the **AI Engine** panel (bottom-left gear) and paste a free Gemini key from [aistudio.google.com](https://aistudio.google.com).
 
-**Tests** (268 tests: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
+**Tests** (316 tests: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
 
 ```bash
 cd backend
@@ -140,6 +145,8 @@ Training artifacts land in `backend/data/`: `confusion_matrix.png` + `accuracy_r
 
 **2:25 — Prevention.** Progression page: OSHA STS flagged after 3 years of noise exposure; the 5-year projection shows *Moderate if exposure continues* vs *Mild with protection* — **15.6 dB of preventable hearing**, disability rising 6% → 33%.
 
+**2:25 — The Listening Lab.** Hand a judge headphones and open **Spatial hearing**. On *normal ears* they place the noise burst easily. Switch to *this patient's ears* — with the asymmetric case the sound now seems to come from the good side no matter where it actually is, and their localization error triples. "This is why he steps into traffic." Then **Speech in noise** — the digit test that catches a clean audiogram with real disability — and **Tinnitus**, matched and then notched live.
+
 **2:40 — Scale + reach.** Batch page: 8-patient CSV clears in **5 seconds — 89 audiograms a minute** — and comes back as a *worklist*: two flagged for an audiologist, six drafts auto-releasable. Then **🔬 Validate vs expert labels**: rules 100% (κ=1.0), ML pattern 83.3% (κ=0.795) — "we quote the number measured against experts, not the one measured against our own generator." Camp view adds *"38% of this cohort shows a 4 kHz noise notch"*. Counseling in six languages, read aloud, or handed over as a **QR the patient scans onto their own phone**. The **Screening Test** page measures a judge's own hearing live into the same pipeline. Installable and offline-capable; add any LLM key for narrative reports, with automatic fallback so the demo can't die.
 
 **2:55 — Close.** "Deterministic clinical core, calibrated ML with an honesty flag, and empathy you can hear. AudioSense AI."
@@ -151,6 +158,7 @@ backend/
   app/clinical/    rules.py (WHO/ABG/RPwD, cited docstrings) · progression.py (OSHA/ASHA)
                    safety.py (red flags + masking validity) · speech_audiometry.py (SRT/WRS/rollover)
                    triage.py (priority + auto-release routing) · norms.py (ISO 7029)
+                   listening_lab.py (localization · speech-in-noise · tinnitus)
                    immittance.py (tympanograms + reflexes) · oae.py (emissions)
                    consistency.py (cross-modal reconciliation) · noise_dose.py (OSHA/NIOSH)
                    prescription.py (NAL-R + aided verification) · forecast.py (5-year projection)
