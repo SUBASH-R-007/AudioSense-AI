@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, AC_FREQS, FREQ_LABELS } from '../lib/api.js'
+import { api, apiUrl, AC_FREQS, FREQ_LABELS } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
 import { HearingSimulator } from '../audio/simulatorGraph.js'
 import { SOUNDSCAPES, buildSoundscape } from '../audio/soundscapes.js'
@@ -115,7 +115,7 @@ export default function Simulator() {
 
   const scoreTranscript = useCallback(async (text) => {
     try {
-      const res = await fetch('/api/speech-words', {
+      const res = await fetch(apiUrl('/api/speech-words'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ac: thresholds, text }),

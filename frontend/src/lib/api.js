@@ -1,4 +1,21 @@
-// Thin API client — all calls go through the Vite dev proxy to :8000.
+﻿// Thin API client.
+//
+// Locally, VITE_API_BASE_URL is unset, so every path stays relative and the
+// Vite dev proxy forwards /api to the backend on :8000 — nothing changes.
+//
+// In production the frontend and backend live on different hosts (Vercel and
+// Railway), so the base URL is injected at build time and prefixed here. This
+// is the only place that needs to know, which is why every call in the app
+// goes through this module.
+
+const RAW_BASE = import.meta.env?.VITE_API_BASE_URL ?? ''
+/** Normalised origin for the API, or '' for same-origin + dev proxy. */
+export const API_BASE = RAW_BASE.replace(/\/+$/, '')
+
+/** Absolute URL for an API path. Exported for the few callers outside this file. */
+export const apiUrl = (path) => `${API_BASE}${path}`
+
+const http = (path, options) => fetch(apiUrl(path), options)
 
 async function json(res) {
   if (!res.ok) {
@@ -10,18 +27,18 @@ async function json(res) {
 }
 
 export const api = {
-  health: () => fetch('/api/health').then(json),
-  demoCases: () => fetch('/api/demo-cases').then(json),
+  health: () => http('/api/health').then(json),
+  demoCases: () => http('/api/demo-cases').then(json),
 
   analyze: (record) =>
-    fetch('/api/analyze', {
+    http('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(record),
     }).then(json),
 
   prescription: (ear) =>
-    fetch('/api/prescription', {
+    http('/api/prescription', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ear),
@@ -30,18 +47,18 @@ export const api = {
   digitize: (file) => {
     const fd = new FormData()
     fd.append('file', file)
-    return fetch('/api/digitize', { method: 'POST', body: fd }).then(json)
+    return http('/api/digitize', { method: 'POST', body: fd }).then(json)
   },
 
   report: (analysis) =>
-    fetch('/api/report', {
+    http('/api/report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(analysis),
     }).then(json),
 
   progression: (baseline, current) =>
-    fetch('/api/progression', {
+    http('/api/progression', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ baseline, current }),
@@ -50,23 +67,23 @@ export const api = {
   batch: (file) => {
     const fd = new FormData()
     fd.append('file', file)
-    return fetch('/api/batch', { method: 'POST', body: fd }).then(json)
+    return http('/api/batch', { method: 'POST', body: fd }).then(json)
   },
 
   validate: (file) => {
     const fd = new FormData()
     fd.append('file', file)
-    return fetch('/api/validate', { method: 'POST', body: fd }).then(json)
+    return http('/api/validate', { method: 'POST', body: fd }).then(json)
   },
 
   batchPhotos: (files) => {
     const fd = new FormData()
     for (const f of files) fd.append('files', f)
-    return fetch('/api/batch-photos', { method: 'POST', body: fd }).then(json)
+    return http('/api/batch-photos', { method: 'POST', body: fd }).then(json)
   },
 
   bulkReports: async (cases) => {
-    const res = await fetch('/api/bulk-reports', {
+    const res = await http('/api/bulk-reports', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cases }),
@@ -76,7 +93,7 @@ export const api = {
   },
 
   pdf: async (payload) => {
-    const res = await fetch('/api/pdf', {
+    const res = await http('/api/pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -86,23 +103,23 @@ export const api = {
   },
 
   feedback: (correction) =>
-    fetch('/api/feedback', {
+    http('/api/feedback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(correction),
     }).then(json),
 
-  feedbackStats: () => fetch('/api/feedback').then(json),
+  feedbackStats: () => http('/api/feedback').then(json),
 
   handout: (payload) =>
-    fetch('/api/handout', {
+    http('/api/handout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }).then(json),
 
   referral: async (payload) => {
-    const res = await fetch('/api/referral', {
+    const res = await http('/api/referral', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -112,70 +129,70 @@ export const api = {
   },
 
   saveVisit: (analysis) =>
-    fetch('/api/records/visit', {
+    http('/api/records/visit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(analysis),
     }).then(json),
 
   patients: (q = '') =>
-    fetch(`/api/records/patients?q=${encodeURIComponent(q)}`).then(json),
-  patientHistory: (id) => fetch(`/api/records/patients/${id}`).then(json),
+    http(`/api/records/patients?q=${encodeURIComponent(q)}`).then(json),
+  patientHistory: (id) => http(`/api/records/patients/${id}`).then(json),
 
   noiseDose: (payload) =>
-    fetch('/api/noise-dose', {
+    http('/api/noise-dose', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }).then(json),
 
-  atlas: (limit = 700) => fetch(`/api/atlas?limit=${limit}`).then(json),
+  atlas: (limit = 700) => http(`/api/atlas?limit=${limit}`).then(json),
   atlasProject: (ear) =>
-    fetch('/api/atlas/project', {
+    http('/api/atlas/project', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ear),
     }).then(json),
 
   localization: (trials, right_ac, left_ac) =>
-    fetch('/api/listening/localization', {
+    http('/api/listening/localization', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trials, right_ac, left_ac }),
     }).then(json),
 
   predictLocalization: (right_ac, left_ac) =>
-    fetch('/api/listening/predict-localization', {
+    http('/api/listening/predict-localization', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ right_ac, left_ac }),
     }).then(json),
 
   digitsInNoise: (reversals, right_ac, left_ac) =>
-    fetch('/api/listening/digits-in-noise', {
+    http('/api/listening/digits-in-noise', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reversals, right_ac, left_ac }),
     }).then(json),
 
   tinnitus: (payload) =>
-    fetch('/api/listening/tinnitus', {
+    http('/api/listening/tinnitus', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }).then(json),
 
-  modelComparison: () => fetch('/api/model/comparison').then(json),
+  modelComparison: () => http('/api/model/comparison').then(json),
 
-  aiSettings: () => fetch('/api/settings/ai').then(json),
+  aiSettings: () => http('/api/settings/ai').then(json),
   updateAiSettings: (update) =>
-    fetch('/api/settings/ai', {
+    http('/api/settings/ai', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update),
     }).then(json),
   testAiSettings: (update) =>
-    fetch('/api/settings/ai/test', {
+    http('/api/settings/ai/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update || {}),
