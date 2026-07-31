@@ -6,7 +6,8 @@
 // the network gone. API calls are network-first (they need the backend),
 // but a cached response is served if the request fails.
 
-const CACHE = 'audiosense-v1'
+// Bump this on any change to the caching strategy — it drops old caches.
+const CACHE = 'audiosense-v2'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg',
   '/audio/speech_sample.wav']
 
@@ -46,7 +47,23 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  // App shell and assets: cache first, revalidate in the background.
+  // Navigations go to the network first. Serving the app shell from cache
+  // would keep showing yesterday's build after a deploy; falling back to the
+  // cache only when the network fails preserves offline use.
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((res) => {
+          const copy = res.clone()
+          caches.open(CACHE).then((c) => c.put(request, copy))
+          return res
+        })
+        .catch(() => caches.match(request).then((c) => c || caches.match('/index.html'))),
+    )
+    return
+  }
+
+  // Hashed assets: cache first, revalidate in the background.
   event.respondWith(
     caches.match(request).then((cached) => {
       const network = fetch(request)

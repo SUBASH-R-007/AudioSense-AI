@@ -4,10 +4,13 @@ __pycache__/
 backend/.venv/
 .pytest_cache/
 
-# Generated ML artifacts (regenerate: python -m app.ml.generate_dataset && python -m app.ml.train)
-backend/data/dataset.csv
-backend/data/model_bundle.joblib
-backend/data/deep_ensemble.joblib
+# ML artifacts ARE committed (~8 MB total).
+#
+# Training peaks near 500 MB of memory, which is at the ceiling of most free
+# hosting tiers, so building them on deploy fails unpredictably. Shipping them
+# makes every platform viable, keeps deploys fast, and guarantees the deployed
+# model is byte-identical to the tested one.
+# Regenerate with: python -m app.ml.generate_dataset && python -m app.ml.train
 
 # Runtime state — API keys, patient records and issued handouts
 backend/data/ai_config.json
