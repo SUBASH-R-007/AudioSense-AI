@@ -94,10 +94,22 @@ export default function Otoscopy() {
   const setResult = setOtoscopy
   const [busy, setBusy] = useState(false)
 
+  const [fromImage, setFromImage] = useState(null)
+
   useEffect(() => {
     api.otoscopyAtlas().then(setAtlas).catch(() => setAtlas(null))
     api.otoscopyModel().then(setCard).catch(() => setCard(null))
   }, [])
+
+  // The image's own differential, recomputed whenever a new one is read.
+  useEffect(() => {
+    if (!result) { setFromImage(null); return }
+    let cancelled = false
+    api.diseasesFromOtoscopy(result)
+      .then((r) => { if (!cancelled) setFromImage(r) })
+      .catch(() => { if (!cancelled) setFromImage(null) })
+    return () => { cancelled = true }
+  }, [result])
 
   async function run(file) {
     if (!file) return
@@ -329,6 +341,66 @@ export default function Otoscopy() {
                 </p>
               )}
             </div>
+
+            {/* The differential this image produces on its own. No history and
+                no audiogram — a scope goes in the ear before the patient is in
+                the booth, and the appearance already narrows the list. */}
+            {fromImage?.available && (
+              <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <h3 className="text-[15px] font-semibold text-slate-900">
+                    Diseases this appearance points to
+                  </h3>
+                  <span className="text-[11.5px] text-slate-500">from the image alone</span>
+                </div>
+                <p className="mt-1.5 text-[12.5px] leading-relaxed text-slate-700">
+                  {fromImage.headline}
+                </p>
+
+                {fromImage.differential.length > 0 && (
+                  <ul className="mt-3 space-y-2">
+                    {fromImage.differential.slice(0, 5).map((d, i) => (
+                      <li key={d.key}>
+                        <div className="flex items-baseline justify-between gap-3 text-[12.5px]">
+                          <span className={i === 0 && fromImage.separated
+                            ? 'font-semibold text-slate-900' : 'text-slate-700'}>
+                            {d.name}
+                          </span>
+                          <span className="font-mono text-[11.5px] text-slate-500">
+                            {Math.round(d.score * 100)}
+                          </span>
+                        </div>
+                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                          <div className="h-full rounded-full bg-teal-500"
+                            style={{ width: `${Math.max(3, Math.round(d.score * 100))}%` }} />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {fromImage.other_conditions.length > 0 && (
+                  <p className="mt-3 text-[12px] leading-relaxed text-slate-600">
+                    <span className="font-semibold">Also consider:</span>{' '}
+                    {fromImage.other_conditions.join(' · ')}
+                  </p>
+                )}
+                {fromImage.argues_against.length > 0 && (
+                  <p className="mt-1.5 text-[12px] leading-relaxed text-slate-600">
+                    <span className="font-semibold text-rose-700">Argues against:</span>{' '}
+                    {fromImage.argues_against.map((d) => d.name).join(' · ')}
+                  </p>
+                )}
+                {fromImage.reasoning.map((r) => (
+                  <p key={r} className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+                    {r}
+                  </p>
+                ))}
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
+                  {fromImage.note}
+                </p>
+              </div>
+            )}
 
             {/* Does the history confirm the image? This is the check the
                 classifier's weakness makes most valuable — two independent

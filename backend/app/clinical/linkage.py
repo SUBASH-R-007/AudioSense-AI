@@ -26,8 +26,13 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence
 
 from app.clinical.symptom_kb import (
-    DISEASES, OTOSCOPY_LINKS, REFLEX_LINKS, SYMPTOM_LABELS, TYMPANOGRAM_LINKS,
+    DISEASE_AUDIOGRAM, DISEASES, OTOSCOPY_DISEASE_LINKS, OTOSCOPY_LINKS,
+    REFLEX_LINKS, SYMPTOM_LABELS, TYMPANOGRAM_LINKS,
 )
+
+#: Frequencies compared when matching an audiogram against a disease's
+#: characteristic shape.
+MATCH_FREQS = [250, 500, 1000, 2000, 4000, 8000]
 
 #: WHO 2021 grade boundaries, reused so linkage speaks the same language as
 #: the rules engine rather than inventing a second vocabulary.
@@ -180,6 +185,273 @@ def otoscopy_vs_symptoms(otoscopy: Optional[dict],
         "unexplained_symptoms": [_label(s) for s in unexplained],
         "note": link["note"],
     })
+
+
+# ==========================================================================
+# 1b. otoscopy  ->  diseases, with nothing else recorded
+# ==========================================================================
+def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
+    """A ranked differential from the image alone.
+
+    Deliberately independent of the history. A scope goes in the ear before
+    the patient is in the booth, and the appearance already narrows the
+    differential — requiring a symptom history first would make the image
+    useless at the moment it is actually taken.
+
+    Uncertainty in the classifier is carried through rather than discarded:
+    the ranked class probabilities weight the disease scores, so a picture the
+    model cannot separate produces a differential that is correspondingly
+    spread out instead of a confident answer built on a coin flip.
+    """
+    if not otoscopy:
+        return {"available": False, "note": "No otoscope image recorded."}
+
+    ranked_patterns = otoscopy.get("ranked") or []
+    if not ranked_patterns:
+        label = (otoscopy.get("prediction") or {}).get("label")
+        if not label:
+            return {"available": False, "note": "No otoscopic pattern to work from."}
+        ranked_patterns = [{"label": label, "probability": 1.0}]
+
+    scores: Dict[str, float] = {}
+    excluded: Dict[str, float] = {}
+    other: List[str] = []
+    reasoning: List[str] = []
+
+    for entry in ranked_patterns:
+        weight = float(entry.get("probability", 0.0))
+        if weight < 0.02:
+            continue
+        link = OTOSCOPY_DISEASE_LINKS.get(entry["label"])
+        if not link:
+            continue
+        for key, strength in link["supports"].items():
+            scores[key] = scores.get(key, 0.0) + weight * strength
+        for key in link["excludes"]:
+            excluded[key] = excluded.get(key, 0.0) + weight
+        if weight >= 0.25:
+            other.extend(c for c in link["other"] if c not in other)
+            if link["reasoning"] not in reasoning:
+                reasoning.append(link["reasoning"])
+
+    # A disease the leading appearance argues against is removed from the
+    # ranking rather than quietly out-scored, and reported separately.
+    for key, weight in excluded.items():
+        if weight >= 0.5:
+            scores.pop(key, None)
+
+    top = max(scores.values()) if scores else 0.0
+    differential = sorted(
+        ({"key": k, "name": _disease_name(k),
+          "score": round(v / top, 3) if top else 0.0,
+          "raw": round(v, 3)} for k, v in scores.items()),
+        key=lambda d: (-d["score"], d["name"]),
+    )
+    # A pattern the classifier gave 3% to still drags its whole disease list in
+    # at 3% of the weight. Those are not candidates, they are arithmetic, and
+    # printing them makes the differential look longer than it is.
+    differential = [d for d in differential if d["score"] >= 0.05]
+
+    # A normal drum supports every cochlear and neural cause equally, so the
+    # leaders tie. Presenting a tie as a ranking would imply a discrimination
+    # the image cannot make.
+    tied = [d["name"] for d in differential
+            if differential and d["score"] >= differential[0]["score"] - 1e-6]
+    separated = len(tied) == 1 and (
+        len(differential) == 1
+        or differential[0]["score"] - differential[1]["score"] >= 0.15)
+
+    leading = (otoscopy.get("prediction") or {}).get("label")
+    if leading == "normal":
+        headline = ("A normal drum excludes the middle-ear causes; it cannot "
+                    "rank the cochlear and neural ones against each other.")
+    elif separated:
+        headline = f"The appearance points to {differential[0]['name']}."
+    elif len(tied) > 1:
+        headline = ("The appearance does not discriminate between "
+                    + ", ".join(tied[:3]) + ".")
+    elif differential:
+        headline = (f"{differential[0]['name']} leads, but the appearance does "
+                    "not separate it clearly.")
+    else:
+        headline = "No disease in the reference set is linked to this appearance."
+
+    return {
+        "available": True,
+        "from": "otoscopy",
+        "pattern": otoscopy["prediction"]["name"],
+        "certainty": otoscopy["prediction"].get("certainty"),
+        "differential": differential,
+        "separated": separated,
+        "tied": tied if len(tied) > 1 else [],
+        "headline": headline,
+        "argues_against": [{"key": k, "name": _disease_name(k)}
+                           for k in sorted(excluded) if excluded[k] >= 0.5],
+        "other_conditions": other,
+        "reasoning": reasoning,
+        "note": ("Ranked from the image alone, weighted by the classifier's own "
+                 "uncertainty. It needs no history and no audiogram — and it "
+                 "inherits the classifier's accuracy, so read it as a prompt "
+                 "list rather than a conclusion."),
+    }
+
+
+# ==========================================================================
+# 1c. audiogram  ->  diseases, with nothing else recorded
+# ==========================================================================
+def _ac_numeric(analysis: dict, side: str) -> Dict[int, float]:
+    raw = ((analysis.get("thresholds") or {}).get(side) or {}).get("ac") or {}
+    out: Dict[int, float] = {}
+    for freq, value in raw.items():
+        if value is None:
+            continue
+        out[int(freq)] = 120.0 if value == "NR" else float(value)
+    return out
+
+
+def _shape_similarity(measured: Dict[int, float],
+                      reference: Dict[int, float]) -> Optional[float]:
+    """How closely two audiograms agree in SHAPE, ignoring overall level.
+
+    Both curves are centred on their own mean before comparing, so a 4 kHz
+    notch matches a 4 kHz notch whether the patient's is 20 dB deep or 50.
+    Level is scored separately against the disease's expected PTA range —
+    keeping the two apart is what lets the result say *which* of them is wrong.
+    """
+    shared = [f for f in MATCH_FREQS if f in measured and f in reference]
+    if len(shared) < 4:
+        return None
+    m_mean = sum(measured[f] for f in shared) / len(shared)
+    r_mean = sum(reference[f] for f in shared) / len(shared)
+    deviation = sum(abs((measured[f] - m_mean) - (reference[f] - r_mean))
+                    for f in shared) / len(shared)
+    # 25 dB of mean shape error is treated as no resemblance at all.
+    return max(0.0, 1.0 - deviation / 25.0)
+
+
+def audiogram_vs_diseases(analysis: Optional[dict], side: str = "right") -> dict:
+    """A ranked differential from the thresholds alone.
+
+    Three independent components, reported separately because they fail
+    separately: the **shape** of the curve, the **degree** against the range
+    each disease produces, and the **type** from the air-bone gap. A disease
+    can match the shape perfectly and be excluded by the type, and a clinician
+    needs to see which of the three disagreed.
+    """
+    if not analysis:
+        return {"available": False, "note": "No audiogram recorded."}
+
+    measured = _ac_numeric(analysis, side)
+    if len(measured) < 4:
+        return {"available": False,
+                "note": f"Too few {side}-ear thresholds to match a pattern."}
+
+    rules_ear = (analysis.get("rules") or {}).get(side) or {}
+    pta = (rules_ear.get("ac_pta") or {}).get("value")
+    ear_type = (rules_ear.get("type") or "").lower()
+    conductive = "conductive" in ear_type
+    mixed = "mixed" in ear_type
+
+    rules = analysis.get("rules") or {}
+    ptas = [(rules.get(s) or {}).get("ac_pta", {}).get("value")
+            for s in ("right", "left")]
+    ptas = [p for p in ptas if p is not None]
+    asymmetry = round(max(ptas) - min(ptas), 1) if len(ptas) == 2 else None
+
+    rows: List[dict] = []
+    for key, disease in DISEASES.items():
+        reference = DISEASE_AUDIOGRAM.get(key)
+        if not reference:
+            continue
+        shape = _shape_similarity(measured, reference["ac"])
+        if shape is None:
+            continue
+
+        lo, hi = disease["expected_pta"]
+        if pta is None:
+            level = 0.5
+        elif lo <= pta <= hi:
+            level = 1.0
+        else:
+            over = pta - hi if pta > hi else lo - pta
+            level = max(0.0, 1.0 - over / 30.0)
+
+        expected_type = disease.get("expected_type", "any")
+        if expected_type == "any":
+            type_fit = 0.6
+        elif expected_type == "conductive":
+            type_fit = 1.0 if (conductive or mixed) else 0.15
+        elif expected_type == "mixed":
+            type_fit = 1.0 if mixed else (0.5 if conductive else 0.15)
+        elif expected_type == "sensorineural":
+            type_fit = 0.15 if (conductive or mixed) else 1.0
+        else:  # normal
+            type_fit = 1.0 if (pta is not None and pta < 20) else 0.15
+
+        laterality = disease.get("laterality", "either")
+        if asymmetry is None or laterality == "either":
+            side_fit = 0.75
+        elif laterality == "unilateral":
+            side_fit = 1.0 if asymmetry >= 15 else 0.4
+        else:
+            side_fit = 1.0 if asymmetry < 15 else 0.4
+
+        score = 0.40 * shape + 0.25 * level + 0.25 * type_fit + 0.10 * side_fit
+        rows.append({
+            "key": key,
+            "name": disease["name"],
+            "score": round(score, 3),
+            "shape_match": round(shape, 3),
+            "level_match": round(level, 3),
+            "type_match": round(type_fit, 3),
+            "laterality_match": round(side_fit, 3),
+            "expected_shape": reference["shape"],
+            "expected_type": expected_type,
+            "expected_pta": [lo, hi],
+            "note": reference["note"],
+            "reference_ac": reference["ac"],
+            "reference_bc": reference["bc"],
+        })
+
+    rows.sort(key=lambda r: (-r["score"], r["name"]))
+    best = rows[0] if rows else None
+    separated = bool(best and (len(rows) == 1
+                               or best["score"] - rows[1]["score"] >= 0.08))
+
+    # A normal audiogram is not a disease that happens to look normal. Two
+    # conditions in the reference set present with normal pure tones, and
+    # pattern-matching would otherwise rank one of them first and read as a
+    # diagnosis of a patient whose hearing is fine.
+    normal_audiogram = pta is not None and pta < 20 and not (conductive or mixed)
+    if normal_audiogram:
+        headline = (f"The {side} ear is within normal limits ({pta:g} dB HL) — no "
+                    "loss pattern to match. The conditions below are the ones "
+                    "that present WITH a normal audiogram; they are not ranked "
+                    "against a loss.")
+    elif best:
+        headline = (f"The {side} audiogram most closely matches {best['name']}"
+                    + ("." if separated
+                       else ", but the leading candidates are not separated."))
+    else:
+        headline = "No characteristic pattern matched."
+
+    return {
+        "available": True,
+        "from": "audiogram",
+        "ear": side,
+        "measured_ac": measured,
+        "pta": pta,
+        "ear_type": rules_ear.get("type"),
+        "asymmetry_db": asymmetry,
+        "normal_audiogram": normal_audiogram,
+        "differential": rows[:6],
+        "headline": headline,
+        "separated": separated and not normal_audiogram,
+        "note": ("Matched against textbook configurations by shape, degree, type "
+                 "and symmetry, each scored separately. Shape is compared with "
+                 "the overall level removed, so a notch matches a notch whatever "
+                 "its depth. This is a pattern resemblance, not a diagnosis."),
+    }
 
 
 # ==========================================================================
@@ -575,6 +847,13 @@ def link_case(analysis: Optional[dict] = None,
         "immittance_diseases": immittance_vs_diseases(analysis, assessment, side),
     }
 
+    # Standalone differentials. Each needs exactly one input, so they are the
+    # part of this module that works on a case where nothing else was recorded.
+    standalone = {
+        "from_otoscopy": otoscopy_vs_diseases(otoscopy),
+        "from_audiogram": audiogram_vs_diseases(analysis, side),
+    }
+
     active = [v for v in links.values() if v.get("available")]
     conflicts = [c for v in active for c in v.get("conflicts", [])]
     agreements = [a for v in active for a in v.get("agreements", [])]
@@ -582,20 +861,30 @@ def link_case(analysis: Optional[dict] = None,
 
     available = [k for k, v in links.items() if v.get("available")]
     missing = _missing_inputs(analysis, assessment, otoscopy)
+    agreed = _standalone_agreement(standalone)
 
-    if not active:
-        headline = ("Record more of the case to cross-check it — "
-                    + (missing[0] if missing else "no linked tests yet."))
-    elif conflicts:
+    if conflicts:
         headline = conflicts[0]["title"] + "."
-    else:
+    elif agreements:
         headline = (f"{len(agreements)} independent check"
                     f"{'s' if len(agreements) != 1 else ''} across "
                     f"{len(active)} linked modalit"
                     f"{'ies' if len(active) != 1 else 'y'} agree.")
+    elif agreed:
+        headline = (f"The image and the audiogram independently rank "
+                    f"{agreed[0]['name']} first.")
+    elif any(v.get("available") for v in standalone.values()):
+        source = ("the image" if standalone["from_otoscopy"].get("available")
+                  else "the audiogram")
+        headline = f"A differential is available from {source} alone."
+    else:
+        headline = ("Record any one of a history, an image or an audiogram to "
+                    "start narrowing the differential.")
 
     return {
         "links": links,
+        "standalone": standalone,
+        "standalone_agreement": agreed,
         "links_available": available,
         "missing_inputs": missing,
         "conflict_count": len(conflicts),
@@ -608,6 +897,33 @@ def link_case(analysis: Optional[dict] = None,
                  "A disagreement means one of the two is wrong — it does not say "
                  "which."),
     }
+
+
+def _standalone_agreement(standalone: Dict[str, dict]) -> List[dict]:
+    """Diseases that the image and the audiogram both rank highly, alone.
+
+    Two independent modalities converging without either being told what the
+    other found is the strongest signal available on a case with no history —
+    and it costs nothing to compute, since both differentials already exist.
+    """
+    oto = standalone["from_otoscopy"]
+    aud = standalone["from_audiogram"]
+    if not (oto.get("available") and aud.get("available")):
+        return []
+
+    oto_rank = {d["key"]: d for d in oto["differential"][:5]}
+    out = []
+    for i, entry in enumerate(aud["differential"][:5]):
+        if entry["key"] in oto_rank:
+            out.append({
+                "key": entry["key"],
+                "name": entry["name"],
+                "audiogram_score": entry["score"],
+                "audiogram_rank": i + 1,
+                "otoscopy_score": oto_rank[entry["key"]]["score"],
+            })
+    out.sort(key=lambda d: -(d["audiogram_score"] + d["otoscopy_score"]))
+    return out
 
 
 def _missing_inputs(analysis, assessment, otoscopy) -> List[str]:

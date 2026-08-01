@@ -4,7 +4,7 @@ A full explanation of what this project is, how every part works, why each
 design decision was made, and what has actually been measured.
 
 **Scale:** ~12,300 lines of backend Python across 64 modules, ~8,700 lines of
-frontend across 34 files, **471 automated tests**, 11 application pages,
+frontend across 34 files, **506 automated tests**, 11 application pages,
 24 test files.
 
 ---
@@ -22,6 +22,7 @@ frontend across 34 files, **471 automated tests**, 11 application pages,
    - [6c. Otoscopy — the picture, checked against the measurement](#6c-otoscopy--the-picture-checked-against-the-measurement)
    - [6d. Signs and symptoms](#6d-signs-and-symptoms)
    - [6e. Linkage — everything cross-checks everything](#6e-linkage--everything-cross-checks-everything)
+   - [6f. A differential from any single input](#6f-a-differential-from-any-single-input)
 7. [Machine learning](#7-machine-learning)
 8. [Snap-to-Digitize](#8-snap-to-digitize-photo--audiogram)
 9. [Functional impact: phonemes, SII, hearing age](#9-functional-impact)
@@ -232,37 +233,88 @@ every conventional screening would send back to the shipyard.
 
 `tympanometry.py`, `/api/tympanometry/analyze`
 
-The classifier above works from three numbers a clinician has already read off
-a machine. That is not how tympanometry is done. The measurement is a **curve**
-— admittance against ear-canal pressure — and the clinically interesting part
-is its shape.
+The classification follows the immittance reference supplied by the clinical
+team (Gelfand, *Essentials of Audiology*, 4th ed., pp. 187–192), which is more
+complete than the five-type Jerger scheme in two ways that change answers.
 
-| Derived from the curve | Why it matters |
+### Eight types, not five
+
+| Type | Peak pressure | Static admittance (adult) | Shape | Disorders |
+|---|---|---|---|---|
+| A | +50 to −100 daPa | 0.37–1.66 mmho | Normal peak | Normal function |
+| As | +50 to −100 | < 0.37 | Shallow peak | Otosclerosis, tympanosclerosis, stiff drum |
+| Ad | +50 to −100 | > 1.66 | Deep peak | Flaccid drum, ossicular discontinuity |
+| **Add** | +50 to −100 | Off-scale | Extremely deep peak | Ossicular discontinuity |
+| B | No measurable peak | ~0–0.2 | Flat | Effusion, cholesteatoma, cerumen, perforation |
+| C | < −100 | 0.37–1.66 | Negative pressure | Eustachian tube dysfunction |
+| **D** | +50 to −100 | usually 0.37–1.66 | Narrow notched peak | Hypermobile / scarred drum |
+| **E** | +50 to −100 | usually > 1.66 | Wide notched peak | Ossicular disruption |
+
+Children carry their own bands: admittance 0.35–1.25 mmho, canal volume
+0.3–1.0 ml against 0.6–2.0 in adults. The same 0.36 mmho peak is Type As in an
+adult and Type A in a child, and 1.40 is Type A in an adult and Type Ad in a
+child — so the age is an input, not an assumption.
+
+A **notch outranks depth**: Types D and E are notched by definition while Ad
+and Add are not, so the notch is tested first. Classifying a notched trace as
+plain Ad loses the distinction between a scarred drum and a disconnected
+ossicular chain, which are not the same referral. Notch detection requires the
+dip between two maxima to be at least 12% of the peak height, so sampling
+ripple is not mistaken for one.
+
+### Type B splits three ways, not two
+
+| Canal volume | Meaning |
 |---|---|
-| Peak pressure | middle-ear pressure |
-| Peak admittance above the tail | static compliance — height, not raw value |
-| **Tympanometric width** at half peak height | catches an early effusion while peak height is still normal |
-| Ear-canal volume at the positive tail | large = the probe is seeing past the drum |
+| Normal | Middle-ear effusion behind an intact drum |
+| Large | Perforation or a patent ventilation tube |
+| **Small** | **Cerumen occluding the canal, or a probe against the canal wall** |
 
-The width is the reason this module exists. A peak of perfectly normal height
-that is too **broad** is an early effusion, and it is invisible in a
-three-number summary. Adult normal is 51–114 daPa (Margolis & Heller 1987);
-children run wider at 60–150 daPa (ASHA 1997), so the age band is an input
-rather than an assumption.
+The third is the one that matters and the one a two-way split silently gets
+wrong: a small-volume flat trace is an **instrument artefact**, and reporting
+it as middle-ear disease sends a patient down the wrong path when the fix is
+to clear the canal and repeat.
 
-Two refusals are built in:
+### Two shape measures, both reported
 
-- **Probe tone.** Below six months of age a 226 Hz probe can produce a
-  normal-looking trace over a middle ear full of fluid. The module returns the
-  reason and marks the type provisional rather than typing it confidently.
-- **Peak at the sweep edge.** A peak sitting at −400 daPa means the sweep did
-  not go far enough, not that this is a Type C.
+The **tympanic gradient** is a dimensionless ratio:
 
-When only summary values are entered, the curve is **modelled** from them so
-the chart still draws — and every response says `source: "modelled"`, with the
-interpretation stating it in words. A drawing of three numbers is not evidence
-and is not presented as such. A round-trip test asserts that a synthesised
-curve reads back as the values that produced it.
+    GR = (Ytm − Y±50) ÷ Ytm
+
+where Ytm is the compensated peak admittance and Y±50 the mean 50 daPa either
+side of it. A sharp peak falls away quickly and scores high; a broad, rounded
+peak scores low. Normal is > 0.2, matching the reference table. The
+**tympanometric width** in daPa is the same shape property in the other
+convention (51–114 adults, 60–150 children), and both are shown so the result
+reads against either.
+
+### Where the criteria genuinely disagree, it says so
+
+The reference gives Type B as "absent / ~0–0.2 mmho" and Type As as "< 0.37",
+so the two bands touch at 0.2 and the table alone cannot settle a value sitting
+on it. The comparison is strict — a peak of exactly 0.2 exists, however
+shallow, so it types as As — and anything between 0.15 and 0.25 carries an
+explicit *borderline* note telling the clinician to repeat the sweep. Inventing
+a confident answer at a boundary the source does not resolve would be the
+wrong kind of certainty.
+
+### The curves are generated, not traced
+
+The source document illustrates each type with a screenshot, but those come
+from several places and disagree on axes, scales and even units — some plot
+mm H₂O rather than daPa. So the app derives one curve per type from the
+numeric criteria instead, giving one consistent set on one pair of axes, each
+traceable to the row that produced it.
+
+Every generated curve is fed back through the classifier as a test: **all eight
+re-classify as their own type**, so the picture and the label cannot drift
+apart.
+
+Two refusals remain: a 226 Hz probe below six months of age, where it can read
+normal over a middle ear full of fluid, and a peak sitting at the edge of the
+sweep, which means the sweep was too short rather than that this is a Type C.
+Summary-only entry still draws a curve, labelled `modelled` rather than
+`measured`.
 
 ### 6b. The DP-gram
 
@@ -501,6 +553,73 @@ volume, and the split changes the differential completely — perforation versus
 fluid behind an intact drum. Reflex patterns add a second axis: absent with a
 conductive loss, absent while emissions are present, or present despite a
 severe loss each carry their own differential.
+
+---
+
+## 6f. A differential from any single input
+
+`linkage.otoscopy_vs_diseases`, `linkage.audiogram_vs_diseases`
+
+The cross-checks in 6e all need two things recorded. That is the wrong
+requirement at the moment each finding is actually made: a scope goes in the
+ear before the patient is in the booth, and an audiogram often arrives with no
+history attached at all. So both of these produce a ranked differential from
+**one** input, with nothing else on file.
+
+### From the image alone
+
+Every otoscopic pattern is mapped to the diseases it argues for, with a
+strength, plus the ones it argues against and the named conditions outside the
+fourteen-disease reference. The classifier's **own uncertainty is carried
+through**: the ranked class probabilities weight the disease scores, so a
+picture the model cannot separate produces a correspondingly spread
+differential instead of a confident answer built on a coin flip.
+
+Two behaviours are deliberate:
+
+- **A tie is not a ranking.** A normal drum supports every cochlear and neural
+  cause equally, so the leaders tie. It says *"a normal drum excludes the
+  middle-ear causes; it cannot rank the cochlear and neural ones against each
+  other"* rather than printing an order it did not earn.
+- **Convergent evidence is allowed to be confident.** Three uncertain patterns
+  that all imply Eustachian tube dysfunction do make it likely, even when the
+  image cannot say which of the three it is. Spread in the *pattern* does not
+  have to mean spread in the *disease*.
+
+Candidates scoring below 5% of the leader are dropped — a pattern the model
+gave 3% to drags its whole disease list in at 3% of the weight, and those are
+arithmetic rather than possibilities.
+
+### From the audiogram alone
+
+Each disease carries a **characteristic audiogram** — air and bone conduction
+at the standard frequencies — and the measured curve is matched against all
+fourteen on four independent axes:
+
+| Axis | What it compares |
+|---|---|
+| Shape | the curve with its overall level removed |
+| Degree | the PTA against the range this disease produces |
+| Type | conductive / sensorineural / mixed / normal |
+| Symmetry | one-sided against bilateral |
+
+All four are reported separately, because they fail separately: a disease can
+match the shape perfectly and be excluded by the type, and the clinician needs
+to see which one disagreed. Removing the level before comparing shape is what
+lets a 4 kHz notch match a 4 kHz notch whether the patient's is 20 dB deep or
+50 — the level is then judged on its own axis.
+
+**A normal audiogram is not a disease that happens to look normal.** Two
+conditions in the reference set present with normal pure tones, so plain
+pattern-matching would rank one of them first and read as a diagnosis of a
+patient whose hearing is fine. The response detects this and says the ear is
+within normal limits, offering those conditions as *the ones that present with
+a normal audiogram* rather than as a ranked answer.
+
+Finally, when both standalone differentials exist, the diseases they **both**
+rank highly are surfaced — two modalities converging without either being told
+what the other found, which is the strongest signal available on a case with
+no history.
 
 ---
 
@@ -926,7 +1045,7 @@ entry, simulation and screening keep working with no connectivity.
 
 ## 18. Testing strategy
 
-**471 tests across 24 files.**
+**506 tests across 24 files.**
 
 | Kind | What it proves |
 |---|---|

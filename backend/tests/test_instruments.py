@@ -243,8 +243,116 @@ def test_oae_endpoint_reports_the_protocol_it_judged_against():
 
 def test_reference_endpoints_describe_every_type_and_protocol():
     tymp = client.get("/api/tympanometry/reference").json()
-    assert {t["type"] for t in tymp["types"]} == {"A", "As", "Ad", "B", "C"}
+    assert {t["type"] for t in tymp["types"]} == {"A", "As", "Ad", "Add", "B", "C", "D", "E"}
+    # Every type ships a generated curve, and each curve re-classifies as
+    # itself — the picture and the label cannot drift apart.
+    assert {c["type"] for c in tymp["curves"]} == {t["type"] for t in tymp["types"]}
     oae = client.get("/api/oae/reference").json()
     assert {p["key"] for p in oae["protocols"]} == set(dpoae.PROTOCOLS)
     assert set(oae["cochlear_regions"]) >= set(str(f) for f in dpoae.DP_FREQS) or \
         set(int(k) for k in oae["cochlear_regions"]) >= set(dpoae.DP_FREQS)
+
+
+# ================= the eight-type classification (immittance reference) ====
+
+@pytest.mark.parametrize("type_key,compliance", [
+    ("As", 0.30), ("A", 0.80), ("Ad", 2.40), ("Add", 3.60),
+])
+def test_peak_height_selects_the_right_type_for_an_adult(type_key, compliance):
+    result = tympanometry.analyze(trace=gaussian_trace(-10, compliance, tail=0.9),
+                                  age_years=30)
+    assert result["tympanogram"]["type"] == type_key
+
+
+def test_add_is_separated_from_ad_by_running_off_the_scale():
+    """Ad is a deep peak; Add is a disconnected ossicular chain."""
+    deep = tympanometry.analyze(trace=gaussian_trace(-10, 2.4, tail=0.9),
+                                age_years=30)["tympanogram"]
+    off_scale = tympanometry.analyze(
+        trace=gaussian_trace(-10, tympanometry.OFF_SCALE_ADMITTANCE + 0.5, tail=0.9),
+        age_years=30)["tympanogram"]
+    assert deep["type"] == "Ad" and off_scale["type"] == "Add"
+    assert "Ossicular discontinuity" in off_scale["disorders"]
+
+
+@pytest.mark.parametrize("notch_width,expected", [(45, "D"), (110, "E")])
+def test_a_notched_peak_is_type_d_or_e_by_its_width(notch_width, expected):
+    trace = tympanometry.synthesize_trace(
+        -10, 0.9 if expected == "D" else 2.3, ecv=0.9,
+        width=70 if expected == "D" else 120,
+        notched=True, notch_width=notch_width)
+    result = tympanometry.analyze(trace=trace, age_years=30)
+    assert result["tympanogram"]["type"] == expected
+    assert result["curve"]["notch"]["notched"] is True
+
+
+def test_a_notch_outranks_peak_depth():
+    """Type D and E are notched by definition; Ad and Add are not."""
+    trace = tympanometry.synthesize_trace(-10, 2.3, ecv=0.9, width=120,
+                                          notched=True, notch_width=110)
+    assert tympanometry.analyze(trace=trace, age_years=30)["tympanogram"]["type"] == "E"
+
+
+def test_shallow_ripples_are_not_read_as_a_notch():
+    result = tympanometry.analyze(trace=gaussian_trace(-10, 0.9), age_years=30)
+    assert result["curve"]["notch"]["notched"] is False
+    assert result["tympanogram"]["type"] == "A"
+
+
+@pytest.mark.parametrize("ecv,band,expect_word", [
+    (0.35, "small", "cerumen"), (1.0, "normal", "effusion"), (2.6, "large", "perforation"),
+])
+def test_type_b_splits_three_ways_on_canal_volume(ecv, band, expect_word):
+    """Small volume is an artefact, not middle-ear disease — the case a
+    two-way split silently reports as fluid."""
+    result = tympanometry.analyze(trace=gaussian_trace(0, 0.02, tail=ecv),
+                                  age_years=30)
+    typed = result["tympanogram"]
+    assert typed["type"] == "B" and typed["ecv_flag"] == band
+    assert expect_word in typed["interpretation"].lower()
+
+
+def test_the_flat_to_shallow_boundary_is_flagged_rather_than_hidden():
+    """The reference's Type B and Type As bands touch at 0.2 mmho."""
+    flat = tympanometry.classify(-10, 0.19, 1.0, age_years=30)
+    shallow = tympanometry.classify(-10, 0.20, 1.0, age_years=30)
+    assert flat["type"] == "B" and shallow["type"] == "As"
+    assert flat["borderline"] and shallow["borderline"]
+
+
+def test_children_have_their_own_compliance_band():
+    """The bands differ at both ends, and the type follows the age.
+
+    0.36 mmho is below the adult floor (0.37) but inside the child band; 1.40
+    is inside the adult ceiling (1.66) but above the child one (1.25).
+    """
+    shallow = gaussian_trace(-10, 0.36, tail=0.7)
+    assert tympanometry.analyze(trace=shallow, age_years=30)["tympanogram"]["type"] == "As"
+    assert tympanometry.analyze(trace=shallow, age_years=5)["tympanogram"]["type"] == "A"
+
+    deep = gaussian_trace(-10, 1.40, tail=0.7)
+    assert tympanometry.analyze(trace=deep, age_years=30)["tympanogram"]["type"] == "A"
+    assert tympanometry.analyze(trace=deep, age_years=5)["tympanogram"]["type"] == "Ad"
+
+
+def test_gradient_falls_as_the_peak_broadens():
+    sharp = tympanometry.analyze_trace(gaussian_trace(0, 0.9, width=80))
+    broad = tympanometry.analyze_trace(gaussian_trace(0, 0.9, width=220))
+    assert sharp["gradient"] > tympanometry.GRADIENT_NORMAL_MIN
+    assert broad["gradient"] < tympanometry.GRADIENT_NORMAL_MIN
+
+
+def test_every_reference_curve_reclassifies_as_its_own_type():
+    """The generated pictures and their labels cannot drift apart."""
+    reference = tympanometry.reference_curves(30)
+    assert len(reference["curves"]) == 8
+    for entry in reference["curves"]:
+        back = tympanometry.analyze(trace=entry["points"], age_years=30)
+        assert back["tympanogram"]["type"] == entry["type"], entry["type"]
+
+
+def test_a_small_canal_volume_is_flagged_as_an_artefact():
+    result = tympanometry.analyze(trace=gaussian_trace(0, 0.02, tail=0.3),
+                                  age_years=30)
+    assert any("cerumen" in f.lower() or "blocked" in f.lower()
+               for f in result["flags"])

@@ -202,16 +202,16 @@ def test_audiogram_link_needs_both_inputs():
 
 # ================================================= immittance <-> diseases
 
-@pytest.mark.parametrize("jerger", ["A", "As", "Ad", "B", "C"])
-def test_every_jerger_type_links_to_diseases(jerger):
-    """All five types, not just the abnormal ones."""
+@pytest.mark.parametrize("jerger", ["A", "As", "Ad", "Add", "B", "C", "D", "E"])
+def test_every_tympanogram_type_links_to_diseases(jerger):
+    """All eight types from the immittance reference, not just the abnormal ones."""
     entry = TYMPANOGRAM_LINKS[jerger]
     assert entry["label"] and entry["meaning"]
     assert entry["supports"] or entry["also_consider"]
     result = linkage.immittance_vs_diseases(audiogram(tymp=jerger))
     assert result["available"]
     assert result["type"] == jerger
-    assert len(result["all_types"]) == 5
+    assert len(result["all_types"]) == 8
 
 
 def test_type_a_removes_the_conductive_differential():
@@ -324,9 +324,9 @@ def test_linkage_endpoint_accepts_an_entirely_empty_case():
     assert body["links_available"] == []
 
 
-def test_linkage_reference_exposes_all_five_types_and_every_pattern():
+def test_linkage_reference_exposes_every_type_and_pattern():
     body = client.get("/api/linkage/reference").json()
-    assert {t["type"] for t in body["tympanogram_types"]} == {"A", "As", "Ad", "B", "C"}
+    assert {t["type"] for t in body["tympanogram_types"]} == {"A", "As", "Ad", "Add", "B", "C", "D", "E"}
     assert {p["pattern"] for p in body["otoscopy_patterns"]} == set(CLASSES)
 
 
@@ -360,3 +360,180 @@ def test_every_disease_declares_an_expected_pta_and_laterality():
         lo, hi = disease["expected_pta"]
         assert 0 <= lo < hi <= 120, f"{key} has an implausible PTA range"
         assert disease["laterality"] in ("unilateral", "bilateral", "either")
+
+
+# ============ differentials that need no history at all ====================
+
+def full_oto(label, name, ranked=None):
+    """An otoscopy result shaped like the real classifier's output."""
+    return {
+        "prediction": {"label": label, "name": name, "certainty": "probable"},
+        "ranked": ranked or [{"label": label, "probability": 1.0}],
+    }
+
+
+def audiogram_from(ac, ear_type="Sensorineural", left=None):
+    pta = round(sum(ac[f] for f in (500, 1000, 2000, 4000)) / 4, 1)
+    left_ac = left or ac
+    left_pta = round(sum(left_ac[f] for f in (500, 1000, 2000, 4000)) / 4, 1)
+    return {
+        "thresholds": {"right": {"ac": ac, "bc": {}},
+                       "left": {"ac": left_ac, "bc": {}}},
+        "rules": {"right": {"ac_pta": {"value": pta}, "type": ear_type},
+                  "left": {"ac_pta": {"value": left_pta}, "type": ear_type}},
+    }
+
+
+def test_the_image_alone_produces_a_differential():
+    """A scope goes in the ear before the patient is in the booth."""
+    result = linkage.otoscopy_vs_diseases(
+        full_oto("perforation_attic", "Attic perforation"))
+    assert result["available"]
+    assert result["differential"][0]["key"] == "cholesteatoma"
+    assert result["separated"]
+
+
+def test_the_image_differential_carries_the_classifier_uncertainty():
+    """A picture the model cannot separate yields a less peaked differential.
+
+    Measured by how close the runner-up sits, not by whether the leader is
+    separated. Separation can legitimately stay high when several uncertain
+    patterns converge on the same disease — three appearances that all imply
+    Eustachian tube dysfunction make it likely even if the image cannot say
+    which of the three it is. That is convergent evidence, not overconfidence.
+    """
+    confident = linkage.otoscopy_vs_diseases(full_oto(
+        "tumor", "Mass", [{"label": "tumor", "probability": 0.95},
+                          {"label": "normal", "probability": 0.05}]))
+    unsure = linkage.otoscopy_vs_diseases(full_oto(
+        "tumor", "Mass", [{"label": "tumor", "probability": 0.34},
+                          {"label": "retraction", "probability": 0.33},
+                          {"label": "otitis_media", "probability": 0.33}]))
+    assert unsure["differential"][1]["score"] > confident["differential"][1]["score"]
+
+
+def test_negligible_candidates_are_dropped_from_the_image_differential():
+    """A 3% pattern drags its whole disease list in at 3% of the weight."""
+    result = linkage.otoscopy_vs_diseases(full_oto(
+        "tumor", "Mass", [{"label": "tumor", "probability": 0.97},
+                          {"label": "normal", "probability": 0.03}]))
+    assert all(d["score"] >= 0.05 for d in result["differential"])
+    assert "sensory_presbycusis" not in {d["key"] for d in result["differential"]}
+
+
+def test_a_normal_drum_says_it_cannot_rank_the_cochlear_causes():
+    """Every cochlear cause scores equally; a tie is not a ranking."""
+    result = linkage.otoscopy_vs_diseases(full_oto("normal", "Normal drum"))
+    assert not result["separated"]
+    assert "cannot rank" in result["headline"]
+    assert "cholesteatoma" in {d["key"] for d in result["argues_against"]}
+
+
+def test_every_otoscopy_pattern_has_a_disease_link():
+    from app.clinical.symptom_kb import OTOSCOPY_DISEASE_LINKS
+    assert set(OTOSCOPY_DISEASE_LINKS) == set(CLASSES)
+    for label, link in OTOSCOPY_DISEASE_LINKS.items():
+        for key in list(link["supports"]) + link["excludes"]:
+            assert key in DISEASES, f"{label} references unknown disease {key}"
+        assert link["reasoning"]
+
+
+def test_a_disease_is_never_both_supported_and_excluded_by_one_appearance():
+    from app.clinical.symptom_kb import OTOSCOPY_DISEASE_LINKS
+    for label, link in OTOSCOPY_DISEASE_LINKS.items():
+        overlap = {k for k, v in link["supports"].items() if v > 0} & set(link["excludes"])
+        assert not overlap, f"{label} both supports and excludes {overlap}"
+
+
+def test_the_audiogram_alone_recognises_a_noise_notch():
+    from app.clinical.symptom_kb import DISEASE_AUDIOGRAM
+    result = linkage.audiogram_vs_diseases(
+        audiogram_from(dict(DISEASE_AUDIOGRAM["nihl"]["ac"])), "right")
+    assert result["available"]
+    assert result["differential"][0]["key"] == "nihl"
+    assert result["differential"][0]["shape_match"] > 0.9
+
+
+def test_shape_matching_ignores_overall_level():
+    """A notch is a notch whether it is 20 dB deep or 50."""
+    shallow = {250: 5, 500: 5, 1000: 10, 2000: 15, 4000: 40, 8000: 25}
+    deep = {f: v + 20 for f, v in shallow.items()}
+    a = linkage.audiogram_vs_diseases(audiogram_from(shallow), "right")
+    b = linkage.audiogram_vs_diseases(audiogram_from(deep), "right")
+    assert a["differential"][0]["key"] == b["differential"][0]["key"] == "nihl"
+
+
+def test_a_normal_audiogram_is_not_reported_as_a_disease():
+    """Two conditions present with normal pure tones; neither is a diagnosis here."""
+    normal = {250: 5, 500: 5, 1000: 10, 2000: 10, 4000: 10, 8000: 15}
+    result = linkage.audiogram_vs_diseases(audiogram_from(normal, "Normal"), "right")
+    assert result["normal_audiogram"] is True
+    assert result["separated"] is False
+    assert "within normal limits" in result["headline"]
+
+
+def test_the_type_can_veto_a_perfect_shape_match():
+    from app.clinical.symptom_kb import DISEASE_AUDIOGRAM
+    shape = dict(DISEASE_AUDIOGRAM["sensory_presbycusis"]["ac"])
+    sensorineural = linkage.audiogram_vs_diseases(
+        audiogram_from(shape, "Sensorineural"), "right")["differential"]
+    conductive = linkage.audiogram_vs_diseases(
+        audiogram_from(shape, "Conductive"), "right")["differential"]
+    presby_sn = next(d for d in sensorineural if d["key"] == "sensory_presbycusis")
+    presby_cd = next((d for d in conductive if d["key"] == "sensory_presbycusis"), None)
+    assert presby_sn["type_match"] == 1.0
+    assert presby_cd is None or presby_cd["type_match"] < 0.3
+
+
+def test_each_component_of_the_audiogram_match_is_reported_separately():
+    from app.clinical.symptom_kb import DISEASE_AUDIOGRAM
+    result = linkage.audiogram_vs_diseases(
+        audiogram_from(dict(DISEASE_AUDIOGRAM["nihl"]["ac"])), "right")
+    top = result["differential"][0]
+    assert {"shape_match", "level_match", "type_match", "laterality_match"} <= set(top)
+
+
+def test_every_disease_has_a_characteristic_audiogram():
+    from app.clinical.symptom_kb import DISEASE_AUDIOGRAM
+    assert set(DISEASE_AUDIOGRAM) == set(DISEASES)
+    for key, entry in DISEASE_AUDIOGRAM.items():
+        assert set(entry["ac"]) == {250, 500, 1000, 2000, 4000, 8000}
+        assert set(entry["bc"]) == {250, 500, 1000, 2000, 4000}
+        for freq, value in entry["ac"].items():
+            assert -10 <= value <= 120
+            # Bone conduction can never be worse than air conduction.
+            if freq in entry["bc"]:
+                assert entry["bc"][freq] <= value, f"{key} at {freq} Hz"
+
+
+def test_standalone_differentials_need_only_their_own_input():
+    from app.clinical.symptom_kb import DISEASE_AUDIOGRAM
+    result = linkage.link_case(
+        analysis=audiogram_from(dict(DISEASE_AUDIOGRAM["nihl"]["ac"])),
+        assessment=None,
+        otoscopy=full_oto("normal", "Normal drum"))
+    assert result["standalone"]["from_audiogram"]["available"]
+    assert result["standalone"]["from_otoscopy"]["available"]
+    # No history at all, yet both differentials exist.
+    assert result["links"]["otoscopy_symptoms"]["available"] is False
+
+
+def test_image_and_audiogram_agreeing_without_a_history_is_surfaced():
+    from app.clinical.symptom_kb import DISEASE_AUDIOGRAM
+    result = linkage.link_case(
+        analysis=audiogram_from(dict(DISEASE_AUDIOGRAM["etd"]["ac"]), "Conductive"),
+        otoscopy=full_oto("retraction", "Retracted drum"))
+    agreed = {a["key"] for a in result["standalone_agreement"]}
+    assert "etd" in agreed
+
+
+def test_standalone_endpoints_work_from_one_input():
+    from app.clinical.symptom_kb import DISEASE_AUDIOGRAM
+    body = client.post("/api/linkage/from-otoscopy", json={
+        "otoscopy": full_oto("tumor", "Mass")}).json()
+    assert body["differential"][0]["key"] == "glomus_tumor"
+
+    body = client.post("/api/linkage/from-audiogram", json={
+        "analysis": audiogram_from(dict(DISEASE_AUDIOGRAM["nihl"]["ac"])),
+        "side": "right"}).json()
+    assert body["differential"][0]["key"] == "nihl"

@@ -49,28 +49,49 @@ class OAERequest(BaseModel):
 
 
 @router.get("/tympanometry/reference")
-def tympanometry_reference():
-    """Jerger types, normal ranges and the sweep the UI should draw."""
+def tympanometry_reference(age_years: Optional[float] = None):
+    """All eight types with plotted curves, normal ranges and the criteria table.
+
+    The curves are generated from the numeric criteria rather than reproduced
+    from the reference document's figures, which come from several sources and
+    disagree on axes, scales and even units. One consistent set on one pair of
+    axes, each traceable to the row that produced it.
+    """
     from app.clinical.immittance import REFLEX_SL_NORMAL
 
+    reference = tympanometry.reference_curves(age_years)
     return {
         "sweep": list(tympanometry.SWEEP),
         "adult": tympanometry.normative(30),
         "child": tympanometry.normative(5),
         "reflex_sl_normal": list(REFLEX_SL_NORMAL),
         "types": [
-            {"type": "A", "label": "Normal",
-             "detail": "Normal peak pressure and compliance."},
-            {"type": "As", "label": "Shallow / stiff",
-             "detail": "Otosclerosis, tympanosclerosis, middle-ear stiffening."},
-            {"type": "Ad", "label": "Deep / hypercompliant",
-             "detail": "Ossicular discontinuity or a flaccid membrane."},
-            {"type": "B", "label": "Flat",
-             "detail": "Effusion at normal canal volume; perforation or patent "
-                       "grommet at large canal volume."},
-            {"type": "C", "label": "Negative pressure",
-             "detail": "Eustachian tube dysfunction."},
+            {"type": key, "label": entry["label"], "shape": entry["shape"],
+             "detail": ", ".join(entry["disorders"]) + ".",
+             "disorders": entry["disorders"],
+             "suggests_conductive": entry["suggests_conductive"]}
+            for key, entry in tympanometry.TYMPANOGRAM_TYPES.items()
         ],
+        "curves": reference["curves"],
+        "type_b_by_volume": [
+            {"band": band, **entry}
+            for band, entry in tympanometry.TYPE_B_BY_VOLUME.items()
+        ],
+        "criteria": {
+            "pressure": list(tympanometry.PRESSURE_NORMAL),
+            "compliance_adult": list(tympanometry.COMPLIANCE_NORMAL_ADULT),
+            "compliance_child": list(tympanometry.COMPLIANCE_NORMAL_CHILD),
+            "ecv_adult": list(tympanometry.ECV_NORMAL_ADULT),
+            "ecv_child": list(tympanometry.ECV_NORMAL_CHILD),
+            "gradient_min": tympanometry.GRADIENT_NORMAL_MIN,
+            "flat_max": tympanometry.FLAT_ADMITTANCE_MAX,
+            "off_scale": tympanometry.OFF_SCALE_ADMITTANCE,
+        },
+        "citations": list(tympanometry.CITATIONS),
+        "gradient_formula": (
+            "GR = (Ytm − Y±50) ÷ Ytm, where Ytm is the compensated peak "
+            "admittance and Y±50 the mean 50 daPa either side of it. A sharp "
+            "peak scores high; a rounded one scores low. Normal > 0.2."),
         "infant_note": (
             f"Below {tympanometry.INFANT_MONTHS} months a 226 Hz probe can look "
             "normal over a middle ear full of fluid. Use a 1000 Hz probe."),

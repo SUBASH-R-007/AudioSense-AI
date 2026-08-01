@@ -220,6 +220,18 @@ export const api = {
       body: JSON.stringify(payload),
     }).then(json),
   linkageReference: () => http('/api/linkage/reference').then(json),
+  diseasesFromOtoscopy: (otoscopy) =>
+    http('/api/linkage/from-otoscopy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ otoscopy }),
+    }).then(json),
+  diseasesFromAudiogram: (analysis, side = 'right') =>
+    http('/api/linkage/from-audiogram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ analysis, side }),
+    }).then(json),
 
   // --- immittance and emissions as instruments ----------------------------
   tympanometryReference: () => http('/api/tympanometry/reference').then(json),

@@ -7,7 +7,8 @@ from fastapi import APIRouter, Body
 
 from app.clinical import linkage
 from app.clinical.symptom_kb import (
-    DISEASES, OTOSCOPY_LINKS, SYMPTOM_LABELS, TYMPANOGRAM_LINKS,
+    DISEASE_AUDIOGRAM, DISEASES, OTOSCOPY_DISEASE_LINKS, OTOSCOPY_LINKS,
+    SYMPTOM_LABELS, TYMPANOGRAM_LINKS,
 )
 
 router = APIRouter(prefix="/api/linkage")
@@ -40,10 +41,40 @@ def reference():
              "conditions": _names(v["conditions"])}
             for p, v in OTOSCOPY_LINKS.items()
         ],
+        "otoscopy_diseases": [
+            {"pattern": p,
+             "supports": [{"key": k, "name": DISEASES[k]["name"], "strength": s}
+                          for k, s in v["supports"].items() if k in DISEASES],
+             "excludes": _names(v["excludes"]),
+             "other": v["other"],
+             "reasoning": v["reasoning"]}
+            for p, v in OTOSCOPY_DISEASE_LINKS.items()
+        ],
+        "disease_audiograms": [
+            {"key": k, "name": DISEASES[k]["name"],
+             "expected_type": DISEASES[k].get("expected_type"),
+             "expected_pta": list(DISEASES[k].get("expected_pta", (0, 120))),
+             "laterality": DISEASES[k].get("laterality"),
+             **v}
+            for k, v in DISEASE_AUDIOGRAM.items() if k in DISEASES
+        ],
         "note": ("Every cross-check the app makes comes from these rules. They "
                  "state what each finding predicts about the others, so a "
                  "disagreement can be pointed at rather than asserted."),
     }
+
+
+@router.post("/from-otoscopy")
+def from_otoscopy(payload: dict = Body(...)):
+    """Ranked differential from an otoscope image alone — no history needed."""
+    return linkage.otoscopy_vs_diseases(payload.get("otoscopy"))
+
+
+@router.post("/from-audiogram")
+def from_audiogram(payload: dict = Body(...)):
+    """Ranked differential from thresholds alone — no history needed."""
+    return linkage.audiogram_vs_diseases(payload.get("analysis"),
+                                         payload.get("side") or "right")
 
 
 @router.post("")

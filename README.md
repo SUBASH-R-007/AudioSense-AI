@@ -29,7 +29,8 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 | 🔗 **Everything cross-checks everything** | Four links, live on every screen: the **image against the history** (an otitis media picture and a patient reporting pain and fever confirm each other; a normal drum with fever does not), the **image against the audiogram**, the **history against type, degree, symmetry and PTA**, and the **tympanogram against the disease list**. Conflicts always sort above agreements, because two tests that cannot both be true is the finding — a page of green ticks that buries it is worse than no panel at all |
 | 🩺 **Signs & symptoms triage** | "Water keeps coming out of my ear." Free text or checklist → ranked differential, **red flags that outrank it**, and the test battery that separates the possibilities — from two clinical reference documents, matched deterministically with no network call. Age changes the answer: the same discharge is acute otitis media in a child and **necrotizing otitis externa** in a diabetic of seventy-five |
 | 👁 **Otoscopy pattern matching** | A tympanic-membrane photo against a **62-view labelled atlas** across eight patterns, returning a ranked differential, the three closest reference images side by side, and the measurements behind the call. Then the part that does not depend on the classifier: what the appearance *predicts* — a large canal volume, a Type B trace, a 20–45 dB gap — checked against what was actually measured |
-| 📉 **Tympanometry as an instrument** | The pressure sweep itself, not three numbers. **Tympanometric width** is the measurement that catches an early effusion while peak height is still normal, and it only exists on the curve. Age-banded norms, and a 226 Hz probe is **refused** under six months of age rather than typed wrongly |
+| 📉 **Tympanometry, all eight types** | The full classification from the immittance reference — A, As, Ad, **Add**, B, C, **D**, **E** — not the five-type scheme. A notched peak is a scarred drum (D) or a broken ossicular chain (E), which the five-type version files as "deep" and loses. Type B splits **three** ways on canal volume, and the third is the one that matters: small volume is wax or a blocked probe, an artefact otherwise reported as middle-ear disease. Every type ships a **generated curve**, and each curve re-classifies as itself |
+| 🔗 **Diseases from any single input** | A ranked differential from the **image alone**, or the **audiogram alone**, with no history required — a scope goes in the ear before the patient is in the booth. The audiogram is matched against a characteristic curve per disease on four separate axes (shape, degree, type, symmetry), all four shown, because a disease can match the shape perfectly and be excluded by the type |
 | 🌀 **DP-gram with a stated protocol** | Emission and noise floor per frequency, pass/refer against newborn, screening, occupational or diagnostic criteria, and the **cochlear place** each dropout maps to. Absent emissions above 50 dB HL are marked *uninformative*, not counted as damage — that would be double-counting the audiogram |
 | 🧭 **Spatial hearing test** | HRTF-rendered sound placed around the listener, each ear through its own loss. With normal ears the interaural difference **flips sign** with direction; with asymmetric loss it stays positive whichever side the sound came from — the cue is gone, which is why the patient turns the wrong way. Measured, not asserted |
 | 🍽 **Digits-in-noise** | The adaptive digit-triplet test behind national screening programmes. Only the speech-to-noise *ratio* matters, so it works on uncalibrated equipment — and it catches the patient with a clean audiogram who still cannot follow a conversation |
@@ -185,10 +186,12 @@ backend/
                    triage.py (priority + auto-release routing) · norms.py (ISO 7029)
                    listening_lab.py (localization · speech-in-noise · tinnitus)
                    immittance.py (tympanograms + reflexes) · oae.py (emissions)
-                   tympanometry.py (sweep curve · gradient · age norms · probe-tone guard)
+                   tympanometry.py (8 types · gradient · notch detection · age norms
+                                    · generated reference curves · probe-tone guard)
                    dpoae.py (DP-gram · protocols · cochlear place)
                    symptom_kb.py (complaint guide by age · 14 diseases · red flags
-                                  · otoscopy↔symptom and 5 tympanogram↔disease rules)
+                                  · otoscopy↔disease, 8 tympanogram↔disease rules
+                                  · a characteristic audiogram per disease)
                    symptoms.py (synonym matching · ranked differential · battery)
                    linkage.py (image↔history↔audiogram↔immittance reconciliation)
                    consistency.py (cross-modal reconciliation) · noise_dose.py (OSHA/NIOSH)
@@ -209,7 +212,7 @@ backend/
                    (tympanometry + oae) · linkage
   data/            otoscope_reference/ (62 labelled views, 8 patterns, ~1.3 MB)
                    otoscopy_model.joblib + model card
-  tests/           471 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
+  tests/           506 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
   scripts/         make_samples.py (regenerates the demo photos + ground truth)
                    extract_otoscope_reference.py (docx → labelled atlas)
                    train_otoscopy.py · fetch_otoscope_dataset.py
@@ -236,7 +239,7 @@ frontend/
 - **Red flags**: sudden SNHL = ≥30 dB across ≥3 contiguous frequencies within 72 h (confirmed against a prior audiogram where one exists, otherwise conditional on reported onset); asymmetry referral at ≥20 dB at one frequency or ≥15 dB at two.
 - **Masking**: interaural attenuation of 40 dB for supra-aural earphones (AC) and ~0 dB for BC; a warning is raised only when masking was indicated *and* not recorded.
 - **Speech audiometry**: SRT/PTA agreement within ±10 dB; rollover index > 0.45 as the retrocochlear indicator.
-- **Immittance**: Jerger tympanogram types (A/As/Ad/B/C), Type B split by ear-canal volume (effusion vs perforation); acoustic reflexes normally 70–100 dB SL. Tympanometric width from the curve at half peak height, normal 51–114 daPa in adults (Margolis & Heller 1987) and 60–150 daPa in children (ASHA 1997); a 226 Hz probe is refused below 6 months of age, where it can read normal over a middle ear full of fluid.
+- **Immittance**: eight tympanogram types (A/As/Ad/Add/B/C/D/E) per the supplied immittance reference (Gelfand, *Essentials of Audiology*, 4th ed., pp. 187–192). Ear-canal volume 0.3–1.0 ml in children and 0.6–2.0 ml in adults; peak pressure +50 to −100 daPa; static admittance 0.35–1.25 mmho in children and 0.37–1.66 in adults; tympanic gradient > 0.2. Type B splits three ways on canal volume — normal is effusion, large is perforation or a patent grommet, small is cerumen or a blocked probe. Tympanometric width is also reported (51–114 daPa adults, Margolis & Heller 1987; 60–150 children, ASHA 1997). A 226 Hz probe is refused below 6 months of age, where it can read normal over a middle ear full of fluid.
 - **OAE**: DPOAE counted present at ≥6 dB above the noise floor; absent emissions with normal thresholds reported as pre-clinical outer-hair-cell damage. Absent emissions where the threshold already exceeds ~50 dB HL are marked *uninformative* rather than counted as damage, and a noise floor above 10 dB SPL invalidates the frequency instead of failing it.
 - **Symptom differential**: two supplied clinical documents — a presenting-complaint guide ranked by age band (otorrhoea, otalgia, vertigo, headache) and a 14-disease reference giving symptoms, prone age group and the audiological tests that establish each diagnosis. Free text is matched by synonym table, not inferred; unmatched words are reported back. Every ranked entry names which source put it there.
 - **Otoscopy**: eight patterns from the supplied reference document, with each pattern's *expected* air-bone gap and tympanogram recorded so the image can be checked against the measured battery. The classifier is validated leave-one-source-image-out on 62 views and its accuracy — well above chance, well below diagnostic — is shown in the app, alongside what it cannot do.

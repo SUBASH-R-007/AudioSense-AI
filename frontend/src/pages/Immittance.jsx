@@ -17,13 +17,17 @@ import {
 } from 'recharts'
 import { api } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import TympanogramAtlas from '../components/TympanogramAtlas.jsx'
 
 const TYPE_STYLE = {
   A: 'border-emerald-300 bg-emerald-50 text-emerald-900',
   As: 'border-amber-300 bg-amber-50 text-amber-900',
   Ad: 'border-amber-300 bg-amber-50 text-amber-900',
+  Add: 'border-rose-300 bg-rose-50 text-rose-900',
   B: 'border-rose-300 bg-rose-50 text-rose-900',
   C: 'border-sky-300 bg-sky-50 text-sky-900',
+  D: 'border-violet-300 bg-violet-50 text-violet-900',
+  E: 'border-rose-300 bg-rose-50 text-rose-900',
 }
 
 const OUTCOME_STYLE = {
@@ -35,11 +39,16 @@ const OUTCOME_STYLE = {
 // Presets are real curve shapes, so the plot demonstrates what the numbers
 // mean rather than requiring twenty values to be typed first.
 const TYMP_PRESETS = [
-  { label: 'Normal (Type A)', peak: -20, height: 0.85, tail: 0.9, width: 85 },
-  { label: 'Effusion (Type B)', peak: 0, height: 0.02, tail: 1.0, width: 400 },
-  { label: 'Perforation (Type B, large volume)', peak: 0, height: 0.02, tail: 2.8, width: 400 },
-  { label: 'ET dysfunction (Type C)', peak: -230, height: 0.55, tail: 0.9, width: 100 },
-  { label: 'Stiff (Type As)', peak: -10, height: 0.18, tail: 0.9, width: 80 },
+  { label: 'Normal (A)', peak: -20, height: 0.85, tail: 0.9, width: 85 },
+  { label: 'Stiff (As)', peak: -10, height: 0.25, tail: 0.9, width: 80 },
+  { label: 'Flaccid (Ad)', peak: -10, height: 2.4, tail: 0.9, width: 90 },
+  { label: 'Off-scale (Add)', peak: -10, height: 3.6, tail: 0.9, width: 80 },
+  { label: 'Effusion (B, normal ECV)', peak: 0, height: 0.02, tail: 1.0, width: 400 },
+  { label: 'Perforation (B, large ECV)', peak: 0, height: 0.02, tail: 2.8, width: 400 },
+  { label: 'Wax / blocked probe (B, small ECV)', peak: 0, height: 0.02, tail: 0.35, width: 400 },
+  { label: 'ET dysfunction (C)', peak: -230, height: 0.55, tail: 0.9, width: 100 },
+  { label: 'Scarred drum (D, narrow notch)', peak: -10, height: 0.9, tail: 0.9, width: 70, notched: true, notchWidth: 45 },
+  { label: 'Ossicular disruption (E, wide notch)', peak: -10, height: 2.3, tail: 0.9, width: 120, notched: true, notchWidth: 110 },
   { label: 'Early effusion (broad peak)', peak: -60, height: 0.5, tail: 0.9, width: 200 },
 ]
 
@@ -54,15 +63,19 @@ const OAE_PRESETS = [
   { label: 'Too noisy to judge', build: () => ({ amplitude: 4, noise_floor: 17 }) },
 ]
 
-function buildTrace({ peak, height, tail, width }) {
+function buildTrace({ peak, height, tail, width, notched = false, notchWidth = 60 }) {
   const sigma = width / 2.355
+  const bump = (p, mu, s) => Math.exp(-((p - mu) ** 2) / (2 * s ** 2))
   const out = []
   for (let p = -400; p <= 200; p += 10) {
-    out.push({
-      pressure: p,
-      admittance: Number((tail + height * Math.exp(
-        -((p - peak) ** 2) / (2 * sigma ** 2))).toFixed(4)),
-    })
+    // Two shoulders either side of the centre produce the W shape that defines
+    // Types D and E. Mirrors synthesize_trace on the server so the drawn curve
+    // and the classified curve are the same curve.
+    const shape = notched
+      ? Math.max(bump(p, peak - notchWidth / 2, Math.max(sigma * 0.55, 12)),
+                 bump(p, peak + notchWidth / 2, Math.max(sigma * 0.55, 12)))
+      : bump(p, peak, sigma)
+    out.push({ pressure: p, admittance: Number((tail + height * shape).toFixed(4)) })
   }
   return out
 }
@@ -95,7 +108,7 @@ function Measure({ label, value, unit, ok }) {
 }
 
 // -------------------------------------------------------- tympanometry ----
-function Tympanometry({ reference }) {
+function Tympanometry({ reference, onType }) {
   const { showToast } = useApp()
   const [ear, setEar] = useState('right')
   const [ageYears, setAgeYears] = useState(30)
@@ -125,6 +138,9 @@ function Tympanometry({ reference }) {
 
   const norms = result?.curve?.normative
   const jerger = result?.tympanogram
+
+  // Lifted so the type atlas below can highlight the row this ear landed on.
+  useEffect(() => { onType?.(jerger?.type || null) }, [jerger?.type, onType])
 
   return (
     <Panel
@@ -426,6 +442,7 @@ export default function Immittance() {
   const [tympRef, setTympRef] = useState(null)
   const [oaeRef, setOaeRef] = useState(null)
   const [linkRef, setLinkRef] = useState(null)
+  const [activeType, setActiveType] = useState(null)
 
   useEffect(() => {
     api.tympanometryReference().then(setTympRef).catch(() => {})
@@ -447,7 +464,7 @@ export default function Immittance() {
       </header>
 
       <div className="mt-5 space-y-5">
-        <Tympanometry reference={tympRef} />
+        <Tympanometry reference={tympRef} onType={setActiveType} />
         <Emissions reference={oaeRef} />
       </div>
 
@@ -504,8 +521,14 @@ export default function Immittance() {
       )}
 
       {tympRef && (
+        <div className="mt-5">
+          <TympanogramAtlas reference={tympRef} activeType={activeType} />
+        </div>
+      )}
+
+      {tympRef && (
         <div className="mt-5 rounded-2xl border border-slate-200/80 bg-slate-50/60 p-5">
-          <h2 className="text-[13px] font-semibold text-slate-800">Jerger classification</h2>
+          <h2 className="text-[13px] font-semibold text-slate-800">Type summary</h2>
           <dl className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {tympRef.types.map((t) => (
               <div key={t.type} className="rounded-lg bg-white px-3 py-2">
