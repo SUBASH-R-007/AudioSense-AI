@@ -1,0 +1,137 @@
+{
+  "classes": [
+    "cerumen_impaction",
+    "normal",
+    "otitis_media",
+    "perforation_attic",
+    "perforation_central",
+    "perforation_marginal",
+    "retraction",
+    "tumor"
+  ],
+  "n_images": 62,
+  "n_training_samples": 1860,
+  "n_features": 391,
+  "augmentations_per_image": 30,
+  "sources": {
+    "otoscope_reference": {
+      "cerumen_impaction": 10,
+      "normal": 9,
+      "otitis_media": 10,
+      "perforation_attic": 8,
+      "perforation_central": 6,
+      "perforation_marginal": 7,
+      "retraction": 4,
+      "tumor": 8
+    }
+  },
+  "unmapped_folders": [],
+  "validation": {
+    "method": "leave-one-source-image-out; probabilities averaged over augmentations of the held-out image",
+    "images_tested": 62,
+    "accuracy": 0.4355,
+    "top2_accuracy": 0.629,
+    "top3_accuracy": 0.7258,
+    "category_accuracy": 0.4839,
+    "urgency_accuracy": 0.5484,
+    "retrieval_top1": 0.3548,
+    "retrieval_top3": 0.5968,
+    "chance_level": 0.125,
+    "per_class_recall": {
+      "cerumen_impaction": {
+        "correct": 5,
+        "n": 10,
+        "recall": 0.5
+      },
+      "normal": {
+        "correct": 6,
+        "n": 9,
+        "recall": 0.667
+      },
+      "otitis_media": {
+        "correct": 6,
+        "n": 10,
+        "recall": 0.6
+      },
+      "perforation_attic": {
+        "correct": 3,
+        "n": 8,
+        "recall": 0.375
+      },
+      "perforation_central": {
+        "correct": 2,
+        "n": 6,
+        "recall": 0.333
+      },
+      "perforation_marginal": {
+        "correct": 2,
+        "n": 7,
+        "recall": 0.286
+      },
+      "retraction": {
+        "correct": 0,
+        "n": 4,
+        "recall": 0.0
+      },
+      "tumor": {
+        "correct": 3,
+        "n": 8,
+        "recall": 0.375
+      }
+    },
+    "confusion": {
+      "cerumen_impaction": {
+        "cerumen_impaction": 5,
+        "tumor": 1,
+        "normal": 1,
+        "perforation_central": 1,
+        "perforation_attic": 1,
+        "perforation_marginal": 1
+      },
+      "normal": {
+        "normal": 6,
+        "perforation_attic": 1,
+        "perforation_central": 1,
+        "retraction": 1
+      },
+      "otitis_media": {
+        "perforation_attic": 2,
+        "otitis_media": 6,
+        "perforation_marginal": 1,
+        "tumor": 1
+      },
+      "perforation_attic": {
+        "perforation_marginal": 2,
+        "perforation_attic": 3,
+        "tumor": 1,
+        "otitis_media": 2
+      },
+      "perforation_central": {
+        "tumor": 2,
+        "perforation_central": 2,
+        "perforation_marginal": 1,
+        "normal": 1
+      },
+      "perforation_marginal": {
+        "cerumen_impaction": 2,
+        "perforation_marginal": 2,
+        "retraction": 1,
+        "otitis_media": 1,
+        "normal": 1
+      },
+      "retraction": {
+        "perforation_attic": 2,
+        "perforation_central": 2
+      },
+      "tumor": {
+        "tumor": 3,
+        "perforation_attic": 2,
+        "perforation_marginal": 1,
+        "retraction": 1,
+        "otitis_media": 1
+      }
+    }
+  },
+  "kaggle_present": false,
+  "novelty_threshold": 27.304
+}

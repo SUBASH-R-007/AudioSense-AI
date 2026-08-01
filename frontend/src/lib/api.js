@@ -184,6 +184,50 @@ export const api = {
 
   modelComparison: () => http('/api/model/comparison').then(json),
 
+  // --- otoscopy -----------------------------------------------------------
+  otoscopyAtlas: () => http('/api/otoscopy/reference').then(json),
+  otoscopyModel: () => http('/api/otoscopy/model').then(json),
+  otoscopy: (file, side = 'right', analysis = null) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('side', side)
+    // Sent as a form field rather than a second request so the cross-check
+    // against the audiogram happens server-side, in one round trip.
+    if (analysis) fd.append('analysis', JSON.stringify(analysis))
+    return http('/api/otoscopy/analyze', { method: 'POST', body: fd }).then(json)
+  },
+
+  // --- signs and symptoms -------------------------------------------------
+  symptomCatalog: () => http('/api/symptoms/catalog').then(json),
+  symptoms: (payload) =>
+    http('/api/symptoms/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  correlateSymptoms: (assessment, analysis) =>
+    http('/api/symptoms/correlate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assessment, analysis }),
+    }).then(json),
+
+  // --- immittance and emissions as instruments ----------------------------
+  tympanometryReference: () => http('/api/tympanometry/reference').then(json),
+  tympanometry: (payload) =>
+    http('/api/tympanometry/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  oaeReference: () => http('/api/oae/reference').then(json),
+  oae: (payload) =>
+    http('/api/oae/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
   aiSettings: () => http('/api/settings/ai').then(json),
   updateAiSettings: (update) =>
     http('/api/settings/ai', {

@@ -10,3 +10,8 @@ data/handouts.json
 data/feedback.jsonl
 data/ai_config.json
 data/verify_store.json
+
+# A local copy of the public otoscope dataset can be gigabytes. The trained
+# model artifact is already committed, so the image never needs the raw data.
+data/otoscope_kaggle/
+data/_kaggle_tmp/

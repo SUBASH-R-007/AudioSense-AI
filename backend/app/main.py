@@ -17,11 +17,14 @@ from app.routers import (
     digitize,
     feedback,
     handout,
+    instruments,
     listening,
+    otoscopy_router,
     pdf_router,
     progression_router,
     report_router,
     settings,
+    symptoms_router,
     validation_router,
 )
 
@@ -59,7 +62,7 @@ app.add_middleware(
 
 for r in (core, digitize, report_router, progression_router, batch,
           pdf_router, settings, feedback, handout, clinic, validation_router,
-          listening):
+          listening, otoscopy_router, symptoms_router, instruments):
     app.include_router(r.router)
 
 

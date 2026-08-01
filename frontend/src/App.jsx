@@ -3,6 +3,9 @@ import Layout from './components/Layout.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import NewTest from './pages/NewTest.jsx'
 import Screening from './pages/Screening.jsx'
+import Symptoms from './pages/Symptoms.jsx'
+import Otoscopy from './pages/Otoscopy.jsx'
+import Immittance from './pages/Immittance.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Simulator from './pages/Simulator.jsx'
 import Progression from './pages/Progression.jsx'
@@ -20,6 +23,9 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/new-test" replace />} />
         <Route path="/new-test" element={<NewTest />} />
+        <Route path="/symptoms" element={<Symptoms />} />
+        <Route path="/otoscopy" element={<Otoscopy />} />
+        <Route path="/immittance" element={<Immittance />} />
         <Route path="/screening" element={<Screening />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/simulator" element={<Simulator />} />

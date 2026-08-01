@@ -30,6 +30,43 @@ export function tamilVoiceAvailable() {
   return voicesFor('tamil').length > 0
 }
 
+/** Which of our languages this browser can actually speak. */
+export function availableLanguages() {
+  return Object.keys(LANG).filter((l) => voicesFor(l).length > 0)
+}
+
+/**
+ * Why a language cannot be spoken, in terms the user can act on.
+ *
+ * Chromium enumerates legacy SAPI5 voices from the registry, while voices
+ * installed through Windows Settings are OneCore voices kept somewhere else.
+ * The result is that Tamil can be installed, working in Narrator, and still
+ * invisible here — which looks like a bug in the app unless we say otherwise.
+ */
+export function voiceDiagnostic(lang) {
+  const all = window.speechSynthesis?.getVoices?.() || []
+  const speakable = availableLanguages()
+  const name = lang.charAt(0).toUpperCase() + lang.slice(1)
+  const isChromium = /Chrome|Chromium|Edg/.test(navigator.userAgent)
+  const isEdge = /Edg\//.test(navigator.userAgent)
+
+  if (!all.length) {
+    return `This browser reports no speech voices at all. Try Microsoft Edge.`
+  }
+  return [
+    `No ${name} voice is visible to this browser.`,
+    speakable.length
+      ? `It can currently speak: ${speakable.join(', ')}.`
+      : 'It has no usable voices for this app.',
+    isChromium && !isEdge
+      ? 'Chrome only reads legacy SAPI5 voices, so voices added through '
+        + 'Windows Settings often stay invisible to it. Opening the app in '
+        + 'Microsoft Edge usually fixes this immediately.'
+      : 'Install the voice under Settings → Time & language → Speech → '
+        + 'Manage voices, then restart the browser.',
+  ].join(' ')
+}
+
 /** Is a voice installed for this language key (or BCP-47 tag)? */
 export function voiceAvailable(langOrTag) {
   if (!langOrTag) return true
@@ -53,13 +90,8 @@ export function speak(lines, lang = 'english', { rate = 0.92, onEnd } = {}) {
   stopSpeaking()
 
   const voices = voicesFor(lang)
-  if (lang !== 'english' && !voices.length) {
-    const name = lang.charAt(0).toUpperCase() + lang.slice(1)
-    return {
-      ok: false,
-      reason: `No ${name} voice installed on this system — add one in Windows `
-        + `Settings → Time & language → Speech to hear the ${name} sheet read aloud.`,
-    }
+  if (!voices.length) {
+    return { ok: false, reason: voiceDiagnostic(lang) }
   }
 
   const text = Array.isArray(lines) ? lines.join(' ') : String(lines)

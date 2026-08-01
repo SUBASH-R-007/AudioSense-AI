@@ -3,9 +3,9 @@
 A full explanation of what this project is, how every part works, why each
 design decision was made, and what has actually been measured.
 
-**Scale:** ~7,300 lines of backend Python across 45 modules, ~5,700 lines of
-frontend across 30 files, **316 automated tests**, 8 application pages,
-19 test files.
+**Scale:** ~11,500 lines of backend Python across 62 modules, ~8,300 lines of
+frontend across 33 files, **429 automated tests**, 11 application pages,
+24 test files.
 
 ---
 
@@ -17,6 +17,10 @@ frontend across 30 files, **316 automated tests**, 8 application pages,
 4. [The clinical rules engine](#4-the-clinical-rules-engine)
 5. [The safety layer](#5-the-safety-layer)
 6. [The cross-modal test battery](#6-the-cross-modal-test-battery)
+   - [6a. Tympanometry as an instrument](#6a-tympanometry-as-an-instrument)
+   - [6b. The DP-gram](#6b-the-dp-gram)
+   - [6c. Otoscopy — the picture, checked against the measurement](#6c-otoscopy--the-picture-checked-against-the-measurement)
+   - [6d. Signs and symptoms](#6d-signs-and-symptoms)
 7. [Machine learning](#7-machine-learning)
 8. [Snap-to-Digitize](#8-snap-to-digitize-photo--audiogram)
 9. [Functional impact: phonemes, SII, hearing age](#9-functional-impact)
@@ -222,6 +226,203 @@ audiogram is cochlear damage that has not yet reached the audiogram — the
 point at which the remaining hearing can still be saved. The bundled
 🔬 demo case is a 26-year-old welder with a completely normal audiogram whom
 every conventional screening would send back to the shipyard.
+
+### 6a. Tympanometry as an instrument
+
+`tympanometry.py`, `/api/tympanometry/analyze`
+
+The classifier above works from three numbers a clinician has already read off
+a machine. That is not how tympanometry is done. The measurement is a **curve**
+— admittance against ear-canal pressure — and the clinically interesting part
+is its shape.
+
+| Derived from the curve | Why it matters |
+|---|---|
+| Peak pressure | middle-ear pressure |
+| Peak admittance above the tail | static compliance — height, not raw value |
+| **Tympanometric width** at half peak height | catches an early effusion while peak height is still normal |
+| Ear-canal volume at the positive tail | large = the probe is seeing past the drum |
+
+The width is the reason this module exists. A peak of perfectly normal height
+that is too **broad** is an early effusion, and it is invisible in a
+three-number summary. Adult normal is 51–114 daPa (Margolis & Heller 1987);
+children run wider at 60–150 daPa (ASHA 1997), so the age band is an input
+rather than an assumption.
+
+Two refusals are built in:
+
+- **Probe tone.** Below six months of age a 226 Hz probe can produce a
+  normal-looking trace over a middle ear full of fluid. The module returns the
+  reason and marks the type provisional rather than typing it confidently.
+- **Peak at the sweep edge.** A peak sitting at −400 daPa means the sweep did
+  not go far enough, not that this is a Type C.
+
+When only summary values are entered, the curve is **modelled** from them so
+the chart still draws — and every response says `source: "modelled"`, with the
+interpretation stating it in words. A drawing of three numbers is not evidence
+and is not presented as such. A round-trip test asserts that a synthesised
+curve reads back as the values that produced it.
+
+### 6b. The DP-gram
+
+`dpoae.py`, `/api/oae/analyze`
+
+Emission and noise floor at each f2 frequency, with a **stated protocol**:
+newborn (3 of 3), general screening (2 of 3), occupational (3 of 3 weighted to
+3–6 kHz), or a full diagnostic gram. A "refer" means nothing without the rule
+that produced it, so the rule travels with the result.
+
+Three judgements that a naive pass/fail gets wrong:
+
+1. **Absent above the ceiling is uninformative.** Emissions disappear once the
+   loss exceeds ~50 dB HL. Counting an absent emission at a 70 dB threshold as
+   evidence of hair-cell damage double-counts the audiogram. Those frequencies
+   are marked `uninformative`, not `refer`.
+2. **A high noise floor invalidates, it does not fail.** A 3 dB SNR in a quiet
+   booth and in a screaming infant are different measurements. Above 10 dB SPL
+   of noise the frequency is `invalid` and the overall result is `incomplete`.
+3. **A missing protocol frequency is incomplete, not a pass.** Two of three
+   present with the third never recorded is not a pass.
+
+Each dropout maps to a **cochlear place** via the tonotopic arrangement, so the
+result reads as "the basal turn, where noise damage starts" rather than a list
+of numbers. A notch — absent emissions with recovery both above and below — is
+named ahead of the coarser basal pattern, because a 4 kHz dropout with 8 kHz
+intact is the noise signature specifically.
+
+---
+
+## 6c. Otoscopy — the picture, checked against the measurement
+
+`app/otoscopy/`, `/api/otoscopy/analyze`
+
+Eight patterns from the clinical reference document supplied by the audiology
+team, extracted panel by panel from its figures into **62 labelled views**:
+normal, cerumen impaction, otitis media, retraction, and central / marginal /
+attic perforation, plus mass lesions.
+
+### Why hand-built features rather than a network
+
+62 images across 8 classes. A convolutional network would memorise them.
+Features that encode what a clinician actually looks at generalise from tens
+of examples instead of tens of thousands — and every one can be shown to the
+user as a number they can disagree with: erythema, cone of light, wax
+fraction, dark-defect size *and where it sits*. Position is most of the
+diagnosis here; the same defect is central in the pars tensa, marginal at the
+annulus, or attic superiorly.
+
+A bug worth recording: the first version thresholded the illuminated region
+and used those pixels as the mask, which **punched a hole wherever the view
+was dark — exactly where a perforation is**. The fix takes the outline of the
+lit region and fills it. Perforations were being masked out before the
+perforation detector ran.
+
+### What it honestly achieves
+
+Validated **leave-one-source-image-out**, so no augmented sibling of a test
+image is ever in its own training fold:
+
+| Measure | Result | Chance |
+|---|---|---|
+| Exact pattern, top-1 | ~44% | 12.5% |
+| Correct answer in top 3 | ~73% | 37.5% |
+| Urgency band | ~55% | 25% |
+
+Several times chance; nowhere near diagnostic. Retraction, with four reference
+views, is not learned at all. **So the interface does not present a label.** It
+presents a ranked differential, the three closest labelled reference images
+side by side with the capture, and the measured accuracy printed in the page
+itself. Feed it one of its own reference views and it says so, rather than
+letting a 100% bar look like performance.
+
+Random forests, extra trees and an RBF SVM were all measured under the same
+protocol; PCA into logistic regression beat them and is what ships.
+
+### The part that does not depend on the classifier
+
+Each pattern in the taxonomy records what it **predicts**: the expected
+air-bone gap, the expected tympanogram type, the tests that follow, the
+referral. Comparing those against the measured battery produces a checkable
+result either way:
+
+- Image read as otitis media, measured gap 32.5 dB, Type B trace →
+  **two independent confirmations**.
+- Image read as normal on the same case → *"conductive loss with a
+  normal-looking drum"* and *"tympanogram does not match the appearance"*.
+
+That conflict is informative whichever of the two is wrong, and it is the
+thing a clinician cannot get from the picture or the audiogram alone.
+
+Attic disease and mass lesions raise a referral **regardless of the
+audiogram**, because early cholesteatoma is frequently silent on pure tones.
+
+### Upgrading with the public dataset
+
+`scripts/fetch_otoscope_dataset.py` puts the Kaggle otoscope dataset in place
+(API or a manual download), mapping its folder names onto this taxonomy and
+**reporting any folder it will not map rather than guessing**. Then
+`python -m scripts.train_otoscopy` retrains. Same features, same API, same
+screens; only the model card changes. The dataset is not committed here — it
+is not ours to redistribute, and it requires an authenticated account.
+
+---
+
+## 6d. Signs and symptoms
+
+`symptom_kb.py`, `symptoms.py`, `/api/symptoms/analyze`
+
+Two supplied clinical documents, encoded unchanged in substance:
+
+1. A **presenting-complaint guide** — otorrhoea, otalgia, vertigo, headache —
+   listing likely causes **in rank order, separately for children, adults and
+   older adults**. The ordering *is* the clinical content.
+2. A **14-disease reference** giving main symptoms, most prone age group, and
+   the audiological tests that establish each diagnosis. That last column is
+   what makes this useful in an audiology clinic: it says which test to run
+   next.
+
+### Free text is matched, not parsed
+
+No language model, and none needed. Patients and clerks use a small, highly
+repetitive vocabulary; a synonym table covers it deterministically, offline,
+in microseconds. "Water discharge from ears" resolves to `ear_discharge`.
+Longer phrases win over their substrings, so "severe deep ear pain" is not
+filed as ordinary ear pain. **Anything unmatched is reported back on screen** —
+a symptom checker that silently drops a word is how a red flag goes missing.
+
+### Combining two sources that disagree
+
+The disease reference scores symptom overlap; the complaint guide gives a rank
+prior. Neither alone is right. The guide's top entry for adult otorrhoea is
+otitis externa — but its described presentation is *pain on touching the ear*,
+and this patient has persistent discharge with hearing loss. So the guide's
+prior is **modulated by how well the patient matches each cause's own
+one-line complaint**, run through the same matcher. Chronic suppurative otitis
+media, rank 2, correctly leads.
+
+Agreement between the two sources scores higher than either alone, and the
+response reports both components so a clinician can see which did the work.
+
+Other deliberate behaviours:
+
+- **Absence is evidence.** A disease whose defining feature is missing is
+  demoted, not merely un-promoted. Meniere's without vertigo or fluctuation is
+  a different diagnosis. Bullous myringitis requires bullae — ordinary ear pain
+  must not summon it.
+- **Some symptoms argue against.** A real hearing loss lowers CAPD, which is
+  defined by normal thresholds.
+- **Red flags do not compete with the differential.** They are evaluated
+  separately and reported above it, because "this might be meningitis" is not a
+  fourth-place possibility. Eleven rules, several age-restricted: cerebellar
+  stroke fires for vertigo with imbalance only in the geriatric band, exactly
+  as the source guide frames it.
+- **The battery is ordered by discrimination**, then by the sequence tests are
+  actually run in clinic — so it reads as a plan, not an alphabetical list.
+
+Once thresholds exist, `/api/symptoms/correlate` checks the leading diagnosis
+against them using a **declared** expected type per disease, not keywords
+sniffed out of prose. Free text that reads perfectly to a human ("notch at
+3–6 kHz") contains none of the words a matcher would need.
 
 ---
 
@@ -616,7 +817,8 @@ That is what "consistent diagnostic decision-making" means concretely.
 
 ## 17. Frontend design
 
-Eight pages: New Test, Screening, Dashboard, Simulator, Listening Lab,
+Eleven pages, ordered the way a consultation runs: Signs & Symptoms, Otoscopy,
+New Test, Screening, Immittance & OAE, Dashboard, Simulator, Listening Lab,
 Progression, Batch, Records.
 
 **The dashboard leads with the answer.** A verdict banner states the diagnosis
@@ -646,7 +848,7 @@ entry, simulation and screening keep working with no connectivity.
 
 ## 18. Testing strategy
 
-**316 tests across 19 files.**
+**429 tests across 24 files.**
 
 | Kind | What it proves |
 |---|---|
@@ -657,6 +859,17 @@ entry, simulation and screening keep working with no connectivity.
 | Ground-truth regression | the digitizer against known sample photos |
 | Provider routing | each LLM backend hits its own endpoint (no network calls) |
 | Full API cycle | analyze → report → PDF → verify round-trip |
+| Curve round-trips | a synthesised tympanogram reads back as the numbers that made it |
+| Knowledge-base integrity | every red-flag rule and disease weight names a symptom that exists |
+| Image determinism | the same otoscope image gives byte-identical features every run |
+| Path traversal | reference images cannot be used to read outside their directory |
+
+Three of the new tests exist because they caught real defects while being
+written: the otoscopy field-of-view mask was excluding dark regions inside the
+view (masking out perforations before detecting them), `cv2.kmeans` seeding
+made feature extraction non-deterministic, and a noise notch in the DP-gram
+was being reported as a generic basal loss because the branches were ordered
+wrongly.
 | Anti-alarm guards | normal thresholds never report as "bottom 1%" |
 
 Several bugs were caught by these rather than by inspection: a 429-quota
@@ -714,5 +927,21 @@ admits what it cannot do:
 6. **Tinnitus matching is subjective** and repeat matches vary.
 7. **The digitizer assumes** a reasonably clean, roughly axis-aligned chart
    with conventional colours.
-8. **Nothing here replaces an audiologist.** Every report carries: *"AI-assisted
-   interpretation; final diagnosis requires a qualified audiologist."*
+8. **The otoscopy classifier is trained on 62 images.** Leave-one-source-image-out
+   it identifies the exact pattern well under half the time — several times
+   chance, far from diagnostic — and it does not detect retraction at all,
+   having only four reference views of it. The interface therefore shows a
+   ranked differential with the closest labelled reference images, and prints
+   the measured accuracy on the page. A photograph also cannot exclude disease
+   behind wax, blood or a partly visible membrane. The training pipeline
+   accepts the public Kaggle otoscope dataset with one command and no code
+   change; that dataset is not redistributable and so is not committed here.
+9. **Symptom assessment ranks, it does not diagnose**, and it knows only the
+   fourteen diseases and four presenting complaints in the supplied reference
+   documents. The weights attached to each symptom are ours, not the
+   documents' — they are declared in `symptom_kb.py` so they can be argued
+   with rather than hidden.
+10. **A modelled tympanogram curve is a drawing of the entered numbers**, not a
+    recorded sweep, and is labelled as such in the response and on screen.
+11. **Nothing here replaces an audiologist.** Every report carries: *"AI-assisted
+    interpretation; final diagnosis requires a qualified audiologist."*
