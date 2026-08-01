@@ -12,7 +12,7 @@ from app.clinical.norms import analyze_norms
 from app.clinical.oae import analyze_oae
 from app.clinical.prescription import prescribe, verify_fitting
 from app.clinical.safety import safety_review, sort_alerts
-from app.clinical.speech_audiometry import analyze_speech
+from app.clinical.speech_audiometry import analyze_speech, compare_ears
 from app.clinical.triage import triage_case
 from app.ml import classifier
 from app.models.schemas import EarData, TestRecord, ear_to_numeric
@@ -80,10 +80,13 @@ def analyze(record: TestRecord):
     speech_ac = getattr(record, speech_ear).ac
 
     safety = safety_review(record.right, record.left, record.patient.onset)
+    # Each ear is passed the other so an unmasked SRT can be checked against
+    # the opposite cochlea's best threshold — speech crosses the skull too.
     speech = {
-        "right": analyze_speech(record.right, r_pta),
-        "left": analyze_speech(record.left, l_pta),
+        "right": analyze_speech(record.right, r_pta, record.left),
+        "left": analyze_speech(record.left, l_pta, record.right),
     }
+    speech["comparison"] = compare_ears(speech["right"], speech["left"])
 
     # --- the rest of the test battery, and whether it agrees --------------
     immittance = {
@@ -145,6 +148,35 @@ def analyze(record: TestRecord):
                 "action": "Refer for ENT / neuro-otology assessment with imaging.",
             })
             safety["has_urgent"] = True
+        if s["srt"] and s["srt"]["masking_note"]:
+            safety["alerts"].append({
+                "level": "validity",
+                "title": "Speech masking was indicated but not recorded",
+                "ear": side, "detail": s["srt"]["masking_note"],
+                "action": "Repeat the SRT with the opposite ear masked before "
+                          "reporting it.",
+            })
+            safety["validity_warning"] = True
+        if s["sdt"] and "sdt_worse_than_srt" in s["sdt"]["flags"]:
+            safety["alerts"].append({
+                "level": "validity",
+                "title": "Speech detection threshold poorer than reception",
+                "ear": side, "detail": " ".join(s["sdt"]["notes"]),
+                "action": "Re-measure both; detecting speech cannot be harder "
+                          "than recognising it.",
+            })
+            safety["validity_warning"] = True
+
+    comparison = speech.get("comparison")
+    if comparison and comparison["significant"]:
+        safety["alerts"].append({
+            "level": "urgent",
+            "title": "Asymmetric word recognition between ears",
+            "ear": "both", "detail": comparison["message"],
+            "action": "Investigate the poorer ear for retrocochlear pathology; "
+                      "MRI if it persists on repeat testing.",
+        })
+        safety["has_urgent"] = True
     sort_alerts(safety["alerts"])
 
     result = {

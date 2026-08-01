@@ -30,6 +30,10 @@ class SpeechPoint(BaseModel):
 
     level: int
     score: float = Field(ge=0, le=100)
+    #: Words in the list. A score is a sample, and the list length is what
+    #: decides how wide its confidence interval is — 25 words cannot resolve
+    #: differences that 50 can.
+    n_words: int = Field(default=25, ge=1, le=200)
 
 
 class OAEPoint(BaseModel):
@@ -45,12 +49,20 @@ class EarData(BaseModel):
 
     ac: Dict[int, Optional[ThresholdValue]] = Field(default_factory=dict)
     bc: Dict[int, Optional[ThresholdValue]] = Field(default_factory=dict)
+    #: Speech Detection (Awareness) Threshold, dB HL — the lowest level at
+    #: which speech is detected, without needing to be understood. The
+    #: fallback when an SRT cannot be obtained.
+    sdt: Optional[int] = None
     #: Speech Reception Threshold, dB HL (lowest level for 50% spondee repetition).
     srt: Optional[int] = None
     #: Word recognition scores at one or more presentation levels.
     wrs: List[SpeechPoint] = Field(default_factory=list)
     #: Whether masking was applied when these thresholds were obtained.
     masked: bool = False
+    #: Whether the opposite ear was masked during speech testing. Speech
+    #: crosses the skull like a tone, so an unmasked SRT can belong to the
+    #: other ear.
+    speech_masked: bool = False
 
     # --- immittance -------------------------------------------------------
     #: Tympanometric peak pressure, daPa.

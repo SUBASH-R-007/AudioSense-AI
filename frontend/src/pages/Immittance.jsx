@@ -18,6 +18,7 @@ import {
 import { api } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
 import TympanogramAtlas from '../components/TympanogramAtlas.jsx'
+import SpeechAudiometry from '../components/SpeechAudiometry.jsx'
 
 const TYPE_STYLE = {
   A: 'border-emerald-300 bg-emerald-50 text-emerald-900',
@@ -470,11 +471,12 @@ export default function Immittance() {
     <div className="mx-auto max-w-6xl">
       <header>
         <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
-          Immittance &amp; emissions
+          Immittance, emissions &amp; speech
         </h1>
         <p className="mt-1 max-w-3xl text-[13.5px] leading-relaxed text-slate-500">
-          Tympanometry and otoacoustic emissions as full instruments — the curve, the
-          gradient, the pass criterion and the cochlear place — usable on their own,
+          Tympanometry, otoacoustic emissions and speech audiometry as full
+          instruments — the curve, the gradient, the pass criterion, the cochlear
+          place and the performance-intensity function — usable on their own,
           without a pure-tone audiogram to attach them to.
         </p>
       </header>
@@ -482,6 +484,7 @@ export default function Immittance() {
       <div className="mt-5 space-y-5">
         <Tympanometry reference={tympRef} onType={setActiveType} />
         <Emissions reference={oaeRef} />
+        <SpeechAudiometry />
       </div>
 
       {/* Each of the five types against the disease reference. A tympanogram

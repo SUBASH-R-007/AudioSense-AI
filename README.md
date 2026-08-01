@@ -31,6 +31,7 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 | 👁 **Otoscopy pattern matching** | A tympanic-membrane photo against a **62-view labelled atlas** across eight patterns, returning a ranked differential, the three closest reference images side by side, and the measurements behind the call. Then the part that does not depend on the classifier: what the appearance *predicts* — a large canal volume, a Type B trace, a 20–45 dB gap — checked against what was actually measured |
 | 📉 **Tympanometry, all eight types** | The full classification from the immittance reference — A, As, Ad, **Add**, B, C, **D**, **E** — not the five-type scheme. A notched peak is a scarred drum (D) or a broken ossicular chain (E), which the five-type version files as "deep" and loses. Type B splits **three** ways on canal volume, and the third is the one that matters: small volume is wax or a blocked probe, an artefact otherwise reported as middle-ear disease. Every type ships a **generated curve**, and each curve re-classifies as itself |
 | 🔗 **Diseases from any single input** | A ranked differential from the **image alone**, or the **audiogram alone**, with no history required — a scope goes in the ear before the patient is in the booth. The audiogram is matched against a characteristic curve per disease on four separate axes (shape, degree, type, symmetry), all four shown, because a disease can match the shape perfectly and be excluded by the type |
+| 🗣 **SDT, SRT and WRS with their real uncertainty** | All three speech measurements, cross-checked against each other and the tones. **A word score is a sample, not a measurement**: every score carries its exact binomial confidence interval, so 88% and 76% on a 25-word list are correctly reported as *not different*. SDT must track the best pure-tone threshold and sit 5–10 dB better than the SRT — a detection threshold poorer than reception is impossible and says so. A score taken nearer than 30 dB above the SRT is flagged rather than interpreted, because it measures the presentation level, not the patient |
 | 🌀 **DP-gram with a stated protocol** | Emission and noise floor per frequency, pass/refer against newborn, screening, occupational or diagnostic criteria, and the **cochlear place** each dropout maps to. Absent emissions above 50 dB HL are marked *uninformative*, not counted as damage — that would be double-counting the audiogram |
 | 🧭 **Spatial hearing test** | HRTF-rendered sound placed around the listener, each ear through its own loss. With normal ears the interaural difference **flips sign** with direction; with asymmetric loss it stays positive whichever side the sound came from — the cue is gone, which is why the patient turns the wrong way. Measured, not asserted |
 | 🍽 **Digits-in-noise** | The adaptive digit-triplet test behind national screening programmes. Only the speech-to-noise *ratio* matters, so it works on uncalibrated equipment — and it catches the patient with a clean audiogram who still cannot follow a conversation |
@@ -186,6 +187,8 @@ backend/
                    triage.py (priority + auto-release routing) · norms.py (ISO 7029)
                    listening_lab.py (localization · speech-in-noise · tinnitus)
                    immittance.py (tympanograms + reflexes) · oae.py (emissions)
+                   speech_audiometry.py (SDT · SRT · WRS · binomial intervals
+                                        · rollover · ear comparison)
                    tympanometry.py (8 types · gradient · notch detection · age norms
                                     · generated reference curves · probe-tone guard)
                    dpoae.py (DP-gram · protocols · cochlear place)
@@ -209,10 +212,10 @@ backend/
   app/routers/     analyze · prescription · speech-words · digitize · report · progression
                    batch · pdf · settings · feedback · handout (QR) · clinic (records,
                    noise-dose, referral, atlas) · otoscopy · symptoms · instruments
-                   (tympanometry + oae) · linkage
+                   (tympanometry + oae) · linkage · speech
   data/            otoscope_reference/ (62 labelled views, 8 patterns, ~1.3 MB)
                    otoscopy_model.joblib + model card
-  tests/           506 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
+  tests/           561 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
   scripts/         make_samples.py (regenerates the demo photos + ground truth)
                    extract_otoscope_reference.py (docx → labelled atlas)
                    train_otoscopy.py · fetch_otoscope_dataset.py
@@ -220,6 +223,7 @@ samples/           2 audiogram photos + ground_truth.json + batch_sample.csv
 frontend/
   src/pages/       Symptoms · Otoscopy · NewTest · Screening · Immittance · Dashboard
                    Simulator · ListeningLab · Progression · Batch · Records
+  src/components/  ... SpeechAudiometry (P-I function with binomial whiskers)
   src/components/  AudiogramChart (clinical symbols, glow, banana) · CochleaMap (Greenwood)
                    ThresholdGrid · AISettingsPanel
   src/audio/       simulatorGraph.js (loss + aid + compression + babble + binaural)
@@ -238,7 +242,7 @@ frontend/
 - **Progression**: OSHA 29 CFR 1910.95 standard threshold shift (2k/4k proxy, documented); ASHA (1994) ototoxicity criteria.
 - **Red flags**: sudden SNHL = ≥30 dB across ≥3 contiguous frequencies within 72 h (confirmed against a prior audiogram where one exists, otherwise conditional on reported onset); asymmetry referral at ≥20 dB at one frequency or ≥15 dB at two.
 - **Masking**: interaural attenuation of 40 dB for supra-aural earphones (AC) and ~0 dB for BC; a warning is raised only when masking was indicated *and* not recorded.
-- **Speech audiometry**: SRT/PTA agreement within ±10 dB; rollover index > 0.45 as the retrocochlear indicator.
+- **Speech audiometry**: SDT tracks the best threshold in the speech range and sits 5–10 dB better than the SRT (Chaiklin 1959; ASHA 1988). SRT/PTA agreement within ±10 dB, compared against Fletcher's best-two-of-three average as well as the four-frequency mean. Word scores carry an exact Clopper–Pearson binomial interval and differences are tested rather than eyeballed (Thornton & Raffin 1978); PB max is expected 30 dB or more above the SRT; rollover index > 0.45 remains the retrocochlear indicator, and a rollover the word list cannot resolve is called out as such. Speech interaural attenuation 45 dB for the shadow-response check.
 - **Immittance**: eight tympanogram types (A/As/Ad/Add/B/C/D/E) per the supplied immittance reference (Gelfand, *Essentials of Audiology*, 4th ed., pp. 187–192). Ear-canal volume 0.3–1.0 ml in children and 0.6–2.0 ml in adults; peak pressure +50 to −100 daPa; static admittance 0.35–1.25 mmho in children and 0.37–1.66 in adults; tympanic gradient > 0.2. Type B splits three ways on canal volume — normal is effusion, large is perforation or a patent grommet, small is cerumen or a blocked probe. Tympanometric width is also reported (51–114 daPa adults, Margolis & Heller 1987; 60–150 children, ASHA 1997). A 226 Hz probe is refused below 6 months of age, where it can read normal over a middle ear full of fluid.
 - **OAE**: DPOAE counted present at ≥6 dB above the noise floor; absent emissions with normal thresholds reported as pre-clinical outer-hair-cell damage. Absent emissions where the threshold already exceeds ~50 dB HL are marked *uninformative* rather than counted as damage, and a noise floor above 10 dB SPL invalidates the frequency instead of failing it.
 - **Symptom differential**: two supplied clinical documents — a presenting-complaint guide ranked by age band (otorrhoea, otalgia, vertigo, headache) and a 14-disease reference giving symptoms, prone age group and the audiological tests that establish each diagnosis. Free text is matched by synonym table, not inferred; unmatched words are reported back. Every ranked entry names which source put it there.

@@ -4,8 +4,8 @@ A full explanation of what this project is, how every part works, why each
 design decision was made, and what has actually been measured.
 
 **Scale:** ~12,300 lines of backend Python across 64 modules, ~8,700 lines of
-frontend across 34 files, **506 automated tests**, 11 application pages,
-24 test files.
+frontend across 34 files, **561 automated tests**, 11 application pages,
+25 test files.
 
 ---
 
@@ -1045,7 +1045,7 @@ entry, simulation and screening keep working with no connectivity.
 
 ## 18. Testing strategy
 
-**506 tests across 24 files.**
+**561 tests across 25 files.**
 
 | Kind | What it proves |
 |---|---|

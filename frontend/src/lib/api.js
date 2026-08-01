@@ -233,6 +233,21 @@ export const api = {
       body: JSON.stringify({ analysis, side }),
     }).then(json),
 
+  // --- speech audiometry: SDT, SRT, WRS -----------------------------------
+  speechReference: () => http('/api/speech/reference').then(json),
+  speech: (payload) =>
+    http('/api/speech/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  compareWordScores: (payload) =>
+    http('/api/speech/compare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
   // --- immittance and emissions as instruments ----------------------------
   tympanometryReference: () => http('/api/tympanometry/reference').then(json),
   tympanometry: (payload) =>
