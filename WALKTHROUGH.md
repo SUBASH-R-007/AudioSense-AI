@@ -3,8 +3,8 @@
 A full explanation of what this project is, how every part works, why each
 design decision was made, and what has actually been measured.
 
-**Scale:** ~11,500 lines of backend Python across 62 modules, ~8,300 lines of
-frontend across 33 files, **429 automated tests**, 11 application pages,
+**Scale:** ~12,300 lines of backend Python across 64 modules, ~8,700 lines of
+frontend across 34 files, **471 automated tests**, 11 application pages,
 24 test files.
 
 ---
@@ -21,6 +21,7 @@ frontend across 33 files, **429 automated tests**, 11 application pages,
    - [6b. The DP-gram](#6b-the-dp-gram)
    - [6c. Otoscopy — the picture, checked against the measurement](#6c-otoscopy--the-picture-checked-against-the-measurement)
    - [6d. Signs and symptoms](#6d-signs-and-symptoms)
+   - [6e. Linkage — everything cross-checks everything](#6e-linkage--everything-cross-checks-everything)
 7. [Machine learning](#7-machine-learning)
 8. [Snap-to-Digitize](#8-snap-to-digitize-photo--audiogram)
 9. [Functional impact: phonemes, SII, hearing age](#9-functional-impact)
@@ -419,10 +420,87 @@ Other deliberate behaviours:
 - **The battery is ordered by discrimination**, then by the sequence tests are
   actually run in clinic — so it reads as a plan, not an alphabetical list.
 
-Once thresholds exist, `/api/symptoms/correlate` checks the leading diagnosis
-against them using a **declared** expected type per disease, not keywords
-sniffed out of prose. Free text that reads perfectly to a human ("notch at
-3–6 kHz") contains none of the words a matcher would need.
+Once thresholds exist, the correlation checks the leading diagnosis against
+them using a **declared** expected type per disease, not keywords sniffed out
+of prose. Free text that reads perfectly to a human ("notch at 3–6 kHz")
+contains none of the words a matcher would need.
+
+---
+
+## 6e. Linkage — everything cross-checks everything
+
+`linkage.py`, `/api/linkage`
+
+Each module answers a different question and each can be wrong alone. The
+history says what the patient notices; the image says what the ear looks like;
+tympanometry says whether the middle ear moves; the audiogram says how much is
+lost and where. The diagnosis is in whether they agree — and when they do not,
+in naming the specific disagreement rather than averaging it away.
+
+Four links, all bidirectional, all traceable to a rule in `symptom_kb`:
+
+| Link | What it checks |
+|---|---|
+| Otoscopy ↔ symptoms | the appearance predicts symptoms; are they reported? |
+| Otoscopy ↔ audiogram | the appearance predicts a gap and a trace; were they measured? |
+| Symptoms ↔ audiogram | the differential predicts a **type, a PTA range and a side** |
+| Immittance ↔ diseases | each of the **five** Jerger types supports some and excludes others |
+
+**A confirmation is weaker evidence than a contradiction.** Two tests agreeing
+may only mean they share an assumption; two that cannot both be true means one
+is wrong, and that always deserves attention. So conflicts sort first, carry an
+action, and drive the headline. A page of green ticks that buries the one line
+saying two measurements disagree is worse than no panel at all.
+
+### Otoscopy ↔ symptoms
+
+This is the link that redeems a weak classifier. Each pattern declares the
+symptoms it should produce and the symptoms it cannot account for. Otitis
+media on the image plus pain and fever in the history is two independent
+methods reaching the same answer from different evidence — worth more than
+either alone. A normal drum with fever and discharge is a conflict.
+
+Two asymmetries are deliberate. Hearing loss is **not** listed as unexplained
+by a normal drum, because a normal drum is exactly what a sensorineural loss
+looks like. And attic disease or a mass with *no* supporting symptoms raises a
+conflict rather than passing quietly, because early cholesteatoma is frequently
+silent — absence of symptoms must not be allowed to reassure.
+
+### Symptoms ↔ audiogram, including the PTA
+
+A diagnosis predicts three separate things about an audiogram, and they fail
+independently: presbycusis with a conductive gap is wrong about the **type**,
+presbycusis at 90 dB is wrong about the **degree**, presbycusis in one ear is
+wrong about the **symmetry** — and each points somewhere different. So each is
+checked and reported separately, against an `expected_type`, `expected_pta` and
+`laterality` declared per disease.
+
+Degree comparison uses a ±5 dB test-retest tolerance and has **three**
+outcomes, not two. A value a few decibels past the edge of a range is not a
+contradiction, but describing it as "inside the range" would be a false
+statement about a number printed next to it, so it reports *borderline*.
+
+Two further checks compare what the patient said against what was measured:
+a reported loss with normal thresholds (the presentation pure tones are least
+able to explain — test speech in noise before reassuring), and a significant
+measured loss the patient never mentioned (gradual loss is often unnoticed;
+counsel on the measurement, not the report).
+
+When the leading possibility comes from the complaint guide, which predicts no
+audiometric pattern, correlation falls to the highest-ranked entry that does —
+and **says so**, with its rank, rather than appearing to reason about a
+diagnosis the page never showed as the leader.
+
+### Immittance ↔ diseases, all five types
+
+Every Jerger type, each with the diseases it supports and the ones it argues
+against. The second column is the one usually left out and often the more
+useful: a Type A trace diagnoses nothing on its own, but it removes most of the
+conductive differential in a single measurement. Type B splits on ear-canal
+volume, and the split changes the differential completely — perforation versus
+fluid behind an intact drum. Reflex patterns add a second axis: absent with a
+conductive loss, absent while emissions are present, or present despite a
+severe loss each carry their own differential.
 
 ---
 
@@ -848,7 +926,7 @@ entry, simulation and screening keep working with no connectivity.
 
 ## 18. Testing strategy
 
-**429 tests across 24 files.**
+**471 tests across 24 files.**
 
 | Kind | What it proves |
 |---|---|

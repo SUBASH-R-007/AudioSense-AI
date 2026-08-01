@@ -212,6 +212,15 @@ export const api = {
       body: JSON.stringify({ assessment, analysis }),
     }).then(json),
 
+  // --- cross-modal linkage ------------------------------------------------
+  linkage: (payload) =>
+    http('/api/linkage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  linkageReference: () => http('/api/linkage/reference').then(json),
+
   // --- immittance and emissions as instruments ----------------------------
   tympanometryReference: () => http('/api/tympanometry/reference').then(json),
   tympanometry: (payload) =>

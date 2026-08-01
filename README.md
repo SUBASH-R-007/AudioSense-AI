@@ -26,6 +26,7 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 
 | | |
 |---|---|
+| 🔗 **Everything cross-checks everything** | Four links, live on every screen: the **image against the history** (an otitis media picture and a patient reporting pain and fever confirm each other; a normal drum with fever does not), the **image against the audiogram**, the **history against type, degree, symmetry and PTA**, and the **tympanogram against the disease list**. Conflicts always sort above agreements, because two tests that cannot both be true is the finding — a page of green ticks that buries it is worse than no panel at all |
 | 🩺 **Signs & symptoms triage** | "Water keeps coming out of my ear." Free text or checklist → ranked differential, **red flags that outrank it**, and the test battery that separates the possibilities — from two clinical reference documents, matched deterministically with no network call. Age changes the answer: the same discharge is acute otitis media in a child and **necrotizing otitis externa** in a diabetic of seventy-five |
 | 👁 **Otoscopy pattern matching** | A tympanic-membrane photo against a **62-view labelled atlas** across eight patterns, returning a ranked differential, the three closest reference images side by side, and the measurements behind the call. Then the part that does not depend on the classifier: what the appearance *predicts* — a large canal volume, a Type B trace, a 20–45 dB gap — checked against what was actually measured |
 | 📉 **Tympanometry as an instrument** | The pressure sweep itself, not three numbers. **Tympanometric width** is the measurement that catches an early effusion while peak height is still normal, and it only exists on the curve. Age-banded norms, and a 226 Hz probe is **refused** under six months of age rather than typed wrongly |
@@ -155,7 +156,9 @@ Training artifacts land in `backend/data/`: `confusion_matrix.png` + `accuracy_r
 
 **0:35 — Snap-to-Digitize.** Drag `samples/audiogram_photo_1.png` onto the drop zone. Watch the paper chart become editable thresholds with confidence badges — point out the *human-in-the-loop* banner (OpenCV, fully offline). Click **Analyze →**.
 
-**0:50 — Look in the ear.** With the conductive case loaded, open **Otoscopy** and click an *otitis media* reference view. Two things on screen: the differential with its **measured accuracy stated in the banner** — "we tell you it gets the exact pattern right less than half the time, because it does" — and beside it the three closest labelled reference images for the clinician to judge. Then scroll to *Against the rest of the battery*: **✓ the 32.5 dB gap matches, ✓ the Type B trace matches.** Now click a *normal* reference view instead: **⚠ conductive loss with a normal-looking drum.** "That conflict does not depend on the classifier being right. It is the picture arguing with the measurement, and that is the part a clinician cannot get from either alone."
+**0:50 — Look in the ear.** With the conductive case loaded, open **Otoscopy** and click an *otitis media* reference view. Two things on screen: the differential with its **measured accuracy stated in the banner** — "we tell you it gets the exact pattern right less than half the time, because it does" — and beside it the three closest labelled reference images for the clinician to judge.
+
+Then scroll to **Case linkage — 4 of 4 links active**. The image says otitis media; the history the patient gave independently ranks acute otitis media; the 32.5 dB gap matches; the Type B trace matches. Now click a *normal* reference view instead and watch it turn amber: **⚠ symptoms the appearance does not explain** and **⚠ conductive loss with a normal-looking drum**. "None of that depends on the classifier being right. It is four independent findings arguing with each other, and a clinician cannot get it from any one of them alone."
 
 **1:10 — The curve, not the number.** Open **Immittance & OAE** and pick *Early effusion (broad peak)*. Peak height is normal, compliance is normal — and the **gradient is 208 daPa against a ceiling of 114**, flagged. "Three numbers on a printout call this a Type A. The curve calls it an early effusion." Switch to *Perforation*: canal volume 2.8 cm³, flagged as a hole. Below, the DP-gram on *Pre-clinical noise damage* — emissions gone from 3 kHz up, mapped to the **basal turn of the cochlea**.
 
@@ -184,8 +187,10 @@ backend/
                    immittance.py (tympanograms + reflexes) · oae.py (emissions)
                    tympanometry.py (sweep curve · gradient · age norms · probe-tone guard)
                    dpoae.py (DP-gram · protocols · cochlear place)
-                   symptom_kb.py (complaint guide by age · 14 diseases · red flags)
+                   symptom_kb.py (complaint guide by age · 14 diseases · red flags
+                                  · otoscopy↔symptom and 5 tympanogram↔disease rules)
                    symptoms.py (synonym matching · ranked differential · battery)
+                   linkage.py (image↔history↔audiogram↔immittance reconciliation)
                    consistency.py (cross-modal reconciliation) · noise_dose.py (OSHA/NIOSH)
                    prescription.py (NAL-R + aided verification) · forecast.py (5-year projection)
   app/otoscopy/    taxonomy.py (8 patterns + audiological consequence)
@@ -201,10 +206,10 @@ backend/
   app/routers/     analyze · prescription · speech-words · digitize · report · progression
                    batch · pdf · settings · feedback · handout (QR) · clinic (records,
                    noise-dose, referral, atlas) · otoscopy · symptoms · instruments
-                   (tympanometry + oae)
+                   (tympanometry + oae) · linkage
   data/            otoscope_reference/ (62 labelled views, 8 patterns, ~1.3 MB)
                    otoscopy_model.joblib + model card
-  tests/           429 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
+  tests/           471 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
   scripts/         make_samples.py (regenerates the demo photos + ground truth)
                    extract_otoscope_reference.py (docx → labelled atlas)
                    train_otoscopy.py · fetch_otoscope_dataset.py
@@ -235,6 +240,7 @@ frontend/
 - **OAE**: DPOAE counted present at ≥6 dB above the noise floor; absent emissions with normal thresholds reported as pre-clinical outer-hair-cell damage. Absent emissions where the threshold already exceeds ~50 dB HL are marked *uninformative* rather than counted as damage, and a noise floor above 10 dB SPL invalidates the frequency instead of failing it.
 - **Symptom differential**: two supplied clinical documents — a presenting-complaint guide ranked by age band (otorrhoea, otalgia, vertigo, headache) and a 14-disease reference giving symptoms, prone age group and the audiological tests that establish each diagnosis. Free text is matched by synonym table, not inferred; unmatched words are reported back. Every ranked entry names which source put it there.
 - **Otoscopy**: eight patterns from the supplied reference document, with each pattern's *expected* air-bone gap and tympanogram recorded so the image can be checked against the measured battery. The classifier is validated leave-one-source-image-out on 62 views and its accuracy — well above chance, well below diagnostic — is shown in the app, alongside what it cannot do.
+- **Cross-modal linkage**: each otoscopic pattern declares the symptoms it should produce and the ones it cannot account for; each disease declares its expected audiometric type, PTA range and laterality; each of the five Jerger types declares the diseases it supports and the ones it excludes. Every cross-check quotes the rule that produced it. Degree comparison uses a ±5 dB test-retest tolerance and reports *borderline* rather than claiming a value outside the range is inside it.
 - **Bayesian screening**: QUEST/ZEST posterior with a logistic psychometric function (4.5 dB slope, 2% guess, 3% lapse), stopping on a 10 dB credible interval. Benchmarked against the staircase over 300 simulated listeners — 9.6 vs 11.6 presentations, 2.7 vs 3.3 dB mean absolute error, and 1.3% vs 0.3% of thresholds off by more than 10 dB. The gain is calibrated uncertainty, not raw speed.
 - **Noise dose**: OSHA 29 CFR 1910.95 (90 dBA, 5 dB exchange) and NIOSH 1998 (85 dBA, 3 dB exchange); protector attenuation derated as (NRR − 7) / 2.
 - **Prescription**: NAL-R insertion gain (Byrne & Dillon 1986); bands already within normal limits receive no gain. Aided verification tolerances ±10 dB against target.

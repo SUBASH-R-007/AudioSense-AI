@@ -5,6 +5,7 @@ import { useApp } from '../lib/store.jsx'
 import { captureSvgAsPng } from '../lib/svgCapture.js'
 import AudiogramChart, { buildChartData } from '../components/AudiogramChart.jsx'
 import CochleaMap from '../components/CochleaMap.jsx'
+import LinkagePanel from '../components/LinkagePanel.jsx'
 import VerdictBanner from '../components/VerdictBanner.jsx'
 import {
   availableLanguages, speak, stopSpeaking, voiceAvailable, voiceDiagnostic,
@@ -115,6 +116,11 @@ export default function Dashboard() {
   const [lang, setLang] = useState('english')
   const [showBanana, setShowBanana] = useState(false)
   const [showPhonemes, setShowPhonemes] = useState(false)
+  // The glow marks the frequencies driving the AI's pattern call. It is
+  // useful when you are asking "why did it say that" and pure clutter when
+  // you are reading the thresholds, so it toggles like the other overlays.
+  const [showGlow, setShowGlow] = useState(true)
+  const [squareChart, setSquareChart] = useState(true)
   const [pdfBusy, setPdfBusy] = useState(false)
   const [speaking, setSpeaking] = useState(false)
   const [cochleaEar, setCochleaEar] = useState('right')
@@ -345,19 +351,25 @@ export default function Dashboard() {
           data-tour="chart">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">Clinical Audiogram</h2>
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               <Toggle on={showBanana} set={setShowBanana}>Speech banana</Toggle>
               <Toggle on={showPhonemes} set={setShowPhonemes}>Phonemes</Toggle>
+              <Toggle on={showGlow} set={setShowGlow}>AI glow</Toggle>
+              <Toggle on={squareChart} set={setSquareChart}>Square grid</Toggle>
             </div>
           </div>
-          <div ref={chartRef} className="mt-2" role="img"
+          {/* Capped so the square chart cannot grow taller than the viewport
+              on a wide screen, where a 1:1 ratio would otherwise push the
+              cards below the fold. */}
+          <div ref={chartRef} className="mx-auto mt-2 w-full max-w-[560px]" role="img"
             aria-label={`Audiogram. ${analysis.verdict?.headline || ''} Threshold values are listed in the table below.`}>
             <AudiogramChart
               data={chartData}
               phonemes={betterPhonemes?.phonemes}
               showBanana={showBanana}
               showPhonemes={showPhonemes}
-              showGlow
+              showGlow={showGlow}
+              square={squareChart}
             />
           </div>
 
@@ -388,7 +400,9 @@ export default function Dashboard() {
           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-slate-500">
             <span><span className="font-bold text-red-600">O / [</span> right AC / BC</span>
             <span><span className="font-bold text-blue-600">X / ]</span> left AC / BC</span>
-            <span className="text-teal-600">⬤ teal glow = regions driving the AI classification</span>
+            {showGlow && (
+              <span className="text-teal-600">⬤ teal glow = regions driving the AI classification</span>
+            )}
             {showPhonemes && <span className="text-red-600">red phonemes = inaudible</span>}
           </div>
         </div>
@@ -595,7 +609,8 @@ export default function Dashboard() {
             <CochleaMap thresholds={analysis.thresholds} ear={cochleaEar} />
             <p className="mt-1 text-[10.5px] leading-snug text-slate-400">
               Greenwood frequency-place map: high frequencies sit at the base, which
-              noise and ageing damage first.
+              noise and ageing damage first. Shaded red for the right ear and blue
+              for the left, matching the audiogram symbols.
             </p>
           </Card>
 
@@ -622,6 +637,14 @@ export default function Dashboard() {
             ) : <span className="text-[13px] text-slate-500">Not computable — PTA incomplete.</span>}
           </Card>
         </div>
+      </div>
+
+      {/* History, image and middle ear reconciled against these thresholds.
+          Separate from the test battery below, which reconciles the objective
+          tests against each other — this one brings in what the patient said
+          and what the ear looked like. */}
+      <div className="mt-5">
+        <LinkagePanel side={cochleaEar} />
       </div>
 
       {/* cross-modal test battery */}

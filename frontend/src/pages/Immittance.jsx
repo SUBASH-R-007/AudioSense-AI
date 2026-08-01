@@ -425,10 +425,12 @@ function Emissions({ reference }) {
 export default function Immittance() {
   const [tympRef, setTympRef] = useState(null)
   const [oaeRef, setOaeRef] = useState(null)
+  const [linkRef, setLinkRef] = useState(null)
 
   useEffect(() => {
     api.tympanometryReference().then(setTympRef).catch(() => {})
     api.oaeReference().then(setOaeRef).catch(() => {})
+    api.linkageReference().then(setLinkRef).catch(() => {})
   }, [])
 
   return (
@@ -448,6 +450,58 @@ export default function Immittance() {
         <Tympanometry reference={tympRef} />
         <Emissions reference={oaeRef} />
       </div>
+
+      {/* Each of the five types against the disease reference. A tympanogram
+          is only worth running because it moves diseases on and off the
+          differential, so the differential is what the table shows. */}
+      {linkRef && (
+        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+          <h2 className="text-[15px] font-semibold text-slate-900">
+            What each tympanogram type means for the diagnosis
+          </h2>
+          <p className="mt-1 text-[12px] leading-relaxed text-slate-500">
+            All five Jerger types, with the conditions each supports and the ones
+            it takes off the table. The second column is the one usually left out
+            and often the more useful: a Type A trace diagnoses nothing on its own,
+            but it removes most of the conductive differential in one measurement.
+          </p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left text-[12px]">
+              <thead>
+                <tr className="text-[10.5px] uppercase tracking-wide text-slate-400">
+                  <th className="py-1.5 pr-3 font-medium">Type</th>
+                  <th className="py-1.5 pr-3 font-medium text-emerald-600">Supports</th>
+                  <th className="py-1.5 pr-3 font-medium text-rose-600">Argues against</th>
+                  <th className="py-1.5 font-medium">Also consider</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linkRef.tympanogram_types.map((t) => (
+                  <tr key={t.type} className="border-t border-slate-100 align-top">
+                    <td className="py-2 pr-3">
+                      <div className="font-semibold text-slate-800">Type {t.type}</div>
+                      <div className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                        {t.meaning}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 text-slate-700">
+                      {t.supports.length
+                        ? t.supports.join(' · ')
+                        : <span className="text-slate-400">—</span>}
+                    </td>
+                    <td className="py-2 pr-3 text-slate-700">
+                      {t.argues_against.length
+                        ? t.argues_against.join(' · ')
+                        : <span className="text-slate-400">—</span>}
+                    </td>
+                    <td className="py-2 text-slate-600">{t.also_consider.join(' · ')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {tympRef && (
         <div className="mt-5 rounded-2xl border border-slate-200/80 bg-slate-50/60 p-5">

@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, apiUrl } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import LinkagePanel from '../components/LinkagePanel.jsx'
 
 const URGENCY_STYLE = {
   urgent: 'border-rose-300 bg-rose-50 text-rose-800',
@@ -82,13 +83,15 @@ function Atlas({ atlas, onPick }) {
 }
 
 export default function Otoscopy() {
-  const { analysis, showToast } = useApp()
+  const { analysis, assessment, otoscopy, setOtoscopy, showToast } = useApp()
   const fileRef = useRef(null)
   const [atlas, setAtlas] = useState(null)
   const [card, setCard] = useState(null)
   const [side, setSide] = useState('right')
   const [preview, setPreview] = useState(null)
-  const [result, setResult] = useState(null)
+  // Shared, so the symptom page and the dashboard can cross-check against it.
+  const result = otoscopy
+  const setResult = setOtoscopy
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -159,15 +162,17 @@ export default function Otoscopy() {
             className="rounded-lg bg-teal-600 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50">
             {busy ? 'Reading…' : 'Upload otoscope image'}
           </button>
-          {analysis ? (
-            <span className="text-[12px] text-teal-700">
-              Will cross-check against the current audiogram.
-            </span>
-          ) : (
-            <span className="text-[12px] text-slate-400">
-              No audiogram loaded — run a test first to enable the cross-check.
-            </span>
-          )}
+          <span className="text-[12px] text-slate-500">
+            Will cross-check against{' '}
+            {[analysis && 'the audiogram', assessment && 'the symptom history']
+              .filter(Boolean).join(' and ') || 'nothing yet'}
+            {!analysis || !assessment ? (
+              <span className="text-slate-400">
+                {' '}— add {[!analysis && 'a test', !assessment && 'a history']
+                  .filter(Boolean).join(' and ')} for the full comparison.
+              </span>
+            ) : '.'}
+          </span>
         </div>
 
         {validation && (
@@ -324,6 +329,11 @@ export default function Otoscopy() {
                 </p>
               )}
             </div>
+
+            {/* Does the history confirm the image? This is the check the
+                classifier's weakness makes most valuable — two independent
+                methods reaching the same answer from different evidence. */}
+            <LinkagePanel side={side} />
 
             {/* Cross-check: independent of whether the classifier is right. */}
             {conc && (

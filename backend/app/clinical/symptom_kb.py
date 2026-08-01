@@ -64,18 +64,25 @@ SYMPTOM_SYNONYMS: Dict[str, List[str]] = {
         "foul smell", "smelly discharge", "bad smell from ear", "offensive discharge",
         "foul-smelling",
     ],
-    "bloody_discharge": ["blood from ear", "bloody discharge", "bleeding from ear"],
+    "bloody_discharge": ["blood from ear", "bloody ear discharge", "bloody discharge",
+                         "bleeding from ear"],
     "ear_pain": ["ear pain", "otalgia", "earache", "ear ache", "pain in ear", "sore ear"],
     "severe_ear_pain": ["severe ear pain", "intense ear pain", "excruciating ear pain",
                         "deep ear pain"],
+    # The guide's own wording ("especially when touching or pulling the ear")
+    # must match too — these phrases are what separate one ranked cause from
+    # the next, and a synonym table that only understands how a patient speaks
+    # cannot read the document it is ranking against.
     "pain_on_touching_ear": ["pain when touching ear", "pain pulling ear",
-                             "tragal tenderness", "hurts to touch ear"],
+                             "tragal tenderness", "hurts to touch ear",
+                             "touching or pulling the ear", "pulling the ear",
+                             "touching the ear"],
     "hearing_loss": ["hearing loss", "cannot hear", "can't hear", "hard of hearing",
                      "reduced hearing", "deaf", "poor hearing", "hearing reduced"],
     "sudden_hearing_loss": ["sudden hearing loss", "hearing lost overnight",
                             "lost hearing suddenly", "woke up deaf"],
     "gradual_hearing_loss": ["gradual hearing loss", "slowly worsening hearing",
-                             "progressive hearing loss"],
+                             "gradually worsening hearing", "progressive hearing loss"],
     "fluctuating_hearing_loss": ["fluctuating hearing", "hearing comes and goes",
                                  "hearing varies"],
     "muffled_hearing": ["muffled", "dull hearing", "sounds muffled", "blocked hearing"],
@@ -99,7 +106,8 @@ SYMPTOM_SYNONYMS: Dict[str, List[str]] = {
     "vomiting": ["vomiting", "nausea", "throwing up", "sick to stomach"],
     "drowsiness": ["drowsy", "sleepy", "hard to wake", "lethargic", "unresponsive"],
     "seizures": ["seizure", "fits", "convulsion"],
-    "postauricular_swelling": ["swelling behind ear", "lump behind ear",
+    "postauricular_swelling": ["swelling behind the ear", "swelling behind ear",
+                               "lump behind ear",
                                "tender behind ear", "red behind ear",
                                "ear sticking out"],
     "facial_weakness": ["facial weakness", "facial palsy", "face droop",
@@ -119,7 +127,8 @@ SYMPTOM_SYNONYMS: Dict[str, List[str]] = {
                        "not responding to sound", "no response to name"],
     "inconsistent_response_to_sound": ["responds sometimes", "inconsistent response",
                                        "hears sometimes"],
-    "pain_on_chewing": ["pain when chewing", "jaw pain", "pain opening mouth",
+    "pain_on_chewing": ["pain when chewing", "while chewing", "chewing",
+                        "opening the mouth", "jaw pain", "pain opening mouth",
                         "tmj", "jaw joint"],
     "toothache": ["toothache", "tooth pain", "dental pain"],
     "noise_exposure": ["loud noise", "factory", "machinery", "gunfire", "workshop",
@@ -127,8 +136,8 @@ SYMPTOM_SYNONYMS: Dict[str, List[str]] = {
     "ototoxic_medication": ["chemotherapy", "cisplatin", "gentamicin", "amikacin",
                             "aminoglycoside", "ototoxic", "tb treatment",
                             "streptomycin"],
-    "recent_trauma": ["head injury", "trauma", "slap", "blast", "accident",
-                      "hit on ear", "cotton bud injury"],
+    "recent_trauma": ["head injury", "cotton bud injury", "after injury", "injury",
+                      "trauma", "slap", "blast", "accident", "hit on ear"],
     "barotrauma": ["flying", "diving", "air travel", "pressure change", "scuba"],
     "straining": ["straining", "heavy lifting", "coughing hard"],
     "ear_blisters": ["blisters", "bullae", "vesicles on eardrum"],
@@ -430,6 +439,8 @@ DISEASES: Dict[str, dict] = {
             "Meningitis is the leading acquired cause of profound childhood "
             "deafness, and the cochlea can ossify within weeks. Hearing must be "
             "tested urgently after recovery, not at a routine follow-up."),
+        "expected_pta": (65, 120),
+        "laterality": "bilateral",
         "expected_type": "sensorineural",
         "expected_pattern": "Bilateral severe-to-profound sensorineural loss",
         "red_flag": "Medical emergency — treat first, test hearing after recovery.",
@@ -452,6 +463,8 @@ DISEASES: Dict[str, dict] = {
         "audiology_note": (
             "Symmetrical and gradual. Marked asymmetry is not presbycusis and "
             "needs investigating."),
+        "expected_pta": (20, 65),
+        "laterality": "bilateral",
         "expected_type": "sensorineural",
         "expected_pattern": "Bilateral symmetrical high-frequency sensorineural loss",
         "red_flag": "",
@@ -476,6 +489,8 @@ DISEASES: Dict[str, dict] = {
             "The audiogram is normal by definition. A normal audiogram is "
             "therefore not a reason to stop testing when the complaint is "
             "understanding rather than hearing."),
+        "expected_pta": (0, 20),
+        "laterality": "bilateral",
         "expected_type": "normal",
         "expected_pattern": "Normal pure-tone thresholds with disproportionate "
                             "difficulty in noise",
@@ -502,6 +517,8 @@ DISEASES: Dict[str, dict] = {
             "Emissions present with absent reflexes and speech far worse than "
             "the thresholds predict. Conventional amplification often "
             "disappoints — establish the diagnosis before fitting."),
+        "expected_pta": (0, 120),
+        "laterality": "either",
         "expected_type": "any",
         "expected_pattern": "Present OAEs, absent or grossly abnormal ABR",
         "red_flag": "",
@@ -525,6 +542,8 @@ DISEASES: Dict[str, dict] = {
         "audiology_note": (
             "The link to straining or pressure change is the diagnosis. Ask "
             "about it explicitly — patients rarely volunteer it."),
+        "expected_pta": (20, 80),
+        "laterality": "unilateral",
         "expected_type": "sensorineural",
         "expected_pattern": "Fluctuating sensorineural loss with vestibular symptoms",
         "red_flag": "Sudden sensorineural loss after trauma is time-critical — "
@@ -551,6 +570,8 @@ DISEASES: Dict[str, dict] = {
             "Monitoring is the whole point: high-frequency audiometry and OAEs "
             "change before the conversational frequencies do, which is the "
             "window in which the drug regimen can still be altered."),
+        "expected_pta": (20, 80),
+        "laterality": "bilateral",
         "expected_type": "sensorineural",
         "expected_pattern": "Bilateral symmetrical high-frequency sensorineural loss, "
                             "progressing downward",
@@ -575,6 +596,8 @@ DISEASES: Dict[str, dict] = {
             "The classic tetrad is vertigo, fluctuating hearing loss, tinnitus "
             "and aural fullness, usually in one ear. A single audiogram cannot "
             "establish it — serial testing during and between attacks can."),
+        "expected_pta": (20, 65),
+        "laterality": "unilateral",
         "expected_type": "sensorineural",
         "expected_pattern": "Unilateral fluctuating low-frequency sensorineural loss",
         "red_flag": "",
@@ -600,6 +623,8 @@ DISEASES: Dict[str, dict] = {
             "The only entirely preventable cause on this list. Absent emissions "
             "with a still-normal audiogram means damage has started and the "
             "remaining hearing can still be protected."),
+        "expected_pta": (0, 50),
+        "laterality": "bilateral",
         "expected_type": "sensorineural",
         "expected_pattern": "Bilateral notch at 3-6 kHz with recovery at 8 kHz",
         "red_flag": "",
@@ -623,6 +648,8 @@ DISEASES: Dict[str, dict] = {
         "audiology_note": (
             "Pulsatile tinnitus with a red retrotympanic mass is a glomus "
             "tumour until imaging says otherwise. Do not biopsy it in clinic."),
+        "expected_pta": (20, 60),
+        "laterality": "unilateral",
         "expected_type": "conductive",
         "expected_pattern": "Unilateral conductive or mixed loss",
         "red_flag": "Pulsatile tinnitus needs imaging, not reassurance.",
@@ -645,6 +672,8 @@ DISEASES: Dict[str, dict] = {
         "audiology_note": (
             "Expect a Type C tympanogram. This is the step before an effusion "
             "and, if a retraction pocket forms, before cholesteatoma."),
+        "expected_pta": (0, 35),
+        "laterality": "either",
         "expected_type": "conductive",
         "expected_pattern": "Normal to mild conductive loss; Type C tympanogram",
         "red_flag": "",
@@ -669,6 +698,8 @@ DISEASES: Dict[str, dict] = {
         "audiology_note": (
             "Foul-smelling discharge with hearing loss is cholesteatoma until "
             "excluded. It erodes bone; hearing loss is the least of it."),
+        "expected_pta": (20, 60),
+        "laterality": "unilateral",
         "expected_type": "conductive",
         "expected_pattern": "Progressive conductive then mixed loss, usually unilateral",
         "red_flag": "Erodes ossicles and can cause facial palsy, labyrinthine "
@@ -679,7 +710,9 @@ DISEASES: Dict[str, dict] = {
         "category": "emergency",
         "symptoms": {"postauricular_swelling": 3, "fever": 3, "ear_pain": 3,
                      "ear_discharge": 2, "hearing_loss": 2, "headache": 1},
-        "requires_any": ["postauricular_swelling", "fever"],
+        # Fever accompanies most ear infections; swelling behind the ear is
+        # what makes this mastoiditis rather than any of them.
+        "requires_any": ["postauricular_swelling"],
         "age_bands": ["pediatric", "adult", "geriatric"],
         "age_note": "Most common in children, especially under 2 years, after "
                     "frequent middle-ear infection.",
@@ -693,6 +726,8 @@ DISEASES: Dict[str, dict] = {
         "audiology_note": (
             "Do not delay treatment for audiometry. Test hearing once the "
             "infection is controlled."),
+        "expected_pta": (20, 55),
+        "laterality": "unilateral",
         "expected_type": "conductive",
         "expected_pattern": "Conductive or mixed loss on the affected side",
         "red_flag": "Swelling behind the ear with fever is a surgical emergency.",
@@ -718,6 +753,8 @@ DISEASES: Dict[str, dict] = {
             "Pain out of proportion to the findings, with blisters on the drum. "
             "This is the one condition on the list where otoscopy alone is "
             "close to diagnostic."),
+        "expected_pta": (20, 45),
+        "laterality": "unilateral",
         "expected_type": "conductive",
         "expected_pattern": "Mild conductive loss on the affected side",
         "red_flag": "",
@@ -740,6 +777,8 @@ DISEASES: Dict[str, dict] = {
         "audiology_note": (
             "Rare, and easily filed as presbycusis. The mixed component and "
             "the systemic bone disease are what separate them."),
+        "expected_pta": (35, 80),
+        "laterality": "bilateral",
         "expected_type": "mixed",
         "expected_pattern": "Progressive mixed loss, often with a low-frequency "
                             "conductive component",
@@ -795,6 +834,189 @@ TEST_PRIORITY: List[str] = [
     "Cochlear microphonic testing",
     "CT temporal bone",
 ]
+
+
+# --------------------------------------------------------------------------
+# what the ear LOOKS like, tied to what the patient SAYS
+# --------------------------------------------------------------------------
+#: For each otoscopic pattern: the symptoms it should produce, the symptoms it
+#: cannot account for, and the conditions it points at by name.
+#:
+#: This is what makes an image worth taking. A photograph on its own is a
+#: photograph; a photograph that predicts "this patient should be reporting
+#: discharge and hearing loss" can be checked against what they actually said,
+#: and a mismatch is a finding rather than a rounding error.
+OTOSCOPY_LINKS: Dict[str, dict] = {
+    "normal": {
+        "expects": [],
+        # Hearing loss is deliberately absent from this list: a normal drum is
+        # exactly what a sensorineural loss looks like. Pain and fever are on
+        # it, because although both can be referred from the jaw or teeth,
+        # that is a finding to raise rather than to pass over.
+        "unexplained": ["ear_discharge", "foul_smelling_discharge", "bloody_discharge",
+                        "severe_ear_pain", "ear_pain", "fever",
+                        "postauricular_swelling"],
+        "conditions": [],
+        "note": ("A normal drum does not explain discharge, pain, fever or "
+                 "swelling behind the ear. Re-examine the canal, which the "
+                 "view may not have cleared, and consider referred otalgia "
+                 "from the jaw joint or the teeth."),
+    },
+    "cerumen_impaction": {
+        "expects": ["muffled_hearing", "aural_fullness", "hearing_loss", "itching"],
+        "unexplained": ["foul_smelling_discharge", "vertigo", "facial_weakness",
+                        "postauricular_swelling"],
+        "conditions": ["Cerumen impaction"],
+        "note": ("Wax explains a blocked, muffled ear. It does not explain "
+                 "vertigo, facial weakness or offensive discharge — those need "
+                 "another cause, and the drum must be seen after removal."),
+    },
+    "otitis_media": {
+        "expects": ["ear_pain", "severe_ear_pain", "fever", "hearing_loss",
+                    "muffled_hearing", "aural_fullness", "ear_discharge"],
+        "unexplained": ["pulsatile_tinnitus", "bloody_discharge"],
+        "conditions": ["Acute otitis media",
+                       "Acute otitis media with tympanic membrane perforation",
+                       "mastoiditis", "etd"],
+        "note": ("Pain with fever and a red bulging drum is the classic "
+                 "picture. Add swelling behind the ear and it is mastoiditis "
+                 "until proven otherwise."),
+    },
+    "retraction": {
+        "expects": ["aural_fullness", "popping", "muffled_hearing", "barotrauma",
+                    "hearing_loss", "ear_pain"],
+        "unexplained": ["ear_discharge", "fever", "bloody_discharge"],
+        "conditions": ["etd", "Eustachian tube dysfunction"],
+        "note": ("Retraction is Eustachian tube dysfunction made visible. It "
+                 "precedes effusion and, if a pocket deepens, cholesteatoma."),
+    },
+    "perforation_central": {
+        "expects": ["ear_discharge", "hearing_loss", "recent_trauma",
+                    "muffled_hearing", "tinnitus"],
+        "unexplained": ["foul_smelling_discharge", "facial_weakness", "vertigo"],
+        "conditions": ["Chronic suppurative otitis media",
+                       "Traumatic tympanic membrane perforation"],
+        "note": ("The safe perforation: discharge and hearing loss, but no bone "
+                 "erosion. Offensive discharge would argue for cholesteatoma "
+                 "instead."),
+    },
+    "perforation_marginal": {
+        "expects": ["ear_discharge", "foul_smelling_discharge", "hearing_loss"],
+        "unexplained": [],
+        "conditions": ["cholesteatoma", "Chronic suppurative otitis media"],
+        "note": ("No annular rim means canal skin can migrate into the middle "
+                 "ear. Treat as unsafe whatever the symptoms are."),
+    },
+    "perforation_attic": {
+        "expects": ["foul_smelling_discharge", "ear_discharge", "hearing_loss",
+                    "facial_weakness", "vertigo"],
+        "unexplained": [],
+        "conditions": ["cholesteatoma"],
+        "note": ("Attic disease can be entirely silent — normal hearing and no "
+                 "discharge do NOT reassure here, which is exactly why it gets "
+                 "missed."),
+    },
+    "tumor": {
+        "expects": ["pulsatile_tinnitus", "hearing_loss", "aural_fullness",
+                    "bloody_discharge", "imbalance"],
+        "unexplained": [],
+        "conditions": ["glomus_tumor",
+                       "Squamous cell carcinoma of the external auditory canal"],
+        "note": ("Pulsatile tinnitus with a retrotympanic mass is a glomus "
+                 "tumour until imaging says otherwise. Do not biopsy in clinic."),
+    },
+}
+
+# --------------------------------------------------------------------------
+# what the middle ear MEASURES, tied to the diseases
+# --------------------------------------------------------------------------
+#: All five Jerger types, each with the conditions it supports and the ones it
+#: argues against. The "argues against" column is the half usually left out,
+#: and it is often the more useful one: a Type A tympanogram does not diagnose
+#: anything, but it removes most of the conductive differential in one step.
+TYMPANOGRAM_LINKS: Dict[str, dict] = {
+    "A": {
+        "label": "Type A — normal middle ear",
+        "supports": ["sensory_presbycusis", "nihl", "menieres", "ototoxicity",
+                     "capd", "ansd", "bacterial_meningitis"],
+        "argues_against": ["etd", "cholesteatoma", "mastoiditis",
+                           "bullous_myringitis"],
+        "also_consider": ["Otosclerosis (a stiff ear can still read Type A early)"],
+        "meaning": ("Normal pressure and mobility. Any loss present is unlikely "
+                    "to be middle-ear, which redirects the workup to the cochlea "
+                    "and the nerve."),
+    },
+    "As": {
+        "label": "Type As — shallow / stiff",
+        "supports": ["pagets", "cholesteatoma"],
+        "argues_against": ["etd"],
+        "also_consider": ["Otosclerosis (stapes fixation)", "Tympanosclerosis",
+                          "Ossicular fixation"],
+        "meaning": ("Reduced mobility with normal pressure. With a conductive "
+                    "loss and absent reflexes this is the classic stapedial "
+                    "fixation picture; otic Paget's disease produces the same "
+                    "stiffening."),
+    },
+    "Ad": {
+        "label": "Type Ad — deep / hypercompliant",
+        "supports": ["perilymphatic_fistula"],
+        "argues_against": ["etd", "mastoiditis"],
+        "also_consider": ["Ossicular discontinuity", "Healed / monomeric membrane",
+                          "Post-traumatic ossicular disruption"],
+        "meaning": ("An unusually mobile system: a broken ossicular chain, or a "
+                    "membrane thinned by previous perforation. Trauma is the "
+                    "commonest history."),
+    },
+    "B": {
+        "label": "Type B — flat, no peak",
+        "supports": ["mastoiditis", "bullous_myringitis", "cholesteatoma", "etd"],
+        "argues_against": ["capd", "sensory_presbycusis"],
+        "also_consider": ["Otitis media with effusion (normal canal volume)",
+                          "Tympanic membrane perforation (large canal volume)",
+                          "Patent ventilation tube (large canal volume)",
+                          "Chronic suppurative otitis media"],
+        "meaning": ("No mobility at any pressure. The ear-canal volume splits "
+                    "the differential in two: normal volume means fluid behind "
+                    "an intact drum, large volume means the probe is seeing "
+                    "past it."),
+    },
+    "C": {
+        "label": "Type C — negative middle-ear pressure",
+        "supports": ["etd", "cholesteatoma"],
+        "argues_against": ["capd"],
+        "also_consider": ["Resolving or developing otitis media with effusion",
+                          "Retraction pocket", "Recent upper respiratory infection"],
+        "meaning": ("The Eustachian tube is not ventilating. This is the step "
+                    "before an effusion and, if a retraction pocket forms and "
+                    "traps skin, the step before cholesteatoma."),
+    },
+}
+
+#: Reflex findings that change the differential regardless of the trace shape.
+REFLEX_LINKS: Dict[str, dict] = {
+    "absent_conductive": {
+        "when": "reflexes absent with a conductive loss",
+        "supports": ["cholesteatoma"],
+        "also_consider": ["Otosclerosis", "Ossicular fixation or discontinuity"],
+        "meaning": "Any middle-ear block large enough abolishes the reflex.",
+    },
+    "absent_with_emissions": {
+        "when": "reflexes absent while emissions are present",
+        "supports": ["ansd", "pagets"],
+        "also_consider": ["Vestibular schwannoma", "Brainstem lesion"],
+        "meaning": ("The cochlea works but the reflex arc does not — the lesion "
+                    "lies beyond the cochlea."),
+    },
+    "present_with_severe_loss": {
+        "when": "reflexes present despite a severe loss",
+        "supports": [],
+        "also_consider": ["Non-organic (exaggerated) hearing loss",
+                          "Cochlear recruitment"],
+        "meaning": ("Reflexes are normally absent once the loss exceeds about "
+                    "60 dB HL. Their presence suggests the thresholds overstate "
+                    "the true loss."),
+    },
+}
 
 
 # --------------------------------------------------------------------------
