@@ -7,6 +7,7 @@ import AudiogramChart, { buildChartData } from '../components/AudiogramChart.jsx
 import CochleaMap from '../components/CochleaMap.jsx'
 import LinkagePanel from '../components/LinkagePanel.jsx'
 import DiseaseAudiogram from '../components/DiseaseAudiogram.jsx'
+import MaskingPanel from '../components/MaskingPanel.jsx'
 import VerdictBanner from '../components/VerdictBanner.jsx'
 import {
   availableLanguages, speak, stopSpeaking, voiceAvailable, voiceDiagnostic,
@@ -650,6 +651,15 @@ export default function Dashboard() {
           Separate from the test battery below, which reconciles the objective
           tests against each other — this one brings in what the patient said
           and what the ear looked like. */}
+      {/* Which ear these thresholds belong to. This comes before anything
+          that interprets them, because an unmasked threshold past the
+          crossover point is not a measurement of the test ear at all. */}
+      {analysis.safety?.masking_review && (
+        <div className="mt-5">
+          <MaskingPanel review={analysis.safety.masking_review} />
+        </div>
+      )}
+
       {/* Which diseases these thresholds resemble, matched on shape, degree,
           type and symmetry. Uses no history at all — the audiogram alone. */}
       <div className="mt-5">

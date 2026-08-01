@@ -79,7 +79,8 @@ def analyze(record: TestRecord):
     speech_ear = better_ear or ("right" if record.right.ac else "left")
     speech_ac = getattr(record, speech_ear).ac
 
-    safety = safety_review(record.right, record.left, record.patient.onset)
+    safety = safety_review(record.right, record.left, record.patient.onset,
+                           transducer=record.transducer)
     # Each ear is passed the other so an unmasked SRT can be checked against
     # the opposite cochlea's best threshold — speech crosses the skull too.
     speech = {

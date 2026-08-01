@@ -173,58 +173,21 @@ def sudden_loss_check(
 # ---------------------------------------------------------------- masking
 
 
-def masking_check(test_ac, test_bc, other_ac, other_bc, masked: bool = False) -> dict:
+def masking_check(test_ac, test_bc, other_ac, other_bc, masked: bool = False,
+                  transducer: str = None) -> dict:
     """Was masking required to make these thresholds trustworthy?
 
-    Air conduction: masking is indicated when the test-ear AC threshold
-    exceeds the NON-test ear's BC threshold by the interaural attenuation
-    of the transducer (40 dB for supra-aural earphones). Above that, the
-    sound crosses the skull and the opposite cochlea may be responding —
-    producing a "shadow curve" that mimics real hearing in the test ear.
-
-    Bone conduction: because BC crosses the skull essentially unattenuated,
-    masking is indicated whenever the test ear shows an air-bone gap
-    greater than 10 dB.
+    Delegates to ``masking.masking_plan``, which holds the full per-frequency
+    rule set, the transducer-dependent interaural attenuation and the masking
+    dilemma. This module used to carry a second, narrower copy of the rules —
+    one air-conduction condition instead of two, and a 10 dB bone-conduction
+    trigger instead of 15 — so the safety layer and a clinician working from
+    the reference could disagree about the same ear.
     """
-    t_ac, o_bc = _n(test_ac), _n(other_bc)
-    t_bc = _n(test_bc)
+    from app.clinical.masking import DEFAULT_TRANSDUCER, masking_plan
 
-    ac_freqs = [
-        f for f in AC_FREQS
-        if t_ac.get(f) is not None and o_bc.get(f) is not None
-        and t_ac[f] - o_bc[f] >= INTERAURAL_ATTENUATION_AC
-    ]
-    bc_freqs = [
-        f for f in PTA_FREQS
-        if t_ac.get(f) is not None and t_bc.get(f) is not None
-        and t_ac[f] - t_bc[f] > 10
-    ]
-
-    needed = bool(ac_freqs or bc_freqs)
-    reasons = []
-    if ac_freqs:
-        reasons.append(
-            f"AC exceeds the opposite ear's BC by ≥{INTERAURAL_ATTENUATION_AC} dB "
-            f"at {ac_freqs} Hz — cross-hearing possible"
-        )
-    if bc_freqs:
-        reasons.append(f"air-bone gap > 10 dB at {bc_freqs} Hz — BC masking indicated")
-
-    return {
-        "masking_indicated": needed,
-        "masking_reported": masked,
-        # Only a validity *warning* when masking was indicated but not reported.
-        "warning": needed and not masked,
-        "ac_freqs": ac_freqs,
-        "bc_freqs": bc_freqs,
-        "reasons": reasons,
-        "message": (
-            "Masking was indicated but not recorded — these thresholds may be a "
-            "shadow curve from the opposite ear. Confirm masked thresholds before "
-            "interpreting."
-        ) if (needed and not masked) else None,
-        "interaural_attenuation_db": INTERAURAL_ATTENUATION_AC,
-    }
+    return masking_plan(test_ac, test_bc, other_ac, other_bc,
+                        transducer or DEFAULT_TRANSDUCER, masked)
 
 
 # ------------------------------------------------------------------ bundle
@@ -241,7 +204,7 @@ def sort_alerts(alerts: List[dict]) -> List[dict]:
 
 
 def safety_review(right, left, onset: str = "unknown",
-                  baseline=None) -> dict:
+                  baseline=None, transducer: str = None) -> dict:
     """All safety checks for a full test. ``right``/``left`` are EarData."""
     asym = asymmetry_check(right.ac, left.ac)
     sudden = {
@@ -250,10 +213,12 @@ def safety_review(right, left, onset: str = "unknown",
         "left": sudden_loss_check(left.ac, left.bc, onset,
                                   baseline["left"].ac if baseline else None),
     }
-    masking = {
-        "right": masking_check(right.ac, right.bc, left.ac, left.bc, right.masked),
-        "left": masking_check(left.ac, left.bc, right.ac, right.bc, left.masked),
-    }
+    from app.clinical.masking import masking_review
+
+    # One review for both ears so the transducer, and therefore the crossover
+    # point, is the same on each side of the same test.
+    masking_bundle = masking_review(right, left, transducer)
+    masking = {"right": masking_bundle["right"], "left": masking_bundle["left"]}
 
     alerts: List[dict] = []
     for side in ("right", "left"):
@@ -278,6 +243,19 @@ def safety_review(right, left, onset: str = "unknown",
         })
     for side in ("right", "left"):
         m = masking[side]
+        if m["has_dilemma"]:
+            alerts.append({
+                "level": "validity",
+                "title": "Masking dilemma — these thresholds cannot be masked",
+                "ear": side,
+                "detail": (f"At {m['dilemma_freqs']} Hz the noise needed to cover "
+                           "the crossed signal exceeds the level at which it "
+                           "crosses back. A bilateral conductive loss with large "
+                           "air-bone gaps leaves no usable masking level."),
+                "action": "Repeat with insert earphones, which raise interaural "
+                          "attenuation by 10-20 dB. If it persists, report these "
+                          "thresholds as unmaskable rather than as measured.",
+            })
         if m["warning"]:
             alerts.append({
                 "level": "validity", "title": "Masking indicated — results may be invalid",
@@ -294,4 +272,5 @@ def safety_review(right, left, onset: str = "unknown",
         "asymmetry": asym,
         "sudden": sudden,
         "masking": masking,
+        "masking_review": masking_bundle,
     }

@@ -109,6 +109,10 @@ class TestRecord(BaseModel):
     """One complete pure-tone audiometry test."""
 
     patient: PatientInfo = Field(default_factory=PatientInfo)
+    #: Transducer used, which sets interaural attenuation and therefore when
+    #: masking is required: "supra_aural" (40 dB), "insert" (50-60 dB) or
+    #: "circumaural" (45 dB).
+    transducer: str = "supra_aural"
     right: EarData = Field(default_factory=EarData)
     left: EarData = Field(default_factory=EarData)
 
