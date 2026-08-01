@@ -117,10 +117,16 @@ export default function Dashboard() {
   const [lang, setLang] = useState('english')
   const [showBanana, setShowBanana] = useState(false)
   const [showPhonemes, setShowPhonemes] = useState(false)
-  // The glow marks the frequencies driving the AI's pattern call. It is
-  // useful when you are asking "why did it say that" and pure clutter when
-  // you are reading the thresholds, so it toggles like the other overlays.
-  const [showGlow, setShowGlow] = useState(true)
+  // The chart opens as a plain clinical audiogram: square grid, no overlays.
+  //
+  // The glow marks the frequencies driving the AI's pattern call, which is
+  // worth seeing when you are asking "why did it say that" and is clutter the
+  // rest of the time. It defaults off because the first thing anyone does with
+  // an audiogram is read the thresholds, and a decorated chart is not the one
+  // a clinician is trained on.
+  const [showGlow, setShowGlow] = useState(false)
+  // Square is the conventional clinical grid — one octave occupying the same
+  // distance as 20 dB — so it is the default rather than an option.
   const [squareChart, setSquareChart] = useState(true)
   const [pdfBusy, setPdfBusy] = useState(false)
   const [speaking, setSpeaking] = useState(false)

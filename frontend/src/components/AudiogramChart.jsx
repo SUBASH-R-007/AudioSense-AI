@@ -214,10 +214,13 @@ export default function AudiogramChart({
   phonemes = null,
   showBanana = false,
   showPhonemes = false,
-  showGlow = true,
+  // Overlays default off and the grid defaults square, so a chart rendered
+  // without options is the plain clinical audiogram a clinician is trained to
+  // read rather than a decorated one.
+  showGlow = false,
   showAnnotations = true,
   height = 440,
-  square = false,
+  square = true,
 }) {
   const annotations = showAnnotations ? deriveAnnotations(data) : []
   // A clinical audiogram is conventionally drawn on a square grid, one octave
