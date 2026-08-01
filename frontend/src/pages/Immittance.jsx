@@ -124,6 +124,10 @@ function Tympanometry({ reference, onType }) {
   const [preset, setPreset] = useState(TYMP_PRESETS[0])
   const [ipsi, setIpsi] = useState('85')
   const [contra, setContra] = useState('90')
+  // Most clinics record the four printed values, not the sweep. Entering
+  // them models the curve they imply, labelled as modelled rather than measured.
+  const [mode, setMode] = useState('preset')
+  const [manual, setManual] = useState({ ecv: '1.0', pp: '-20', sc: '0.85', grad: '0.55' })
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
 
@@ -135,14 +139,20 @@ function Tympanometry({ reference, onType }) {
     const reflexes = {}
     if (ipsi !== '') reflexes.ipsi = ipsi === 'absent' ? null : Number(ipsi)
     if (contra !== '') reflexes.contra = contra === 'absent' ? null : Number(contra)
-    api.tympanometry({
-      ear, trace, age_years: Number(ageYears), probe_hz: Number(probeHz), reflexes,
-    })
+    const num = (v) => (v === '' || v === null ? undefined : Number(v))
+    const body = mode === 'manual'
+      ? {
+          ear, age_years: Number(ageYears), probe_hz: Number(probeHz), reflexes,
+          peak_pressure: num(manual.pp), compliance: num(manual.sc),
+          ecv: num(manual.ecv), gradient: num(manual.grad),
+        }
+      : { ear, trace, age_years: Number(ageYears), probe_hz: Number(probeHz), reflexes }
+    api.tympanometry(body)
       .then((r) => { if (!cancelled) setResult(r) })
       .catch((e) => { if (!cancelled) showToast(e.message, 'error') })
       .finally(() => { if (!cancelled) setBusy(false) })
     return () => { cancelled = true }
-  }, [ear, ageYears, probeHz, trace, ipsi, contra, showToast])
+  }, [ear, ageYears, probeHz, trace, ipsi, contra, mode, manual, showToast])
 
   const norms = result?.curve?.normative
   const jerger = result?.tympanogram
@@ -161,17 +171,55 @@ function Tympanometry({ reference, onType }) {
         </span>
       )}
     >
-      <div className="mt-3 flex flex-wrap gap-2">
-        {TYMP_PRESETS.map((p) => (
-          <button key={p.label} type="button" onClick={() => setPreset(p)}
-            className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
-              preset.label === p.label
-                ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
-                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
-            {p.label}
+      <div className="mt-3 flex rounded-lg bg-slate-100 p-0.5 text-[12px]">
+        {[['preset', 'Example traces'], ['manual', 'Enter values']].map(([k, label]) => (
+          <button key={k} type="button" onClick={() => setMode(k)}
+            className={`flex-1 rounded-md px-3 py-1 font-medium transition ${
+              mode === k ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-500'}`}>
+            {label}
           </button>
         ))}
       </div>
+
+      {mode === 'preset' ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {TYMP_PRESETS.map((p) => (
+            <button key={p.label} type="button" onClick={() => setPreset(p)}
+              className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
+                preset.label === p.label
+                  ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              ['ecv', 'ECV', 'ml', '0.1', 'ear-canal volume'],
+              ['pp', 'PP', 'daPa', '5', 'peak pressure'],
+              ['sc', 'SC', 'mmho', '0.05', 'static compliance'],
+              ['grad', 'GRAD', '', '0.01', 'gradient, 0–1'],
+            ].map(([key, label, unit, step, hint]) => (
+              <label key={key} className="text-[12px]">
+                <span className="mb-1 block font-medium text-slate-600">
+                  {label}{unit && <span className="ml-1 text-slate-400">({unit})</span>}
+                </span>
+                <input type="number" step={step} value={manual[key]}
+                  onChange={(e) => setManual({ ...manual, [key]: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
+                <span className="mt-0.5 block text-[10.5px] text-slate-400">{hint}</span>
+              </label>
+            ))}
+          </div>
+          <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+            The curve below is modelled from these four values, and the gradient
+            shapes it — a curve drawn from GRAD 0.30 measures back as 0.30. It is
+            a drawing of the numbers, not a recorded sweep.
+          </p>
+        </div>
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
         <label className="text-[12px]">
@@ -257,6 +305,11 @@ function Tympanometry({ reference, onType }) {
           {result.infant_warning && (
             <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] leading-relaxed text-rose-900">
               {result.infant_warning}
+            </p>
+          )}
+          {result.curve?.gradient_note && (
+            <p className="mt-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-[12px] leading-relaxed text-slate-700">
+              {result.curve.gradient_note}
             </p>
           )}
           {result.flags.map((f) => (

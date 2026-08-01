@@ -451,3 +451,111 @@ def test_no_apex_means_no_peak_pressure_either():
     assert not any("width" in f.lower() or "gradient" in f.lower()
                    for f in result["flags"] if "cannot be measured" not in f)
     assert result["tympanogram"]["type"] == "Add"
+
+
+# ============ manual entry of the four printed values (ECV/PP/SC/GRAD) =====
+
+@pytest.mark.parametrize("gradient", [0.15, 0.30, 0.575, 0.80])
+def test_an_entered_gradient_shapes_the_curve_it_draws(gradient):
+    """A curve drawn from GRAD 0.30 must measure back as 0.30.
+
+    Otherwise the drawing would be a plausible shape rather than a picture of
+    the number the clinician typed.
+    """
+    points = tympanometry.synthesize_trace(-20, 0.8, ecv=1.0, gradient=gradient)
+    back = tympanometry.analyze_trace(points)
+    assert back["gradient"] == pytest.approx(gradient, abs=0.01)
+
+
+def test_width_and_gradient_are_inverses_where_the_sweep_allows_it():
+    """Exact from 0.2 up, which is the whole clinically relevant range."""
+    for gradient in (0.2, 0.25, 0.5, 0.9):
+        width = tympanometry.width_from_gradient(gradient)
+        points = tympanometry.synthesize_trace(0, 0.9, ecv=1.0, width=width)
+        assert tympanometry.analyze_trace(points)["gradient"] == \
+            pytest.approx(gradient, abs=0.01)
+
+
+def test_a_very_low_gradient_drifts_upward_and_says_so():
+    """A peak that broad has not returned to baseline by +200 daPa.
+
+    The drift is one-directional and small enough that a gradient entered as
+    abnormal still reads abnormal — which is the property that matters.
+    """
+    for gradient in (0.05, 0.10, 0.15):
+        points = tympanometry.synthesize_trace(0, 0.9, ecv=1.0, gradient=gradient)
+        read_back = tympanometry.analyze_trace(points)["gradient"]
+        assert read_back >= gradient
+        assert read_back < tympanometry.GRADIENT_NORMAL_MIN
+
+    result = tympanometry.analyze(peak_pressure=-20, compliance=0.5, ecv=1.0,
+                                  gradient=0.1, age_years=30)
+    assert result["curve"]["gradient_note"]
+    assert result["within_normal"]["gradient"] is False
+
+
+def test_a_drawable_gradient_carries_no_such_caveat():
+    result = tympanometry.analyze(peak_pressure=-20, compliance=0.85, ecv=1.0,
+                                  gradient=0.55, age_years=30)
+    assert result["curve"]["gradient_note"] is None
+
+
+def test_an_invalid_gradient_falls_back_rather_than_failing():
+    assert tympanometry.width_from_gradient(None) is None
+    assert tympanometry.width_from_gradient(0) is None
+    assert tympanometry.width_from_gradient(1) is None
+    assert tympanometry.width_from_gradient(1.5) is None
+
+
+def test_the_four_printed_values_produce_a_typed_result():
+    result = tympanometry.analyze(peak_pressure=-25, compliance=0.45, ecv=1.1,
+                                  gradient=0.14, age_years=30)
+    assert result["tympanogram"]["type"] == "A"
+    assert result["curve"]["source"] == "modelled"
+    measured = result["measurements"]
+    assert measured["ecv"] == 1.1
+    assert measured["peak_pressure"] == -25
+    assert measured["static_compliance"] == 0.45
+    assert measured["gradient"] == 0.14
+
+
+def test_a_manually_entered_low_gradient_is_judged_abnormal():
+    """The rounded peak that peak height alone misses, entered by hand."""
+    result = tympanometry.analyze(peak_pressure=-25, compliance=0.45, ecv=1.1,
+                                  gradient=0.14, age_years=30)
+    assert result["within_normal"]["gradient"] is False
+    assert result["within_normal"]["compliance"] is True
+    assert any("gradient" in line.lower() for line in result["interpretation"])
+
+
+def test_a_manually_entered_normal_gradient_passes():
+    result = tympanometry.analyze(peak_pressure=-20, compliance=0.85, ecv=1.0,
+                                  gradient=0.55, age_years=30)
+    assert result["within_normal"]["gradient"] is True
+    assert result["tympanogram"]["type"] == "A"
+
+
+def test_manual_entry_still_types_the_abnormal_cases():
+    negative = tympanometry.analyze(peak_pressure=-220, compliance=0.6, ecv=1.0,
+                                    gradient=0.5, age_years=30)
+    shallow = tympanometry.analyze(peak_pressure=-10, compliance=0.25, ecv=1.0,
+                                   gradient=0.5, age_years=30)
+    assert negative["tympanogram"]["type"] == "C"
+    assert shallow["tympanogram"]["type"] == "As"
+
+
+def test_the_endpoint_accepts_the_four_values_without_a_trace():
+    body = client.post("/api/tympanometry/analyze", json={
+        "ear": "right", "age_years": 30,
+        "ecv": 1.1, "peak_pressure": -25, "compliance": 0.45, "gradient": 0.14,
+    })
+    assert body.status_code == 200, body.text
+    result = body.json()
+    assert result["curve"]["source"] == "modelled"
+    assert result["measurements"]["gradient"] == 0.14
+    assert len(result["curve"]["points"]) > 20
+
+
+def test_the_endpoint_rejects_a_gradient_outside_zero_to_one():
+    assert client.post("/api/tympanometry/analyze",
+                       json={"gradient": 1.4, "compliance": 0.5}).status_code == 422

@@ -58,6 +58,9 @@ ECV_NORMAL_CHILD = (0.3, 1.0)
 
 #: Tympanic gradient below this is an abnormally rounded peak.
 GRADIENT_NORMAL_MIN = 0.2
+#: Below this an entered gradient implies a peak too broad to return to
+#: baseline within the sweep, so the drawn curve cannot represent it exactly.
+GRADIENT_DRAWABLE_MIN = 0.2
 
 #: Tympanometric width normal range, daPa (the daPa expression of the same
 #: shape property as the gradient).
@@ -554,6 +557,35 @@ def _echo_points(trace: Sequence, points: List[Tuple[float, float]]) -> List[dic
 # --------------------------------------------------------------------------
 # synthesis — so a summary-only entry still draws a curve
 # --------------------------------------------------------------------------
+def width_from_gradient(gradient: Optional[float]) -> Optional[float]:
+    """Tympanometric width (daPa) that produces a given gradient.
+
+    The inverse of ``_tympanic_gradient`` for a Gaussian peak. With
+
+        GR = 1 − exp(−50² / 2σ²)
+
+    solving for σ and converting to full-width-at-half-maximum gives the width
+    that will read back as the requested gradient. This is what lets a
+    clinician type GRAD from a machine printout and get a curve whose measured
+    gradient is the number they entered, rather than a shape that merely looks
+    plausible.
+
+    Exact at and above a gradient of about 0.2. Below that the implied peak is
+    so broad it has not returned to baseline by the +200 daPa end of a standard
+    sweep, so the drawn curve reads back a little higher than the value
+    entered — 0.10 draws as 0.12. The drift is small, one-directional, and
+    never lifts an abnormal gradient above the 0.2 threshold, but it is a
+    property of the sweep range rather than of the arithmetic, so it is
+    reported rather than hidden.
+    """
+    if gradient is None or not (0 < gradient < 1):
+        return None
+    from math import log, sqrt
+
+    sigma = sqrt(1250.0 / -log(1.0 - gradient))
+    return round(sigma * 2.355, 1)
+
+
 def synthesize_trace(
     peak_pressure: Optional[float],
     compliance: Optional[float],
@@ -562,6 +594,7 @@ def synthesize_trace(
     notched: bool = False,
     notch_width: float = 60.0,
     ceiling: Optional[float] = None,
+    gradient: Optional[float] = None,
 ) -> List[dict]:
     """Model a trace from the numbers a machine printout gives.
 
@@ -573,7 +606,10 @@ def synthesize_trace(
     tail = ecv if ecv is not None else 0.8
     height = max(compliance if compliance is not None else 0.0, 0.0)
     centre = peak_pressure if peak_pressure is not None else 0.0
-    fwhm = width if width else (90.0 if height > FLAT_ADMITTANCE_MAX else 400.0)
+    # An entered gradient takes precedence: it is a measurement, whereas the
+    # default width is only a plausible shape.
+    fwhm = (width or width_from_gradient(gradient)
+            or (90.0 if height > FLAT_ADMITTANCE_MAX else 400.0))
     sigma = max(fwhm, 20.0) / 2.355
 
     def bump(p: float, mu: float, s: float) -> float:
@@ -678,12 +714,20 @@ def analyze(
     pta: Optional[float] = None,
     age_years: Optional[float] = None,
     probe_hz: int = 226,
+    gradient: Optional[float] = None,
 ) -> dict:
-    """One tympanometry study: curve, type, gradient, reflexes, interpretation."""
+    """One tympanometry study: curve, type, gradient, reflexes, interpretation.
+
+    Accepts either a recorded sweep or the four summary values a machine
+    prints — ECV, peak pressure, static compliance and gradient. With the
+    summary the curve is modelled from those numbers, and an entered gradient
+    shapes it so the drawing reads back as the value that was typed.
+    """
     # Imported here rather than at module scope: immittance.py takes its
     # classifier from this module, so a top-level import would close a cycle.
     from app.clinical.immittance import analyze_reflexes
 
+    entered_gradient = gradient
     curve = analyze_trace(trace or [], age_years)
     gradient = notch = None
     off_scale = False
@@ -700,12 +744,13 @@ def analyze(
                      "admittance": compliance,
                      "raw_admittance": None},
             "ecv": ecv,
-            "width": None,
-            "gradient": None,
+            "width": width_from_gradient(entered_gradient),
+            "gradient": entered_gradient,
             "notch": {"notched": False},
             "off_scale": False,
             "ceiling": INSTRUMENT_CEILING_MMHO,
-            "points": synthesize_trace(peak_pressure, compliance, ecv),
+            "points": synthesize_trace(peak_pressure, compliance, ecv,
+                                       gradient=entered_gradient),
             "sweep": list(SWEEP),
             "flags": [],
             "normative": normative(age_years),
@@ -713,10 +758,18 @@ def analyze(
             "note": ("Curve drawn from the entered peak, compliance and canal "
                      "volume. It illustrates those numbers; it is not a "
                      "recorded sweep."),
+            "gradient_note": (
+                f"A gradient of {entered_gradient:g} implies a peak too broad to "
+                f"return to baseline within the {SWEEP[1]:+g} daPa end of the "
+                "sweep, so the drawn curve reads back slightly higher than the "
+                "value entered. The reading stays abnormal either way."
+                if entered_gradient is not None
+                and entered_gradient < GRADIENT_DRAWABLE_MIN else None),
         }
 
-    typed = classify(peak_pressure, compliance, ecv, gradient, notch, age_years,
-                     off_scale=off_scale)
+    typed = classify(peak_pressure, compliance, ecv,
+                     gradient if gradient is not None else entered_gradient,
+                     notch, age_years, off_scale=off_scale)
     reflex = analyze_reflexes(reflexes or {}, pta)
 
     infant_warning = None

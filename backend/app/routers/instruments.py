@@ -35,9 +35,13 @@ class TympanometryRequest(BaseModel):
     #: Full pressure sweep. When absent, the summary values below are used
     #: and the curve is modelled from them.
     trace: List[TracePoint] = Field(default_factory=list)
+    #: The four values a tympanometer prints, for manual entry when the sweep
+    #: itself was not exported: peak pressure (daPa), static compliance (mmho),
+    #: ear-canal volume (ml) and gradient.
     peak_pressure: Optional[float] = None
     compliance: Optional[float] = None
     ecv: Optional[float] = None
+    gradient: Optional[float] = Field(default=None, ge=0, le=1)
     reflexes: Dict[str, Optional[float]] = Field(default_factory=dict)
     pta: Optional[float] = None
 
@@ -115,6 +119,7 @@ def tympanometry_analyze(req: TympanometryRequest):
         pta=req.pta,
         age_years=req.age_years,
         probe_hz=req.probe_hz,
+        gradient=req.gradient,
     )
 
 
