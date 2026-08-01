@@ -356,3 +356,98 @@ def test_a_small_canal_volume_is_flagged_as_an_artefact():
                                   age_years=30)
     assert any("cerumen" in f.lower() or "blocked" in f.lower()
                for f in result["flags"])
+
+
+def test_an_off_scale_trace_has_no_apex_and_is_type_add():
+    """The limbs ascend and never meet — there is nothing to join at the top."""
+    trace = tympanometry.synthesize_trace(
+        -10, tympanometry.INSTRUMENT_CEILING_MMHO * 1.8, ecv=1.3, width=95,
+        ceiling=tympanometry.INSTRUMENT_CEILING_MMHO)
+    gaps = [p for p in trace if p["admittance"] is None]
+    assert gaps, "the trace must leave the recordable range"
+    assert all(p.get("off_scale") for p in gaps)
+
+    result = tympanometry.analyze(trace=trace, age_years=30)
+    assert result["tympanogram"]["type"] == "Add"
+    assert result["tympanogram"]["off_scale"] is True
+    # No apex means no apex-derived measurement.
+    assert result["curve"]["off_scale"] is True
+    assert result["curve"]["peak"]["admittance"] is None
+    assert result["curve"]["gradient"] is None
+    assert result["curve"]["width"] is None
+    assert result["measurements"]["static_compliance"] is None
+
+
+def test_the_off_scale_gap_survives_into_the_plotted_points():
+    """Dropping the gap would let a chart draw a peak that was never recorded."""
+    trace = tympanometry.synthesize_trace(
+        -10, tympanometry.INSTRUMENT_CEILING_MMHO * 1.8, ecv=1.3, width=95,
+        ceiling=tympanometry.INSTRUMENT_CEILING_MMHO)
+    points = tympanometry.analyze_trace(trace, age_years=30)["points"]
+    assert any(p["admittance"] is None for p in points)
+    # Both limbs are still present, one either side of the gap.
+    pressures = [p["pressure"] for p in points if p["admittance"] is None]
+    below = [p for p in points if p["admittance"] is not None
+             and p["pressure"] < min(pressures)]
+    above = [p for p in points if p["admittance"] is not None
+             and p["pressure"] > max(pressures)]
+    assert below and above
+
+
+def test_a_deep_but_closed_peak_stays_type_ad():
+    """Ad closes below the ceiling; that contrast is the whole distinction."""
+    trace = tympanometry.synthesize_trace(-10, 2.4, ecv=1.3, width=95,
+                                          ceiling=tympanometry.INSTRUMENT_CEILING_MMHO)
+    assert all(p["admittance"] is not None for p in trace)
+    result = tympanometry.analyze(trace=trace, age_years=30)
+    assert result["tympanogram"]["type"] == "Ad"
+    assert result["curve"]["off_scale"] is False
+
+
+def test_a_trace_recorded_with_an_explicit_gap_is_read_as_off_scale():
+    """Real instruments mark the unmeasured region rather than omitting it."""
+    trace = [{"pressure": p, "admittance": None if -60 <= p <= 40 else 1.0}
+             for p in range(-400, 201, 10)]
+    result = tympanometry.analyze(trace=trace, age_years=30)
+    assert result["curve"]["off_scale"] is True
+    assert result["tympanogram"]["type"] == "Add"
+
+
+def test_the_off_scale_reference_curve_reports_no_compliance():
+    reference = tympanometry.reference_curves(30)
+    add = next(c for c in reference["curves"] if c["type"] == "Add")
+    assert add["off_scale"] is True
+    assert add["compliance"] is None
+    assert any(p["admittance"] is None for p in add["points"])
+    # Every other type still closes.
+    assert not any(c["off_scale"] for c in reference["curves"] if c["type"] != "Add")
+
+
+def test_the_endpoint_accepts_a_trace_with_an_off_scale_gap():
+    """The one type defined by a gap must be submittable through the API."""
+    trace = tympanometry.synthesize_trace(
+        -10, tympanometry.INSTRUMENT_CEILING_MMHO * 1.8, ecv=1.3, width=95,
+        ceiling=tympanometry.INSTRUMENT_CEILING_MMHO)
+    response = client.post("/api/tympanometry/analyze",
+                           json={"ear": "right", "age_years": 30, "trace": trace})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["tympanogram"]["type"] == "Add"
+    assert body["curve"]["off_scale"] is True
+    assert any(p["admittance"] is None for p in body["curve"]["points"])
+
+
+def test_no_apex_means_no_peak_pressure_either():
+    """The pressure of a peak that was never reached is not a peak pressure."""
+    trace = tympanometry.synthesize_trace(
+        -10, tympanometry.INSTRUMENT_CEILING_MMHO * 1.8, ecv=1.3, width=95,
+        ceiling=tympanometry.INSTRUMENT_CEILING_MMHO)
+    result = tympanometry.analyze(trace=trace, age_years=30)
+    assert result["curve"]["peak"]["pressure"] is None
+    assert result["measurements"]["peak_pressure"] is None
+    assert result["measurements"]["width"] is None
+    assert result["measurements"]["gradient"] is None
+    # And no shape flag pretends otherwise.
+    assert not any("width" in f.lower() or "gradient" in f.lower()
+                   for f in result["flags"] if "cannot be measured" not in f)
+    assert result["tympanogram"]["type"] == "Add"

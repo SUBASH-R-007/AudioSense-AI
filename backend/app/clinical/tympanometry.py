@@ -75,9 +75,17 @@ WIDTH_NORMAL_CHILD = (60, 150)
 FLAT_ADMITTANCE_MAX = 0.2
 AMBIGUOUS_BAND = (0.15, 0.25)
 
-#: Beyond this the peak runs off the scale of a clinical instrument, which is
-#: what separates Type Add from Type Ad.
+#: Compensated admittance beyond which the peak runs off the scale of a
+#: clinical instrument, which is what separates Type Add from Type Ad.
 OFF_SCALE_ADMITTANCE = 3.0
+
+#: Raw admittance the instrument can actually plot. Above this the pen leaves
+#: the paper: a Type Add trace ascends on both sides and never comes back down
+#: within the recordable range, so it has NO apex. Points beyond the ceiling
+#: are recorded as None rather than as a number, because the instrument did
+#: not measure them — drawing a closed peak there would invent an apex the
+#: machine never saw.
+INSTRUMENT_CEILING_MMHO = 4.0
 
 #: Age below which children's normative bands apply.
 CHILD_MAX_AGE_YEARS = 10
@@ -209,17 +217,15 @@ def classify(
     gradient: Optional[float] = None,
     notch: Optional[dict] = None,
     age_years: Optional[float] = None,
+    off_scale: bool = False,
 ) -> Optional[dict]:
     """Assign one of the eight types from the measured quantities.
 
     Order matters. A flat trace has no peak to describe, so it is settled
-    first; a notch is a property of the peak's shape and outranks how deep the
-    peak is, because Type D and Type E are notched by definition while Ad and
-    Add are not.
+    first. An off-scale trace has no apex at all, so it comes next — there is
+    no shape left to call notched. Only then does a notch outrank depth,
+    because Type D and Type E are notched by definition while Ad is not.
     """
-    if peak_pressure is None and compliance is None:
-        return None
-
     norms = normative(age_years)
     lo, hi = norms["compliance"]
     band = volume_band(ecv, norms)
@@ -238,7 +244,19 @@ def classify(
             **(extra or {}),
         }
 
-    # 1. Flat: no measurable peak. The canal volume decides what it means.
+    # 1. Off the scale, before anything else. Such a trace has neither a peak
+    #    pressure nor a peak admittance to reason about, so every test below
+    #    would be asking about a measurement that does not exist.
+    if off_scale:
+        return build("Add", "The trace runs off the instrument scale — the "
+                            "limbs ascend without meeting, so there is no "
+                            "measurable peak. This is ossicular discontinuity.",
+                     {"off_scale": True})
+
+    if peak_pressure is None and compliance is None:
+        return None
+
+    # 2. Flat: no measurable peak. The canal volume decides what it means.
     ambiguous = (compliance is not None
                  and AMBIGUOUS_BAND[0] <= compliance <= AMBIGUOUS_BAND[1])
     flat = compliance is not None and compliance < FLAT_ADMITTANCE_MAX
@@ -252,7 +270,7 @@ def classify(
                 "Type B over Type As.")
         return build("B", split["interpretation"], extra)
 
-    # 2. Notched peaks are Type D or E regardless of depth.
+    # 3. Notched peaks are Type D or E regardless of depth.
     if notch and notch.get("notched"):
         wide = notch.get("width", 0.0) > NOTCH_WIDE_DAPA or (
             compliance is not None and compliance > hi)
@@ -262,18 +280,18 @@ def classify(
         return build("D", "A narrow notched peak indicates a hypermobile or "
                           "scarred tympanic membrane.", {"notch": notch})
 
-    # 3. Off the instrument scale.
+    # 4. A complete curve whose peak still exceeds the off-scale threshold.
     if compliance is not None and compliance >= OFF_SCALE_ADMITTANCE:
         return build("Add", "Admittance beyond the instrument scale — ossicular "
                             "discontinuity.")
 
-    # 4. Pressure before depth: a peak at -250 daPa is Type C whatever its height.
+    # 5. Pressure before depth: a peak at -250 daPa is Type C whatever its height.
     if peak_pressure < PRESSURE_NORMAL[0]:
         return build("C", "Negative middle-ear pressure: the Eustachian tube is "
                           "not ventilating. This precedes an effusion and, if a "
                           "retraction pocket forms, cholesteatoma.")
 
-    # 5. Depth against the age-appropriate band.
+    # 6. Depth against the age-appropriate band.
     if compliance is not None and compliance > hi:
         return build("Ad", "A deep peak indicates a flaccid membrane or an "
                            "ossicular discontinuity.")
@@ -414,11 +432,34 @@ def _detect_notch(points, tail: float, height: float) -> dict:
     }
 
 
+def _detect_off_scale(trace: Sequence, points: List[Tuple[float, float]]) -> bool:
+    """Did the trace leave the instrument's range near its peak?
+
+    Two ways this shows up. Either the recording explicitly marks points as
+    off-scale (or leaves them empty), or the measured values themselves reach
+    the ceiling. In both cases the limbs ascend and never meet, so there is no
+    apex — which is the whole distinction between Type Add and Type Ad.
+    """
+    for item in trace or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("off_scale"):
+            return True
+        # An admittance recorded as empty between two measured points is a
+        # gap in the trace, not a missing row at the end of it.
+        if item.get("admittance") is None and item.get("pressure") is not None:
+            pressures = [p for p, _ in points]
+            if pressures and min(pressures) < item["pressure"] < max(pressures):
+                return True
+    return bool(points) and max(a for _, a in points) >= INSTRUMENT_CEILING_MMHO
+
+
 def analyze_trace(trace: Sequence, age_years: Optional[float] = None) -> Optional[dict]:
     """Peak, gradient, width, notch and tail volume from a pressure sweep."""
     points = _as_points(trace)
     if len(points) < 5:
         return None
+    off_scale = _detect_off_scale(trace, points)
 
     pressures = [p for p, _ in points]
     admittances = [a for _, a in points]
@@ -438,7 +479,7 @@ def analyze_trace(trace: Sequence, age_years: Optional[float] = None) -> Optiona
     norms = normative(age_years)
 
     flags: List[str] = []
-    if peak_pressure <= min(pressures) + 10:
+    if not off_scale and peak_pressure <= min(pressures) + 10:
         flags.append("Peak sits at the negative end of the sweep — extend the "
                      "sweep below -400 daPa before accepting this as Type C.")
     if peak_compensated <= FLAT_ADMITTANCE_MAX:
@@ -451,31 +492,63 @@ def analyze_trace(trace: Sequence, age_years: Optional[float] = None) -> Optiona
         flags.append(f"Ear-canal volume {tail:.2f} ml is below the normal floor of "
                      f"{norms['ecv'][0]:.1f} — suspect cerumen or a probe blocked "
                      "against the canal wall, not middle-ear disease.")
-    if width is not None and width > norms["width"][1] \
-            and peak_compensated > FLAT_ADMITTANCE_MAX:
-        flags.append(f"Tympanometric width {width:.0f} daPa is wider than normal "
-                     f"({norms['width'][0]}-{norms['width'][1]}); a rounded peak "
-                     "suggests early effusion even with normal peak height.")
-    if gradient is not None and gradient < GRADIENT_NORMAL_MIN \
-            and peak_compensated > FLAT_ADMITTANCE_MAX:
-        flags.append(f"Tympanic gradient {gradient:.2f} is below the normal "
-                     f"minimum of {GRADIENT_NORMAL_MIN:g}.")
+    if off_scale:
+        # With no apex, every peak-derived measure describes nothing. The
+        # highest recorded value would understate the admittance and make an
+        # off-scale trace look merely deep; a width measured across the gap is
+        # not a width; and the pressure of a peak that was never reached is not
+        # a peak pressure.
+        flags.append(
+            f"The trace exceeds the instrument ceiling of "
+            f"{INSTRUMENT_CEILING_MMHO:g} mmho and has no recordable peak. "
+            "Peak pressure, peak admittance, gradient and width cannot be "
+            "measured from it.")
+        gradient = width = None
+        notch = {"notched": False}
+    else:
+        if width is not None and width > norms["width"][1] \
+                and peak_compensated > FLAT_ADMITTANCE_MAX:
+            flags.append(f"Tympanometric width {width:.0f} daPa is wider than normal "
+                         f"({norms['width'][0]}-{norms['width'][1]}); a rounded peak "
+                         "suggests early effusion even with normal peak height.")
+        if gradient is not None and gradient < GRADIENT_NORMAL_MIN \
+                and peak_compensated > FLAT_ADMITTANCE_MAX:
+            flags.append(f"Tympanic gradient {gradient:.2f} is below the normal "
+                         f"minimum of {GRADIENT_NORMAL_MIN:g}.")
 
     return {
-        "peak": {"pressure": round(peak_pressure, 1),
-                 "admittance": peak_compensated,
-                 "raw_admittance": round(peak_raw, 3)},
+        "peak": {"pressure": None if off_scale else round(peak_pressure, 1),
+                 "admittance": None if off_scale else peak_compensated,
+                 "raw_admittance": None if off_scale else round(peak_raw, 3),
+                 "reached_ceiling": off_scale},
         "ecv": round(tail, 3),
         "width": None if width is None else round(width, 1),
         "gradient": None if gradient is None else round(gradient, 3),
         "notch": notch,
-        "points": [{"pressure": round(p, 1), "admittance": round(a, 3)}
-                   for p, a in points],
+        "off_scale": off_scale,
+        "ceiling": INSTRUMENT_CEILING_MMHO,
+        "points": _echo_points(trace, points),
         "sweep": [min(pressures), max(pressures)],
         "flags": flags,
         "normative": norms,
         "source": "measured",
     }
+
+
+def _echo_points(trace: Sequence, points: List[Tuple[float, float]]) -> List[dict]:
+    """Return the trace as given, preserving off-scale gaps.
+
+    The gaps are the finding. Dropping them would let a chart join the two
+    ascending limbs into an apex that was never recorded.
+    """
+    if trace and isinstance(trace[0], dict):
+        return [{"pressure": round(float(item["pressure"]), 1),
+                 "admittance": (None if item.get("admittance") is None
+                                else round(float(item["admittance"]), 3)),
+                 **({"off_scale": True} if item.get("off_scale")
+                    or item.get("admittance") is None else {})}
+                for item in trace if item.get("pressure") is not None]
+    return [{"pressure": round(p, 1), "admittance": round(a, 3)} for p, a in points]
 
 
 # --------------------------------------------------------------------------
@@ -488,6 +561,7 @@ def synthesize_trace(
     width: Optional[float] = None,
     notched: bool = False,
     notch_width: float = 60.0,
+    ceiling: Optional[float] = None,
 ) -> List[dict]:
     """Model a trace from the numbers a machine printout gives.
 
@@ -517,7 +591,15 @@ def synthesize_trace(
                                         bump(p, centre + half, narrow))
         else:
             value = tail + height * bump(p, centre, sigma)
-        out.append({"pressure": float(p), "admittance": round(value, 3)})
+
+        if ceiling is not None and value > ceiling:
+            # Past the instrument's range there is no reading, so there is no
+            # number. Recording None keeps the two limbs from being joined
+            # across an apex the machine never measured.
+            out.append({"pressure": float(p), "admittance": None,
+                        "off_scale": True})
+        else:
+            out.append({"pressure": float(p), "admittance": round(value, 3)})
         p += 10
     return out
 
@@ -543,8 +625,11 @@ def reference_curves(age_years: Optional[float] = None) -> List[dict]:
                     ecv=mid_ecv, width=90)),
         ("Ad", dict(peak_pressure=-10, compliance=round(hi * 1.45, 2),
                     ecv=mid_ecv, width=90)),
-        ("Add", dict(peak_pressure=-10, compliance=round(OFF_SCALE_ADMITTANCE + 0.6, 2),
-                     ecv=mid_ecv, width=80)),
+        # Deliberately far above the ceiling: the limbs must ascend and leave
+        # the plot rather than closing into an apex. Type Ad below the ceiling
+        # is what a *closed* deep peak looks like; that contrast is the point.
+        ("Add", dict(peak_pressure=-10, compliance=round(INSTRUMENT_CEILING_MMHO * 1.8, 2),
+                     ecv=mid_ecv, width=95, ceiling=INSTRUMENT_CEILING_MMHO)),
         ("B", dict(peak_pressure=0, compliance=0.05, ecv=mid_ecv, width=400)),
         ("C", dict(peak_pressure=-220, compliance=round((lo + hi) / 2, 2),
                    ecv=mid_ecv, width=95)),
@@ -558,6 +643,7 @@ def reference_curves(age_years: Optional[float] = None) -> List[dict]:
     for type_key, spec in specs:
         points = synthesize_trace(**spec)
         entry = TYMPANOGRAM_TYPES[type_key]
+        off_scale = any(p.get("off_scale") for p in points)
         out.append({
             "type": type_key,
             "label": entry["label"],
@@ -565,8 +651,10 @@ def reference_curves(age_years: Optional[float] = None) -> List[dict]:
             "disorders": entry["disorders"],
             "suggests_conductive": entry["suggests_conductive"],
             "peak_pressure": spec["peak_pressure"],
-            "compliance": spec["compliance"],
+            "compliance": None if off_scale else spec["compliance"],
             "ecv": spec["ecv"],
+            "off_scale": off_scale,
+            "ceiling": INSTRUMENT_CEILING_MMHO,
             "points": points,
             "volume_variants": (
                 [{"band": b, **v} for b, v in TYPE_B_BY_VOLUME.items()]
@@ -598,12 +686,14 @@ def analyze(
 
     curve = analyze_trace(trace or [], age_years)
     gradient = notch = None
+    off_scale = False
     if curve:
         peak_pressure = curve["peak"]["pressure"]
         compliance = curve["peak"]["admittance"]
         ecv = curve["ecv"]
         gradient = curve["gradient"]
         notch = curve["notch"]
+        off_scale = curve["off_scale"]
     else:
         curve = {
             "peak": {"pressure": peak_pressure,
@@ -613,6 +703,8 @@ def analyze(
             "width": None,
             "gradient": None,
             "notch": {"notched": False},
+            "off_scale": False,
+            "ceiling": INSTRUMENT_CEILING_MMHO,
             "points": synthesize_trace(peak_pressure, compliance, ecv),
             "sweep": list(SWEEP),
             "flags": [],
@@ -623,7 +715,8 @@ def analyze(
                      "recorded sweep."),
         }
 
-    typed = classify(peak_pressure, compliance, ecv, gradient, notch, age_years)
+    typed = classify(peak_pressure, compliance, ecv, gradient, notch, age_years,
+                     off_scale=off_scale)
     reflex = analyze_reflexes(reflexes or {}, pta)
 
     infant_warning = None

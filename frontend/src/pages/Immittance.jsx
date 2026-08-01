@@ -42,7 +42,7 @@ const TYMP_PRESETS = [
   { label: 'Normal (A)', peak: -20, height: 0.85, tail: 0.9, width: 85 },
   { label: 'Stiff (As)', peak: -10, height: 0.25, tail: 0.9, width: 80 },
   { label: 'Flaccid (Ad)', peak: -10, height: 2.4, tail: 0.9, width: 90 },
-  { label: 'Off-scale (Add)', peak: -10, height: 3.6, tail: 0.9, width: 80 },
+  { label: 'Off-scale (Add)', peak: -10, height: 7.2, tail: 0.9, width: 95, ceiling: 4 },
   { label: 'Effusion (B, normal ECV)', peak: 0, height: 0.02, tail: 1.0, width: 400 },
   { label: 'Perforation (B, large ECV)', peak: 0, height: 0.02, tail: 2.8, width: 400 },
   { label: 'Wax / blocked probe (B, small ECV)', peak: 0, height: 0.02, tail: 0.35, width: 400 },
@@ -63,7 +63,8 @@ const OAE_PRESETS = [
   { label: 'Too noisy to judge', build: () => ({ amplitude: 4, noise_floor: 17 }) },
 ]
 
-function buildTrace({ peak, height, tail, width, notched = false, notchWidth = 60 }) {
+function buildTrace({ peak, height, tail, width, notched = false, notchWidth = 60,
+                     ceiling = null }) {
   const sigma = width / 2.355
   const bump = (p, mu, s) => Math.exp(-((p - mu) ** 2) / (2 * s ** 2))
   const out = []
@@ -75,7 +76,13 @@ function buildTrace({ peak, height, tail, width, notched = false, notchWidth = 6
       ? Math.max(bump(p, peak - notchWidth / 2, Math.max(sigma * 0.55, 12)),
                  bump(p, peak + notchWidth / 2, Math.max(sigma * 0.55, 12)))
       : bump(p, peak, sigma)
-    out.push({ pressure: p, admittance: Number((tail + height * shape).toFixed(4)) })
+    const value = tail + height * shape
+    // Past the instrument ceiling there is no reading. Recording null keeps
+    // the limbs of a Type Add trace from being joined into an apex that was
+    // never measured.
+    out.push(ceiling !== null && value > ceiling
+      ? { pressure: p, admittance: null, off_scale: true }
+      : { pressure: p, admittance: Number(value.toFixed(4)) })
   }
   return out
 }
@@ -138,6 +145,7 @@ function Tympanometry({ reference, onType }) {
 
   const norms = result?.curve?.normative
   const jerger = result?.tympanogram
+  const offScale = Boolean(result?.curve?.off_scale)
 
   // Lifted so the type atlas below can highlight the row this ear landed on.
   useEffect(() => { onType?.(jerger?.type || null) }, [jerger?.type, onType])
@@ -213,13 +221,21 @@ function Tympanometry({ reference, onType }) {
               label={{ value: 'Ear-canal pressure (daPa)', position: 'insideBottom',
                 offset: -14, fontSize: 11, fill: '#64748b' }} />
             <YAxis tick={{ fontSize: 11, fill: '#64748b' }} width={44}
+              domain={offScale ? [0, result.curve.ceiling] : [0, 'auto']}
+              allowDataOverflow
               label={{ value: 'Admittance (mmho)', angle: -90, position: 'insideLeft',
                 fontSize: 11, fill: '#64748b' }} />
+            {offScale && (
+              <ReferenceLine y={result.curve.ceiling} stroke="#dc2626"
+                strokeDasharray="4 4"
+                label={{ value: 'instrument ceiling — no measurable peak',
+                  position: 'insideTopRight', fontSize: 10, fill: '#dc2626' }} />
+            )}
             <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
               formatter={(v) => [`${v} mmho`, 'Admittance']}
               labelFormatter={(l) => `${l} daPa`} />
             <Line type="monotone" dataKey="admittance" stroke="#0d9488" strokeWidth={2.2}
-              dot={false} isAnimationActive={false} />
+              dot={false} isAnimationActive={false} connectNulls={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>

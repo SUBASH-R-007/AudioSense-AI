@@ -21,7 +21,11 @@ router = APIRouter(prefix="/api")
 
 class TracePoint(BaseModel):
     pressure: float
-    admittance: float
+    #: None where the trace left the instrument's range. A Type Add sweep has
+    #: no reading at its centre, and rejecting the point would make the one
+    #: type defined by that gap impossible to submit.
+    admittance: Optional[float] = None
+    off_scale: bool = False
 
 
 class TympanometryRequest(BaseModel):

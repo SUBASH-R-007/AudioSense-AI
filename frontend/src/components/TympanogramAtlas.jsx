@@ -19,7 +19,16 @@ const TYPE_TONE = {
 
 function Curve({ entry, normative }) {
   const tone = TYPE_TONE[entry.type] || '#0d9488'
-  const peak = Math.max(...entry.points.map((p) => p.admittance))
+  const measured = entry.points.map((p) => p.admittance).filter((v) => v != null)
+  const peak = measured.length ? Math.max(...measured) : 1
+
+  // An off-scale trace has no apex to show. The axis stops at the instrument
+  // ceiling so the two limbs run to the top edge and stop there, and
+  // connectNulls stays off so nothing bridges the gap between them — drawing a
+  // join would invent a peak the machine never recorded.
+  const ceiling = entry.ceiling ?? 4
+  const yMax = entry.off_scale ? ceiling : Math.max(2, Math.ceil(peak * 1.15))
+
   return (
     <div className="h-36 w-full">
       <ResponsiveContainer>
@@ -30,15 +39,21 @@ function Curve({ entry, normative }) {
               fill={tone} fillOpacity={0.06} />
           )}
           <ReferenceLine x={0} stroke="#cbd5e1" strokeDasharray="4 4" />
+          {entry.off_scale && (
+            <ReferenceLine y={ceiling} stroke={tone} strokeDasharray="3 3"
+              strokeOpacity={0.7}
+              label={{ value: 'off scale', position: 'insideTopRight',
+                fontSize: 9, fill: tone }} />
+          )}
           <XAxis dataKey="pressure" type="number" domain={[-400, 200]}
             ticks={[-400, -200, 0, 200]} tick={{ fontSize: 9, fill: '#94a3b8' }} />
-          <YAxis domain={[0, Math.max(2, Math.ceil(peak * 1.15))]}
+          <YAxis domain={[0, yMax]} allowDataOverflow
             tick={{ fontSize: 9, fill: '#94a3b8' }} width={34} />
           <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8 }}
             formatter={(v) => [`${v} mmho`, 'Admittance']}
             labelFormatter={(l) => `${l} daPa`} />
           <Line type="monotone" dataKey="admittance" stroke={tone} strokeWidth={2}
-            dot={false} isAnimationActive={false} />
+            dot={false} isAnimationActive={false} connectNulls={false} />
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -84,7 +99,9 @@ export default function TympanogramAtlas({ reference, activeType = null }) {
                 <div>
                   <dt className="inline font-semibold text-slate-600">Peak: </dt>
                   <dd className="inline text-slate-600">
-                    {entry.peak_pressure} daPa, {entry.compliance} mmho
+                    {entry.off_scale
+                      ? `no measurable peak — exceeds ${entry.ceiling} mmho`
+                      : `${entry.peak_pressure} daPa, ${entry.compliance} mmho`}
                   </dd>
                 </div>
                 <div>
