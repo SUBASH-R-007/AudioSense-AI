@@ -6,7 +6,9 @@ import { captureSvgAsPng } from '../lib/svgCapture.js'
 import AudiogramChart, { buildChartData } from '../components/AudiogramChart.jsx'
 import CochleaMap from '../components/CochleaMap.jsx'
 import VerdictBanner from '../components/VerdictBanner.jsx'
-import { speak, stopSpeaking, voiceAvailable } from '../lib/speech.js'
+import {
+  availableLanguages, speak, stopSpeaking, voiceAvailable, voiceDiagnostic,
+} from '../lib/speech.js'
 
 const Card = ({ title, children, badge }) => (
   <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
@@ -798,9 +800,9 @@ export default function Dashboard() {
                   className={`ml-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-[12.5px] font-semibold transition ${
                     speaking ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
-                  title="Read this sheet aloud">
+                  title={voiceAvailable(lang) ? 'Read this sheet aloud' : voiceDiagnostic(lang)}>
                   {speaking ? '■ Stop' : '🔊 Read aloud'}
-                  {lang !== 'english' && !voiceAvailable(bundle.counseling[lang]?.tts) && (
+                  {!voiceAvailable(lang) && (
                     <span className="text-[10px] font-normal text-amber-600">no voice</span>
                   )}
                 </button>
@@ -812,6 +814,17 @@ export default function Dashboard() {
                   {bundle.counseling.reading_level} reading level
                 </span>
               </div>
+              {!voiceAvailable(lang) && (
+                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[11.5px] leading-relaxed text-amber-900">
+                  {voiceDiagnostic(lang)}
+                  {availableLanguages().length > 0 && (
+                    <span className="mt-0.5 block text-amber-700">
+                      Speakable here: {availableLanguages().join(', ')}. The written
+                      sheet below is unaffected in every language.
+                    </span>
+                  )}
+                </p>
+              )}
               {handout && (
                 <div className="mt-3 flex items-center gap-4 rounded-xl border border-teal-200 bg-teal-50/50 p-3">
                   <img src={handout.qr_url} alt="QR code for the patient handout"
