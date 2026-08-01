@@ -12,6 +12,13 @@ backend/.venv/
 # model is byte-identical to the tested one.
 # Regenerate with: python -m app.ml.generate_dataset && python -m app.ml.train
 
+# The public otoscope dataset is not ours to redistribute, and it is large.
+# The committed reference atlas (backend/data/otoscope_reference, ~1.3 MB)
+# is what the shipped model trains on; adding this folder and re-running
+# scripts/train_otoscopy.py upgrades it without any code change.
+backend/data/otoscope_kaggle/
+backend/data/_kaggle_tmp/
+
 # Runtime state — API keys, patient records and issued handouts
 backend/data/ai_config.json
 backend/data/verify_store.json

@@ -176,11 +176,13 @@ matched pitch while neighbouring bands are preserved.
 
 | Time | Action | The line |
 |---|---|---|
-| 0:00 | 🔬 Pre-clinical case | *"Normal audiogram. Hearing age 55 at age 26. Every other tool sends him back to work."* |
-| 0:45 | 🚨 Sudden asymmetric | *"This one is an emergency, and it sorts above everything else."* |
-| 1:10 | Snap a paper audiogram | *"Paper to interpretation, offline, human confirms before anything is issued."* |
-| 1:30 | Dashboard | Verdict first, then the evidence — glow, cochlea map, disability formula |
-| 1:50 | 🎧 Simulator | Normal → patient → aided → cheap amplifier → smoke alarm |
+| 0:00 | 🩺 Signs & Symptoms — same complaint, two ages | *"Water from the ear at 34 is chronic otitis media. At 72 with diabetes it's a skull-base infection. The age is the diagnosis."* |
+| 0:25 | 🔬 Pre-clinical case | *"Normal audiogram. Hearing age 55 at age 26. Every other tool sends him back to work."* |
+| 0:50 | 🚨 Sudden asymmetric | *"This one is an emergency, and it sorts above everything else."* |
+| 1:05 | Snap a paper audiogram | *"Paper to interpretation, offline, human confirms before anything is issued."* |
+| 1:20 | 👁 Otoscopy — normal drum on a conductive case | *"The picture argues with the measurement. That conflict doesn't need the classifier to be right."* |
+| 1:40 | 📉 Immittance — early effusion | *"Normal peak height. Gradient 208 against a ceiling of 114. Three numbers call this normal; the curve doesn't."* |
+| 1:55 | 🎧 Simulator | Normal → patient → aided → cheap amplifier → smoke alarm |
 | 2:20 | 🧭 Listening Lab | *"With his ears, everything sounds like it's on the right."* |
 | 2:40 | Batch + Validate | *"89 a minute. 75% auto-releasable. And here's our accuracy against experts — 83.3%, not 99.9%."* |
 | 2:55 | Close | *"Deterministic clinical core. Calibrated AI that admits doubt. Empathy you can hear."* |
@@ -194,11 +196,27 @@ We will say this before you have to ask:
 1. **The ML is validated on synthetic data.** Real expert-labelled audiograms
    are needed before quoting clinical accuracy. The harness is built and
    waiting.
-2. **Browser screening is a screening**, not a diagnostic audiogram —
+2. **The otoscopy classifier is trained on 62 images and it shows.** Validated
+   leave-one-source-image-out, it gets the exact pattern right well under half
+   the time — several times chance, nowhere near diagnostic. So the screen
+   leads with a **ranked differential and the three closest labelled reference
+   views**, not a label, and prints the measured accuracy in the interface
+   itself. It cannot currently detect retraction at all, and we say so on the
+   page. The training pipeline takes the public Kaggle otoscope dataset with
+   one command and no code change; we could not redistribute it here, so we
+   shipped the model that the data we *do* have honestly supports.
+   **The audiogram cross-check is the part that does not depend on the
+   classifier** — it compares what the appearance predicts against what was
+   measured, and a conflict is informative either way.
+3. **Symptom assessment ranks; it does not diagnose.** It knows the fourteen
+   diseases and four presenting complaints in the supplied reference
+   documents, and nothing else. Free text is matched by synonym table — words
+   it does not recognise are shown back rather than silently dropped.
+4. **Browser screening is a screening**, not a diagnostic audiogram —
    consumer headphones are not ISO 389 calibrated.
-3. **The 5-year forecast is a counselling aid**, not a validated prognosis.
-4. **SII measures audibility, not comprehension.**
-5. **Nothing here replaces an audiologist.** Every report carries:
+5. **The 5-year forecast is a counselling aid**, not a validated prognosis.
+6. **SII measures audibility, not comprehension.**
+7. **Nothing here replaces an audiologist.** Every report carries:
    *"AI-assisted interpretation; final diagnosis requires a qualified
    audiologist."*
 

@@ -26,6 +26,10 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 
 | | |
 |---|---|
+| 🩺 **Signs & symptoms triage** | "Water keeps coming out of my ear." Free text or checklist → ranked differential, **red flags that outrank it**, and the test battery that separates the possibilities — from two clinical reference documents, matched deterministically with no network call. Age changes the answer: the same discharge is acute otitis media in a child and **necrotizing otitis externa** in a diabetic of seventy-five |
+| 👁 **Otoscopy pattern matching** | A tympanic-membrane photo against a **62-view labelled atlas** across eight patterns, returning a ranked differential, the three closest reference images side by side, and the measurements behind the call. Then the part that does not depend on the classifier: what the appearance *predicts* — a large canal volume, a Type B trace, a 20–45 dB gap — checked against what was actually measured |
+| 📉 **Tympanometry as an instrument** | The pressure sweep itself, not three numbers. **Tympanometric width** is the measurement that catches an early effusion while peak height is still normal, and it only exists on the curve. Age-banded norms, and a 226 Hz probe is **refused** under six months of age rather than typed wrongly |
+| 🌀 **DP-gram with a stated protocol** | Emission and noise floor per frequency, pass/refer against newborn, screening, occupational or diagnostic criteria, and the **cochlear place** each dropout maps to. Absent emissions above 50 dB HL are marked *uninformative*, not counted as damage — that would be double-counting the audiogram |
 | 🧭 **Spatial hearing test** | HRTF-rendered sound placed around the listener, each ear through its own loss. With normal ears the interaural difference **flips sign** with direction; with asymmetric loss it stays positive whichever side the sound came from — the cue is gone, which is why the patient turns the wrong way. Measured, not asserted |
 | 🍽 **Digits-in-noise** | The adaptive digit-triplet test behind national screening programmes. Only the speech-to-noise *ratio* matters, so it works on uncalibrated equipment — and it catches the patient with a clean audiogram who still cannot follow a conversation |
 | 🔔 **Tinnitus matching + notched therapy** | Match pitch and loudness, then generate a notched masker that carves a half-octave hole at exactly that pitch while leaving its neighbours intact |
@@ -71,8 +75,11 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 ```mermaid
 flowchart LR
     subgraph Frontend [React + Vite + Tailwind + Recharts]
+        SY[Signs & Symptoms<br/>complaint → differential] --> OT
+        OT[Otoscopy<br/>image vs reference atlas] --> DB
         SCR[Screening Test<br/>Hughson-Westlake tones] --> DB
         NT[New Test / Digitize] --> DB[Results Dashboard<br/>audiogram · SII · cochlea map]
+        IMM[Immittance & OAE<br/>tympanogram curve · DP-gram] --> DB
         DB --> SIM[Hearing Simulator<br/>normal → patient → aided<br/>+ live captions]
         DB --> TTS[Counseling read aloud<br/>EN / Tamil]
         PROG[Progression + 5y forecast] & BATCH[Batch CSV]
@@ -80,9 +87,15 @@ flowchart LR
     end
 
     subgraph Backend [FastAPI]
+        SYM[/api/symptoms/] --> KB[Complaint guide by age band<br/>+ 14-disease reference<br/>+ red-flag rules]
+        OTO[/api/otoscopy/] --> OTOM[Illumination-normalised features<br/>+ PCA/logistic over 8 patterns<br/>+ nearest-reference retrieval]
+        OTOM --> XCHK[Concordance: what the picture<br/>predicts vs what was measured]
+        TYM[/api/tympanometry/] --> CURVE[Peak · gradient · canal volume<br/>Jerger type · age-banded norms]
+        OAE[/api/oae/] --> DPG[DP-gram · protocol pass/refer<br/>· cochlear place]
         AN[/api/analyze/] --> RULES[Clinical Rules Engine<br/>WHO 2021 · ABG typing · RPwD 2016]
         AN --> ML[RandomForest + calibration<br/>+ IsolationForest OOD<br/>+ per-frequency explanation]
         AN --> PHON[Phoneme audibility · SII<br/>quiet / noise / aided]
+        AN --> BAT[Cross-modal battery review]
         RX[/api/prescription/] --> NAL[NAL-R gains<br/>+ word-level audibility]
         DIG[/api/digitize/] --> CV[OpenCV grid + symbol detection]
         REP[/api/report/] --> ENGINE{AI mode?}
@@ -90,6 +103,7 @@ flowchart LR
         ENGINE -- api --> LLM[Gemini / OpenAI / Claude / Groq /<br/>OpenRouter / Ollama<br/>generator → verifier]
         PROGAPI[/api/progression/] --> OSHA[OSHA STS + ASHA criteria<br/>+ exposed vs protected forecast]
         PDF[/api/pdf/] --> RL[reportlab + QR verification hash]
+        CURVE & DPG --> BAT
     end
 
     Frontend -- REST --> Backend
@@ -133,13 +147,17 @@ Training artifacts land in `backend/data/`: `confusion_matrix.png` + `accuracy_r
 
 ## 🎬 3-minute demo script
 
-**0:00 — The hook.** "One in five people has hearing loss; audiologists are scarce. AudioSense turns any audiometer printout into a full clinical interpretation." Open **New Test**.
+**0:00 — The hook.** "One in five people has hearing loss; audiologists are scarce. AudioSense takes a patient from the sentence they walk in with to a signed clinical interpretation." Open **Signs & Symptoms**, click *Water discharge from the ear*, press **Assess**: chronic suppurative otitis media leads, cholesteatoma sits below it, and the battery is ordered otoscopy → pure tones → tympanometry. Now change the age to 72 and add *diabetes* — the page turns amber for **necrotizing otitis externa**, a skull-base infection. "Same complaint. Different disease. The age is the diagnosis."
 
 **0:10 — The one nobody else catches.** Load **🔬 Pre-clinical Noise Damage**. The verdict banner answers before you read anything else: *"Hearing thresholds are still normal, but the cochlea is already being damaged — this loss is still preventable."* The audiogram is completely normal; emissions are absent at 4 and 8 kHz; **hearing age 55 against an actual age of 26**. "Every conventional screening in the country would send this welder back to the shipyard."
 
 **0:25 — The save.** Load the **🚨 Sudden Asymmetric Loss** demo case. The dashboard opens with a pulsing red banner: *possible sudden sensorineural hearing loss — steroids are time-critical*, plus an asymmetry flag recommending MRI and a rollover finding suggesting retrocochlear pathology. Say it plainly: "most audiogram tools would have called this 'moderate sensorineural loss' and booked a hearing-aid fitting."
 
 **0:35 — Snap-to-Digitize.** Drag `samples/audiogram_photo_1.png` onto the drop zone. Watch the paper chart become editable thresholds with confidence badges — point out the *human-in-the-loop* banner (OpenCV, fully offline). Click **Analyze →**.
+
+**0:50 — Look in the ear.** With the conductive case loaded, open **Otoscopy** and click an *otitis media* reference view. Two things on screen: the differential with its **measured accuracy stated in the banner** — "we tell you it gets the exact pattern right less than half the time, because it does" — and beside it the three closest labelled reference images for the clinician to judge. Then scroll to *Against the rest of the battery*: **✓ the 32.5 dB gap matches, ✓ the Type B trace matches.** Now click a *normal* reference view instead: **⚠ conductive loss with a normal-looking drum.** "That conflict does not depend on the classifier being right. It is the picture arguing with the measurement, and that is the part a clinician cannot get from either alone."
+
+**1:10 — The curve, not the number.** Open **Immittance & OAE** and pick *Early effusion (broad peak)*. Peak height is normal, compliance is normal — and the **gradient is 208 daPa against a ceiling of 114**, flagged. "Three numbers on a printout call this a Type A. The curve calls it an early effusion." Switch to *Perforation*: canal volume 2.8 cm³, flagged as a hole. Below, the DP-gram on *Pre-clinical noise damage* — emissions gone from 3 kHz up, mapped to the **basal turn of the cochlea**.
 
 **1:00 — Dashboard.** The audiogram renders with correct clinical notation; the **teal glow at 4 kHz** shows what drove the AI's "Noise notch" call. Open **Why this classification?** — *"if 4 kHz were 10 dB better, this would classify as flat"*, and 12 of 12 nearest reference cases agree. Walk the cards: WHO degree, type via air-bone gap, **RPwD disability % with the full formula expanded**, the cochlea map showing the lesion at the basal turn. Report carries the **verified ✓** badge.
 
@@ -164,8 +182,15 @@ backend/
                    triage.py (priority + auto-release routing) · norms.py (ISO 7029)
                    listening_lab.py (localization · speech-in-noise · tinnitus)
                    immittance.py (tympanograms + reflexes) · oae.py (emissions)
+                   tympanometry.py (sweep curve · gradient · age norms · probe-tone guard)
+                   dpoae.py (DP-gram · protocols · cochlear place)
+                   symptom_kb.py (complaint guide by age · 14 diseases · red flags)
+                   symptoms.py (synonym matching · ranked differential · battery)
                    consistency.py (cross-modal reconciliation) · noise_dose.py (OSHA/NIOSH)
                    prescription.py (NAL-R + aided verification) · forecast.py (5-year projection)
+  app/otoscopy/    taxonomy.py (8 patterns + audiological consequence)
+                   features.py (field of view · colour · cone of light · polar layout)
+                   model.py (training · leave-one-image-out validation · retrieval · concordance)
   app/ml/          generate_dataset.py · features.py · train.py
                    classifier.py (calibration · OOD · counterfactuals · case retrieval)
   app/services/    phonemes.py · sii.py (SII + word audibility) · vision.py (OpenCV)
@@ -175,12 +200,18 @@ backend/
                    llm_provider.py (6 providers) · ai_config.py · pdf.py (QR hash)
   app/routers/     analyze · prescription · speech-words · digitize · report · progression
                    batch · pdf · settings · feedback · handout (QR) · clinic (records,
-                   noise-dose, referral, atlas)
-  tests/           179 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
+                   noise-dose, referral, atlas) · otoscopy · symptoms · instruments
+                   (tympanometry + oae)
+  data/            otoscope_reference/ (62 labelled views, 8 patterns, ~1.3 MB)
+                   otoscopy_model.joblib + model card
+  tests/           429 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
   scripts/         make_samples.py (regenerates the demo photos + ground truth)
+                   extract_otoscope_reference.py (docx → labelled atlas)
+                   train_otoscopy.py · fetch_otoscope_dataset.py
 samples/           2 audiogram photos + ground_truth.json + batch_sample.csv
 frontend/
-  src/pages/       NewTest · Screening · Dashboard · Simulator · Progression · Batch · Records
+  src/pages/       Symptoms · Otoscopy · NewTest · Screening · Immittance · Dashboard
+                   Simulator · ListeningLab · Progression · Batch · Records
   src/components/  AudiogramChart (clinical symbols, glow, banana) · CochleaMap (Greenwood)
                    ThresholdGrid · AISettingsPanel
   src/audio/       simulatorGraph.js (loss + aid + compression + babble + binaural)
@@ -200,8 +231,10 @@ frontend/
 - **Red flags**: sudden SNHL = ≥30 dB across ≥3 contiguous frequencies within 72 h (confirmed against a prior audiogram where one exists, otherwise conditional on reported onset); asymmetry referral at ≥20 dB at one frequency or ≥15 dB at two.
 - **Masking**: interaural attenuation of 40 dB for supra-aural earphones (AC) and ~0 dB for BC; a warning is raised only when masking was indicated *and* not recorded.
 - **Speech audiometry**: SRT/PTA agreement within ±10 dB; rollover index > 0.45 as the retrocochlear indicator.
-- **Immittance**: Jerger tympanogram types (A/As/Ad/B/C), Type B split by ear-canal volume (effusion vs perforation); acoustic reflexes normally 70–100 dB SL.
-- **OAE**: DPOAE counted present at ≥6 dB above the noise floor; absent emissions with normal thresholds reported as pre-clinical outer-hair-cell damage.
+- **Immittance**: Jerger tympanogram types (A/As/Ad/B/C), Type B split by ear-canal volume (effusion vs perforation); acoustic reflexes normally 70–100 dB SL. Tympanometric width from the curve at half peak height, normal 51–114 daPa in adults (Margolis & Heller 1987) and 60–150 daPa in children (ASHA 1997); a 226 Hz probe is refused below 6 months of age, where it can read normal over a middle ear full of fluid.
+- **OAE**: DPOAE counted present at ≥6 dB above the noise floor; absent emissions with normal thresholds reported as pre-clinical outer-hair-cell damage. Absent emissions where the threshold already exceeds ~50 dB HL are marked *uninformative* rather than counted as damage, and a noise floor above 10 dB SPL invalidates the frequency instead of failing it.
+- **Symptom differential**: two supplied clinical documents — a presenting-complaint guide ranked by age band (otorrhoea, otalgia, vertigo, headache) and a 14-disease reference giving symptoms, prone age group and the audiological tests that establish each diagnosis. Free text is matched by synonym table, not inferred; unmatched words are reported back. Every ranked entry names which source put it there.
+- **Otoscopy**: eight patterns from the supplied reference document, with each pattern's *expected* air-bone gap and tympanogram recorded so the image can be checked against the measured battery. The classifier is validated leave-one-source-image-out on 62 views and its accuracy — well above chance, well below diagnostic — is shown in the app, alongside what it cannot do.
 - **Bayesian screening**: QUEST/ZEST posterior with a logistic psychometric function (4.5 dB slope, 2% guess, 3% lapse), stopping on a 10 dB credible interval. Benchmarked against the staircase over 300 simulated listeners — 9.6 vs 11.6 presentations, 2.7 vs 3.3 dB mean absolute error, and 1.3% vs 0.3% of thresholds off by more than 10 dB. The gain is calibrated uncertainty, not raw speed.
 - **Noise dose**: OSHA 29 CFR 1910.95 (90 dBA, 5 dB exchange) and NIOSH 1998 (85 dBA, 3 dB exchange); protector attenuation derated as (NRR − 7) / 2.
 - **Prescription**: NAL-R insertion gain (Byrne & Dillon 1986); bands already within normal limits receive no gain. Aided verification tolerances ±10 dB against target.
