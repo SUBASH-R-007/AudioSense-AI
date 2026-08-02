@@ -233,6 +233,46 @@ export const api = {
       body: JSON.stringify({ analysis, side }),
     }).then(json),
 
+  // --- evoked potentials and behavioural observation ----------------------
+  aepReference: () => http('/api/aep/reference').then(json),
+  abr: (payload) =>
+    http('/api/aep/abr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  abrThreshold: (series) =>
+    http('/api/aep/abr/threshold', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ series }),
+    }).then(json),
+  mlr: (payload) =>
+    http('/api/aep/mlr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  llr: (payload) =>
+    http('/api/aep/llr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  aepBattery: (payload) =>
+    http('/api/aep/battery', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  boaReference: () => http('/api/boa/reference').then(json),
+  boa: (payload) =>
+    http('/api/boa/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
   // --- speech audiometry: SDT, SRT, WRS -----------------------------------
   speechReference: () => http('/api/speech/reference').then(json),
   speech: (payload) =>

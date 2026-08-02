@@ -6,6 +6,7 @@ import Screening from './pages/Screening.jsx'
 import Symptoms from './pages/Symptoms.jsx'
 import Otoscopy from './pages/Otoscopy.jsx'
 import Immittance from './pages/Immittance.jsx'
+import EvokedPotentials from './pages/EvokedPotentials.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Simulator from './pages/Simulator.jsx'
 import Progression from './pages/Progression.jsx'
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="/symptoms" element={<Symptoms />} />
         <Route path="/otoscopy" element={<Otoscopy />} />
         <Route path="/immittance" element={<Immittance />} />
+        <Route path="/evoked-potentials" element={<EvokedPotentials />} />
         <Route path="/screening" element={<Screening />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/simulator" element={<Simulator />} />

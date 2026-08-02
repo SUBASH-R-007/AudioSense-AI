@@ -3,9 +3,9 @@
 A full explanation of what this project is, how every part works, why each
 design decision was made, and what has actually been measured.
 
-**Scale:** ~12,300 lines of backend Python across 64 modules, ~8,700 lines of
-frontend across 34 files, **590 automated tests**, 11 application pages,
-26 test files.
+**Scale:** ~15,600 lines of backend Python across 70 modules, ~10,600 lines of
+frontend across 40 files, **663 automated tests**, 12 application pages,
+14 components, 27 test files, 67 API endpoints.
 
 ---
 
@@ -23,6 +23,10 @@ frontend across 34 files, **590 automated tests**, 11 application pages,
    - [6d. Signs and symptoms](#6d-signs-and-symptoms)
    - [6e. Linkage — everything cross-checks everything](#6e-linkage--everything-cross-checks-everything)
    - [6f. A differential from any single input](#6f-a-differential-from-any-single-input)
+   - [6g. Masking — a decision per frequency](#6g-masking--a-decision-per-frequency-not-per-patient)
+   - [6h. Speech audiometry — SDT, SRT and WRS](#6h-speech-audiometry--sdt-srt-and-wrs-with-their-real-uncertainty)
+   - [6i. Evoked potentials — ABR, MLR and LLR](#6i-evoked-potentials--abr-mlr-and-llr)
+   - [6j. Behavioural observation audiometry](#6j-behavioural-observation-audiometry)
 7. [Machine learning](#7-machine-learning)
 8. [Snap-to-Digitize](#8-snap-to-digitize-photo--audiogram)
 9. [Functional impact: phonemes, SII, hearing age](#9-functional-impact)
@@ -94,7 +98,7 @@ backend/  FastAPI + scikit-learn + OpenCV + reportlab
   app/routers/    HTTP surface
 frontend/ React 18 + Vite + Tailwind v4 + Recharts
   src/audio/      Web Audio engines (simulator, tones, spatial, tinnitus)
-  src/pages/      eight pages
+  src/pages/      twelve pages
   src/components/ chart, cochlea map, verdict banner, tour, settings
 ```
 
@@ -204,8 +208,9 @@ Any single test misleads. Pure tones need a cooperative patient; tympanometry
 says nothing about the cochlea; emissions say nothing about the nerve.
 Diagnosis comes from whether the tests **agree**.
 
-**Tympanometry** — Jerger types A / As / Ad / B / C, with Type B split by
-ear-canal volume (normal volume = effusion, large = perforation).
+**Tympanometry** — eight types (A / As / Ad / Add / B / C / D / E), with Type B
+split three ways by ear-canal volume (normal = effusion, large = perforation,
+small = wax or a blocked probe). See [6a](#6a-tympanometry-as-an-instrument).
 
 **Acoustic reflexes** — present / absent / partial, ipsi and contra.
 
@@ -315,6 +320,30 @@ normal over a middle ear full of fluid, and a peak sitting at the edge of the
 sweep, which means the sweep was too short rather than that this is a Type C.
 Summary-only entry still draws a curve, labelled `modelled` rather than
 `measured`.
+
+### Typing in ECV, PP, SC and GRAD, and getting the curve they imply
+
+Most clinical tympanometers print four summary numbers and never export the
+sweep. So all four can be entered by hand — ear-canal volume, peak pressure,
+static compliance and gradient — and the curve is reconstructed from them.
+
+The gradient is the interesting one, because it is a *shape* measure and the
+other three are not. Reconstruction inverts the gradient definition rather than
+drawing something that merely looks plausible: for a Gaussian peak,
+
+```
+GR = 1 − exp(−50² / 2σ²)
+```
+
+is solved for σ and converted to full-width-at-half-maximum. The result is a
+curve whose **measured gradient is the number the clinician typed**, which the
+tests verify by round-tripping it back through the classifier. `width_from_gradient`
+also gives the tympanometric width directly, so a printout that reports width
+instead of gradient lands on the same axis.
+
+This is what makes the eight-type classification usable on a machine that emits
+four numbers rather than a trace — the type, the curve and the entered figures
+all agree by construction.
 
 ### 6b. The DP-gram
 
@@ -620,6 +649,251 @@ Finally, when both standalone differentials exist, the diseases they **both**
 rank highly are surfaced — two modalities converging without either being told
 what the other found, which is the strongest signal available on a case with
 no history.
+
+---
+
+## 6g. Masking — a decision per frequency, not per patient
+
+`masking.py`, `/api/masking/analyze`
+
+Sound presented to one ear crosses the skull and can be heard by the other. An
+unmasked threshold may therefore belong to the **wrong ear** — a shadow curve
+that looks like real hearing and is not. Masking noise in the non-test ear is
+what makes a threshold attributable, and the decision has an exact answer at
+every frequency.
+
+**Air conduction masks when *either* rule holds:**
+
+```
+AC(test ear) − AC(non-test ear)  ≥  IA
+AC(test ear) − BC(non-test ear)  ≥  IA
+```
+
+Rule 2 is the one that earns its place. A conductive loss in the *non-test* ear
+lowers the bar the crossed signal has to clear, because what the crossed sound
+actually has to exceed is that ear's **bone** threshold, not its air threshold.
+A clinic applying rule 1 alone will pass over exactly the ears most likely to
+produce a shadow.
+
+**Bone conduction masks when either the air-bone gap is ≥ 15 dB or the gap
+between the test ear's AC and the unmasked BC is ≥ 15 dB.** Bone conduction
+crosses the skull essentially unattenuated, so an unmasked bone threshold never
+belongs to a known ear on its own.
+
+**The transducer is a clinical choice, not a logistical one.** Interaural
+attenuation is a property of how the sound is delivered:
+
+| Transducer | IA (air) | Effect |
+|---|---|---|
+| Supra-aural (TDH) | 40 dB | The default, and the one that masks most often |
+| Insert | 50–60 dB (**50** applied) | Pushes the crossover higher — removes the need to mask in a large share of cases |
+| Circumaural | 45 dB | Between the two |
+
+The reference gives inserts as a range, and **the conservative end is the one
+applied**: a *lower* interaural attenuation means the crossover is reached
+sooner, so masking is called for more often. Taking 60 would let the app skip
+masking on an optimistic assumption, which is the one direction the error must
+not go.
+
+### The masking dilemma is reported, not papered over
+
+Masking has a floor and a ceiling. The floor is enough noise to cover the
+crossed signal; the ceiling is the level at which the noise itself crosses back
+and shifts the test ear. Both are computed, with the occlusion effect applied to
+bone-conduction minima.
+
+**When the floor rises above the ceiling there is no usable level and the
+threshold cannot be masked at all.** This is common in bilateral conductive
+losses with large air-bone gaps, and the app reports it as a *masking dilemma*
+rather than inventing a number. The grid shows `dilemma` in red where that
+happens and the usable plateau (`min–max`, dB EM) where it does not.
+
+One display detail that matters: the ceiling needs a bone threshold, and bone
+conduction is not tested at 8 kHz. Rather than render `65–` and read as a broken
+range, the cell shows `≥65` with the reason on hover.
+
+A validity warning fires only when masking was **indicated and not recorded** —
+not merely when it was indicated, because a correctly masked test should not be
+nagged at.
+
+---
+
+## 6h. Speech audiometry — SDT, SRT and WRS, with their real uncertainty
+
+`speech_audiometry.py`, `/api/speech/analyze`, `/api/speech/compare`
+
+Three measurements, each answering a different question, and all three
+cross-checked against the pure tones and against each other.
+
+- **SDT** (speech detection threshold) — the lowest level at which speech is
+  *detected*, without needing to be understood. The fallback when an SRT cannot
+  be obtained.
+- **SRT** (speech reception threshold) — the lowest level for 50% spondee
+  repetition. The cross-check on the audiogram.
+- **WRS** (word recognition score) — percent correct at a supra-threshold level.
+  The measure of clarity rather than sensitivity.
+
+### A word score is a sample, not a measurement
+
+This is the part most tools get wrong. A 25-word list scored at 88% and a
+retest at 76% look like a 12-point drop. They are **not statistically
+different** — the confidence intervals overlap heavily, because 25 words cannot
+resolve a difference that size.
+
+Every score therefore carries an **exact Clopper–Pearson binomial interval**,
+computed by bisection over `math.comb` rather than a normal approximation,
+which is wrong precisely at the extremes (95%, 100%) where word scores live.
+Two scores are compared with the critical-difference logic of Thornton & Raffin
+(1978): the app states whether they differ, rather than leaving a clinician to
+eyeball two percentages.
+
+The list length is an input, not an assumption, because it is what decides the
+interval width. Where the advice is to use a longer list, that advice is
+suppressed if the clinician is already using 50 words.
+
+### The relationships that must hold
+
+| Check | Criterion | Why |
+|---|---|---|
+| SDT vs best threshold | tracks the best pure-tone threshold in the speech range | SDT is a detection task |
+| SDT vs SRT | SDT sits 5–10 dB **better** | Chaiklin 1959; ASHA 1988 — a detection threshold poorer than reception is impossible |
+| SRT vs PTA | within ±10 dB | compared against **Fletcher's best-two-of-three** as well as the four-frequency mean, because a steeply sloping loss makes the plain average disagree with the SRT for a purely arithmetic reason |
+| WRS level | PB max expected ≥ 30 dB above SRT | a score taken nearer than that measures the presentation level, not the patient — flagged rather than interpreted |
+| Rollover | index > 0.45 | retrocochlear indicator; a rollover the word list is too short to resolve is called out as unresolvable rather than reported |
+
+Speech interaural attenuation is taken as 45 dB for the shadow-response check.
+
+---
+
+## 6i. Evoked potentials — ABR, MLR and LLR
+
+`aep.py`, `/api/aep/reference`, `/abr`, `/abr/threshold`, `/abr/asymmetry`,
+`/mlr`, `/llr`, `/battery` · frontend `pages/EvokedPotentials.jsx`
+
+Three recordings of the **same ascending pathway**, separated by when they occur
+after the stimulus and therefore by how far up the pathway they are generated:
+
+| | Window | Generators |
+|---|---|---|
+| **ABR** | 0–10 ms | eighth nerve and brainstem |
+| **MLR** | 10–80 ms | thalamus, thalamocortical radiations, primary cortex |
+| **LLR** | 50–350 ms | auditory cortex and association areas |
+
+They are on one page because **their value is comparative**. A normal ABR under
+an abnormal MLR puts the lesion above the brainstem; neither recording says that
+alone, and a case that stops at the ABR can miss a lesion above the brainstem
+entirely. The battery strip at the top of the page is the conclusion the page
+exists to produce, and it names the level rather than listing three verdicts.
+
+### An absolute latency without its intensity is uninterpretable
+
+Wave V sits near 5.4 ms at 90 dB nHL and near 7.5 ms at 20 dB. A single number
+like "Wave V at 6.6 ms" is meaningless without the level it was recorded at.
+
+`ABR_NORMS` encodes the supplied reference's normative table verbatim — mean,
+standard deviation and *n* for every wave and interwave interval, at eight
+stimulus intensities. Every measured latency is compared against the normative
+row **for the intensity actually used**, expressed in standard deviations, and
+both the **2 SD and 3 SD limits** are reported because clinics differ on which
+they treat as the cut-off. The chart draws the normative mean with its 2 SD band
+behind the recorded trace, so the comparison is visible rather than asserted.
+
+The encoding was verified by reproducing the reference's own published 2 SD and
+3 SD range table from the stored means and SDs — the numbers regenerate exactly.
+
+### Interpeak intervals matter more than absolute latencies
+
+A conductive loss delays every wave equally and leaves I–V unchanged. A
+retrocochlear lesion **stretches** the intervals. So I–III, III–V and I–V are
+what separate "quieter" from "slower", and they are what the app leads with when
+they are abnormal:
+
+> Prolonged I–III, III–V, I–V interpeak latency. A conductive loss delays every
+> wave equally and leaves the intervals intact, so a stretched interval points
+> above the cochlea — retrocochlear until excluded.
+
+Other things the module refuses to get wrong:
+
+- **Insert-earphone delay (0.9 ms).** The reference figures carry it explicitly.
+  Forgetting it shifts every wave by almost a millisecond and turns a normal
+  trace into a delayed one. It is an input flag, not an assumption.
+- **Interaural Wave V difference** — the classic asymmetry check, significant at
+  0.4 ms.
+- **Cochlear microphonic window (0–1 ms)** — the finding that separates auditory
+  neuropathy spectrum disorder from a simple absent response.
+- **Threshold estimation** walks the intensity series down to the lowest level at
+  which Wave V is still identifiable, and reports it as an *electrophysiological*
+  threshold that approximates the behavioural one and is not a substitute for it.
+
+### MLR and LLR
+
+**MLR** peaks Na–Pa–Nb–Pb are each checked against a normative window, drawn as
+a green band with the recorded peak as a tick. Pa is the largest and most
+repeatable component and anchors interpretation; the named abnormal patterns
+(delayed Pa alone, all peaks delayed, absent Na, reduced amplitude) are matched
+rather than left to the reader.
+
+**LLR** peaks P1–N1–P2–N2 are checked the same way, plus the one genuinely
+clinical use of the LLR: **P1 latency as a cortical-maturation biomarker**.
+`LLR_P1_MATURATION` holds the age-banded expected P1 latency from infancy to
+adulthood, so a recorded P1 is judged against the child's age rather than an
+adult norm — the measure used to decide whether a deaf child is getting adequate
+auditory input through their device.
+
+The LLR is **state-dependent** — attention, arousal and sedation all change it —
+so the panel states that a poor response in a drowsy patient is not a cortical
+finding.
+
+---
+
+## 6j. Behavioural observation audiometry
+
+`boa.py`, `/api/boa/reference`, `/api/boa/analyze` ·
+frontend `components/BOAPanel.jsx`, shown under the pure-tone form
+
+BOA is the entry point of paediatric audiometry and the most misread test in it.
+An infant under about six months cannot be conditioned, so there is no
+raise-your-hand response to shape. The tester presents sound and watches for
+unconditioned behaviour: an eye blink, a startle, a change in sucking rate, a
+pause in activity.
+
+### The central point: BOA does not measure thresholds
+
+It measures the level at which a behaviour becomes **visible to an observer**,
+which is far above the level at which the infant can hear. A normal-hearing
+newborn's minimum response level to a warble tone is around **78 dB SPL — some
+75 dB above their actual threshold.**
+
+Recording an MRL as a threshold produces an audiogram showing a hearing loss in
+a normal ear. So the panel sits under the pure-tone form — where paediatric
+audiometry actually starts — and **never offers to transfer a value into the
+threshold grid above it**. `is_threshold` is `False` on every response the
+module returns.
+
+The chart plots the developmental curve across eight age bands (78 → 26 dB SPL
+warble, with the speech MRL alongside) and drops this observation onto it. The
+caption says what the curve means, which is the opposite of the obvious reading:
+
+> Minimum response levels fall as the infant's behaviour matures — not as their
+> hearing improves.
+
+### Three limits, stated rather than assumed away
+
+- **Habituation.** Reflexive responses fade on repetition. An apparently rising
+  threshold across a session is usually the infant losing interest, so the
+  number of presentations is an input and drives a flag.
+- **Observer bias.** The tester decides whether a movement was a response.
+  Without a second observer blind to stimulus timing, agreement is poor — a
+  single-observer result is flagged as such.
+- **It is a screen, not an assessment.** Ear-specific and frequency-specific
+  information is not obtainable this way. A BOA result that raises concern is
+  followed by **ABR or ASSR** ([6i](#6i-evoked-potentials--abr-mlr-and-llr)), not
+  by more BOA.
+
+From about six months, visual reinforcement audiometry conditions a head-turn
+and gives genuine thresholds. BOA therefore has an **upper** age limit as well
+as a lower one, and continuing past it wastes the better test — so the panel
+says so rather than accepting the entry silently.
 
 ---
 
@@ -1045,7 +1319,7 @@ entry, simulation and screening keep working with no connectivity.
 
 ## 18. Testing strategy
 
-**590 tests across 26 files.**
+**663 tests across 27 files**, all passing.
 
 | Kind | What it proves |
 |---|---|
@@ -1060,16 +1334,19 @@ entry, simulation and screening keep working with no connectivity.
 | Knowledge-base integrity | every red-flag rule and disease weight names a symptom that exists |
 | Image determinism | the same otoscope image gives byte-identical features every run |
 | Path traversal | reference images cannot be used to read outside their directory |
+| Anti-alarm guards | normal thresholds never report as "bottom 1%" |
+| Normative-table integrity | the stored ABR means and SDs regenerate the reference's own published 2 SD / 3 SD range table exactly |
+| Masking arithmetic | both AC rules, the BC rule, the plateau, and the dilemma when the floor exceeds the ceiling |
+| Statistical honesty | the exact binomial interval brackets the score, and two word scores that are not different are not reported as different |
 
-Three of the new tests exist because they caught real defects while being
+Three of the tests exist because they caught real defects while being
 written: the otoscopy field-of-view mask was excluding dark regions inside the
 view (masking out perforations before detecting them), `cv2.kmeans` seeding
 made feature extraction non-deterministic, and a noise notch in the DP-gram
 was being reported as a generic basal loss because the branches were ordered
 wrongly.
-| Anti-alarm guards | normal thresholds never report as "bottom 1%" |
 
-Several bugs were caught by these rather than by inspection: a 429-quota
+Several more were caught by these rather than by inspection: a 429-quota
 fallback path, an informational alert displacing clinical advice, pattern
 labels lowercased into "4 khz", and a test that silently depended on the
 developer's environment variables.
@@ -1139,6 +1416,29 @@ admits what it cannot do:
    documents' — they are declared in `symptom_kb.py` so they can be argued
    with rather than hidden.
 10. **A modelled tympanogram curve is a drawing of the entered numbers**, not a
-    recorded sweep, and is labelled as such in the response and on screen.
-11. **Nothing here replaces an audiologist.** Every report carries: *"AI-assisted
+    recorded sweep, and is labelled as such in the response and on screen. When
+    ECV, PP, SC and GRAD are typed in from a machine printout, the curve is
+    reconstructed so that it *reads back* as the gradient entered — exact at and
+    above a gradient of 0.2, drifting slightly below that (0.10 draws as 0.12)
+    because such a broad peak has not returned to baseline by the +200 daPa end
+    of a standard sweep. The drift is one-directional and never lifts an
+    abnormal gradient above the 0.2 threshold, and it is stated in the response.
+11. **The evoked-potential norms are one published table.** ABR latencies are
+    compared against the supplied reference's normative data for normal-hearing
+    females aged 20–30. Age, sex, body temperature and stimulus polarity all
+    move ABR latencies, and a clinic should compare against its own norms.
+    The MLR is unreliable in young children, where the response is still
+    maturing; the LLR is state-dependent, so a poor response in a drowsy or
+    sedated patient is not a cortical finding. All three are entered from a
+    recording — the app interprets waveform measurements, it does not acquire
+    or peak-pick them.
+12. **BOA yields minimum response levels, never thresholds.** They run tens of
+    decibels above true threshold, they are neither ear- nor frequency-specific,
+    and reflexive responses habituate within a session. The app refuses to
+    transfer a BOA level into the audiogram and routes concern to ABR/ASSR.
+13. **Masking is computed, not performed.** The app decides where masking is
+    required and what plateau is usable; obtaining the masked threshold is still
+    the audiologist's work at the audiometer, and a *masking dilemma* is a
+    finding to report rather than a gap for the software to fill.
+14. **Nothing here replaces an audiologist.** Every report carries: *"AI-assisted
     interpretation; final diagnosis requires a qualified audiologist."*

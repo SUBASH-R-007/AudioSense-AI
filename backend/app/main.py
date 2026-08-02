@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import (
+    aep_router,
     batch,
     clinic,
     core,
@@ -63,7 +64,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (core, digitize, report_router, progression_router, batch,
+for r in (core, aep_router, digitize, report_router, progression_router, batch,
           pdf_router, settings, feedback, handout, clinic, validation_router,
           listening, otoscopy_router, symptoms_router, instruments,
           linkage_router, speech_router, masking_router):

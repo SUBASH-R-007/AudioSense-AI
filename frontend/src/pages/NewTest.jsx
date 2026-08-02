@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, FREQ_LABELS } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import BOAPanel from '../components/BOAPanel.jsx'
 import ThresholdGrid from '../components/ThresholdGrid.jsx'
 
 const EMPTY = () => ({ right: { ac: {}, bc: {} }, left: { ac: {}, bc: {} } })
@@ -336,6 +337,18 @@ export default function NewTest() {
               </label>
             </div>
           ))}
+        </div>
+      </details>
+
+      {/* Behavioural observation sits under the pure-tone form because that
+          is where paediatric audiometry starts — and because the mistake it
+          invites is writing its levels into the threshold grid above. */}
+      <details className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+        <summary className="cursor-pointer text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+          Behavioural observation (BOA) <span className="ml-1 normal-case text-slate-400">(infants under 6 months)</span>
+        </summary>
+        <div className="mt-3">
+          <BOAPanel />
         </div>
       </details>
 
