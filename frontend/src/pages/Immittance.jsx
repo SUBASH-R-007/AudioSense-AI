@@ -17,13 +17,18 @@ import {
 } from 'recharts'
 import { api } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import TympanogramAtlas from '../components/TympanogramAtlas.jsx'
+import SpeechAudiometry from '../components/SpeechAudiometry.jsx'
 
 const TYPE_STYLE = {
   A: 'border-emerald-300 bg-emerald-50 text-emerald-900',
   As: 'border-amber-300 bg-amber-50 text-amber-900',
   Ad: 'border-amber-300 bg-amber-50 text-amber-900',
+  Add: 'border-rose-300 bg-rose-50 text-rose-900',
   B: 'border-rose-300 bg-rose-50 text-rose-900',
   C: 'border-sky-300 bg-sky-50 text-sky-900',
+  D: 'border-violet-300 bg-violet-50 text-violet-900',
+  E: 'border-rose-300 bg-rose-50 text-rose-900',
 }
 
 const OUTCOME_STYLE = {
@@ -35,11 +40,16 @@ const OUTCOME_STYLE = {
 // Presets are real curve shapes, so the plot demonstrates what the numbers
 // mean rather than requiring twenty values to be typed first.
 const TYMP_PRESETS = [
-  { label: 'Normal (Type A)', peak: -20, height: 0.85, tail: 0.9, width: 85 },
-  { label: 'Effusion (Type B)', peak: 0, height: 0.02, tail: 1.0, width: 400 },
-  { label: 'Perforation (Type B, large volume)', peak: 0, height: 0.02, tail: 2.8, width: 400 },
-  { label: 'ET dysfunction (Type C)', peak: -230, height: 0.55, tail: 0.9, width: 100 },
-  { label: 'Stiff (Type As)', peak: -10, height: 0.18, tail: 0.9, width: 80 },
+  { label: 'Normal (A)', peak: -20, height: 0.85, tail: 0.9, width: 85 },
+  { label: 'Stiff (As)', peak: -10, height: 0.25, tail: 0.9, width: 80 },
+  { label: 'Flaccid (Ad)', peak: -10, height: 2.4, tail: 0.9, width: 90 },
+  { label: 'Off-scale (Add)', peak: -10, height: 7.2, tail: 0.9, width: 95, ceiling: 4 },
+  { label: 'Effusion (B, normal ECV)', peak: 0, height: 0.02, tail: 1.0, width: 400 },
+  { label: 'Perforation (B, large ECV)', peak: 0, height: 0.02, tail: 2.8, width: 400 },
+  { label: 'Wax / blocked probe (B, small ECV)', peak: 0, height: 0.02, tail: 0.35, width: 400 },
+  { label: 'ET dysfunction (C)', peak: -230, height: 0.55, tail: 0.9, width: 100 },
+  { label: 'Scarred drum (D, narrow notch)', peak: -10, height: 0.9, tail: 0.9, width: 70, notched: true, notchWidth: 45 },
+  { label: 'Ossicular disruption (E, wide notch)', peak: -10, height: 2.3, tail: 0.9, width: 120, notched: true, notchWidth: 110 },
   { label: 'Early effusion (broad peak)', peak: -60, height: 0.5, tail: 0.9, width: 200 },
 ]
 
@@ -54,15 +64,26 @@ const OAE_PRESETS = [
   { label: 'Too noisy to judge', build: () => ({ amplitude: 4, noise_floor: 17 }) },
 ]
 
-function buildTrace({ peak, height, tail, width }) {
+function buildTrace({ peak, height, tail, width, notched = false, notchWidth = 60,
+                     ceiling = null }) {
   const sigma = width / 2.355
+  const bump = (p, mu, s) => Math.exp(-((p - mu) ** 2) / (2 * s ** 2))
   const out = []
   for (let p = -400; p <= 200; p += 10) {
-    out.push({
-      pressure: p,
-      admittance: Number((tail + height * Math.exp(
-        -((p - peak) ** 2) / (2 * sigma ** 2))).toFixed(4)),
-    })
+    // Two shoulders either side of the centre produce the W shape that defines
+    // Types D and E. Mirrors synthesize_trace on the server so the drawn curve
+    // and the classified curve are the same curve.
+    const shape = notched
+      ? Math.max(bump(p, peak - notchWidth / 2, Math.max(sigma * 0.55, 12)),
+                 bump(p, peak + notchWidth / 2, Math.max(sigma * 0.55, 12)))
+      : bump(p, peak, sigma)
+    const value = tail + height * shape
+    // Past the instrument ceiling there is no reading. Recording null keeps
+    // the limbs of a Type Add trace from being joined into an apex that was
+    // never measured.
+    out.push(ceiling !== null && value > ceiling
+      ? { pressure: p, admittance: null, off_scale: true }
+      : { pressure: p, admittance: Number(value.toFixed(4)) })
   }
   return out
 }
@@ -95,7 +116,7 @@ function Measure({ label, value, unit, ok }) {
 }
 
 // -------------------------------------------------------- tympanometry ----
-function Tympanometry({ reference }) {
+function Tympanometry({ reference, onType }) {
   const { showToast } = useApp()
   const [ear, setEar] = useState('right')
   const [ageYears, setAgeYears] = useState(30)
@@ -103,6 +124,10 @@ function Tympanometry({ reference }) {
   const [preset, setPreset] = useState(TYMP_PRESETS[0])
   const [ipsi, setIpsi] = useState('85')
   const [contra, setContra] = useState('90')
+  // Most clinics record the four printed values, not the sweep. Entering
+  // them models the curve they imply, labelled as modelled rather than measured.
+  const [mode, setMode] = useState('preset')
+  const [manual, setManual] = useState({ ecv: '1.0', pp: '-20', sc: '0.85', grad: '0.55' })
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
 
@@ -114,17 +139,27 @@ function Tympanometry({ reference }) {
     const reflexes = {}
     if (ipsi !== '') reflexes.ipsi = ipsi === 'absent' ? null : Number(ipsi)
     if (contra !== '') reflexes.contra = contra === 'absent' ? null : Number(contra)
-    api.tympanometry({
-      ear, trace, age_years: Number(ageYears), probe_hz: Number(probeHz), reflexes,
-    })
+    const num = (v) => (v === '' || v === null ? undefined : Number(v))
+    const body = mode === 'manual'
+      ? {
+          ear, age_years: Number(ageYears), probe_hz: Number(probeHz), reflexes,
+          peak_pressure: num(manual.pp), compliance: num(manual.sc),
+          ecv: num(manual.ecv), gradient: num(manual.grad),
+        }
+      : { ear, trace, age_years: Number(ageYears), probe_hz: Number(probeHz), reflexes }
+    api.tympanometry(body)
       .then((r) => { if (!cancelled) setResult(r) })
       .catch((e) => { if (!cancelled) showToast(e.message, 'error') })
       .finally(() => { if (!cancelled) setBusy(false) })
     return () => { cancelled = true }
-  }, [ear, ageYears, probeHz, trace, ipsi, contra, showToast])
+  }, [ear, ageYears, probeHz, trace, ipsi, contra, mode, manual, showToast])
 
   const norms = result?.curve?.normative
   const jerger = result?.tympanogram
+  const offScale = Boolean(result?.curve?.off_scale)
+
+  // Lifted so the type atlas below can highlight the row this ear landed on.
+  useEffect(() => { onType?.(jerger?.type || null) }, [jerger?.type, onType])
 
   return (
     <Panel
@@ -136,17 +171,55 @@ function Tympanometry({ reference }) {
         </span>
       )}
     >
-      <div className="mt-3 flex flex-wrap gap-2">
-        {TYMP_PRESETS.map((p) => (
-          <button key={p.label} type="button" onClick={() => setPreset(p)}
-            className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
-              preset.label === p.label
-                ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
-                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
-            {p.label}
+      <div className="mt-3 flex rounded-lg bg-slate-100 p-0.5 text-[12px]">
+        {[['preset', 'Example traces'], ['manual', 'Enter values']].map(([k, label]) => (
+          <button key={k} type="button" onClick={() => setMode(k)}
+            className={`flex-1 rounded-md px-3 py-1 font-medium transition ${
+              mode === k ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-500'}`}>
+            {label}
           </button>
         ))}
       </div>
+
+      {mode === 'preset' ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {TYMP_PRESETS.map((p) => (
+            <button key={p.label} type="button" onClick={() => setPreset(p)}
+              className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
+                preset.label === p.label
+                  ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              ['ecv', 'ECV', 'ml', '0.1', 'ear-canal volume'],
+              ['pp', 'PP', 'daPa', '5', 'peak pressure'],
+              ['sc', 'SC', 'mmho', '0.05', 'static compliance'],
+              ['grad', 'GRAD', '', '0.01', 'gradient, 0–1'],
+            ].map(([key, label, unit, step, hint]) => (
+              <label key={key} className="text-[12px]">
+                <span className="mb-1 block font-medium text-slate-600">
+                  {label}{unit && <span className="ml-1 text-slate-400">({unit})</span>}
+                </span>
+                <input type="number" step={step} value={manual[key]}
+                  onChange={(e) => setManual({ ...manual, [key]: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
+                <span className="mt-0.5 block text-[10.5px] text-slate-400">{hint}</span>
+              </label>
+            ))}
+          </div>
+          <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+            The curve below is modelled from these four values, and the gradient
+            shapes it — a curve drawn from GRAD 0.30 measures back as 0.30. It is
+            a drawing of the numbers, not a recorded sweep.
+          </p>
+        </div>
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
         <label className="text-[12px]">
@@ -197,13 +270,21 @@ function Tympanometry({ reference }) {
               label={{ value: 'Ear-canal pressure (daPa)', position: 'insideBottom',
                 offset: -14, fontSize: 11, fill: '#64748b' }} />
             <YAxis tick={{ fontSize: 11, fill: '#64748b' }} width={44}
+              domain={offScale ? [0, result.curve.ceiling] : [0, 'auto']}
+              allowDataOverflow
               label={{ value: 'Admittance (mmho)', angle: -90, position: 'insideLeft',
                 fontSize: 11, fill: '#64748b' }} />
+            {offScale && (
+              <ReferenceLine y={result.curve.ceiling} stroke="#dc2626"
+                strokeDasharray="4 4"
+                label={{ value: 'instrument ceiling — no measurable peak',
+                  position: 'insideTopRight', fontSize: 10, fill: '#dc2626' }} />
+            )}
             <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }}
               formatter={(v) => [`${v} mmho`, 'Admittance']}
               labelFormatter={(l) => `${l} daPa`} />
             <Line type="monotone" dataKey="admittance" stroke="#0d9488" strokeWidth={2.2}
-              dot={false} isAnimationActive={false} />
+              dot={false} isAnimationActive={false} connectNulls={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -224,6 +305,11 @@ function Tympanometry({ reference }) {
           {result.infant_warning && (
             <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] leading-relaxed text-rose-900">
               {result.infant_warning}
+            </p>
+          )}
+          {result.curve?.gradient_note && (
+            <p className="mt-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-[12px] leading-relaxed text-slate-700">
+              {result.curve.gradient_note}
             </p>
           )}
           {result.flags.map((f) => (
@@ -425,33 +511,96 @@ function Emissions({ reference }) {
 export default function Immittance() {
   const [tympRef, setTympRef] = useState(null)
   const [oaeRef, setOaeRef] = useState(null)
+  const [linkRef, setLinkRef] = useState(null)
+  const [activeType, setActiveType] = useState(null)
 
   useEffect(() => {
     api.tympanometryReference().then(setTympRef).catch(() => {})
     api.oaeReference().then(setOaeRef).catch(() => {})
+    api.linkageReference().then(setLinkRef).catch(() => {})
   }, [])
 
   return (
     <div className="mx-auto max-w-6xl">
       <header>
         <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
-          Immittance &amp; emissions
+          Immittance, emissions &amp; speech
         </h1>
         <p className="mt-1 max-w-3xl text-[13.5px] leading-relaxed text-slate-500">
-          Tympanometry and otoacoustic emissions as full instruments — the curve, the
-          gradient, the pass criterion and the cochlear place — usable on their own,
+          Tympanometry, otoacoustic emissions and speech audiometry as full
+          instruments — the curve, the gradient, the pass criterion, the cochlear
+          place and the performance-intensity function — usable on their own,
           without a pure-tone audiogram to attach them to.
         </p>
       </header>
 
       <div className="mt-5 space-y-5">
-        <Tympanometry reference={tympRef} />
+        <Tympanometry reference={tympRef} onType={setActiveType} />
         <Emissions reference={oaeRef} />
+        <SpeechAudiometry />
       </div>
+
+      {/* Each of the five types against the disease reference. A tympanogram
+          is only worth running because it moves diseases on and off the
+          differential, so the differential is what the table shows. */}
+      {linkRef && (
+        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+          <h2 className="text-[15px] font-semibold text-slate-900">
+            What each tympanogram type means for the diagnosis
+          </h2>
+          <p className="mt-1 text-[12px] leading-relaxed text-slate-500">
+            All five Jerger types, with the conditions each supports and the ones
+            it takes off the table. The second column is the one usually left out
+            and often the more useful: a Type A trace diagnoses nothing on its own,
+            but it removes most of the conductive differential in one measurement.
+          </p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left text-[12px]">
+              <thead>
+                <tr className="text-[10.5px] uppercase tracking-wide text-slate-400">
+                  <th className="py-1.5 pr-3 font-medium">Type</th>
+                  <th className="py-1.5 pr-3 font-medium text-emerald-600">Supports</th>
+                  <th className="py-1.5 pr-3 font-medium text-rose-600">Argues against</th>
+                  <th className="py-1.5 font-medium">Also consider</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linkRef.tympanogram_types.map((t) => (
+                  <tr key={t.type} className="border-t border-slate-100 align-top">
+                    <td className="py-2 pr-3">
+                      <div className="font-semibold text-slate-800">Type {t.type}</div>
+                      <div className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                        {t.meaning}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 text-slate-700">
+                      {t.supports.length
+                        ? t.supports.join(' · ')
+                        : <span className="text-slate-400">—</span>}
+                    </td>
+                    <td className="py-2 pr-3 text-slate-700">
+                      {t.argues_against.length
+                        ? t.argues_against.join(' · ')
+                        : <span className="text-slate-400">—</span>}
+                    </td>
+                    <td className="py-2 text-slate-600">{t.also_consider.join(' · ')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {tympRef && (
+        <div className="mt-5">
+          <TympanogramAtlas reference={tympRef} activeType={activeType} />
+        </div>
+      )}
 
       {tympRef && (
         <div className="mt-5 rounded-2xl border border-slate-200/80 bg-slate-50/60 p-5">
-          <h2 className="text-[13px] font-semibold text-slate-800">Jerger classification</h2>
+          <h2 className="text-[13px] font-semibold text-slate-800">Type summary</h2>
           <dl className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {tympRef.types.map((t) => (
               <div key={t.type} className="rounded-lg bg-white px-3 py-2">

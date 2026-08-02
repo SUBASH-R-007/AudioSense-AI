@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, apiUrl } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import LinkagePanel from '../components/LinkagePanel.jsx'
 
 const URGENCY_STYLE = {
   urgent: 'border-rose-300 bg-rose-50 text-rose-800',
@@ -82,19 +83,33 @@ function Atlas({ atlas, onPick }) {
 }
 
 export default function Otoscopy() {
-  const { analysis, showToast } = useApp()
+  const { analysis, assessment, otoscopy, setOtoscopy, showToast } = useApp()
   const fileRef = useRef(null)
   const [atlas, setAtlas] = useState(null)
   const [card, setCard] = useState(null)
   const [side, setSide] = useState('right')
   const [preview, setPreview] = useState(null)
-  const [result, setResult] = useState(null)
+  // Shared, so the symptom page and the dashboard can cross-check against it.
+  const result = otoscopy
+  const setResult = setOtoscopy
   const [busy, setBusy] = useState(false)
+
+  const [fromImage, setFromImage] = useState(null)
 
   useEffect(() => {
     api.otoscopyAtlas().then(setAtlas).catch(() => setAtlas(null))
     api.otoscopyModel().then(setCard).catch(() => setCard(null))
   }, [])
+
+  // The image's own differential, recomputed whenever a new one is read.
+  useEffect(() => {
+    if (!result) { setFromImage(null); return }
+    let cancelled = false
+    api.diseasesFromOtoscopy(result)
+      .then((r) => { if (!cancelled) setFromImage(r) })
+      .catch(() => { if (!cancelled) setFromImage(null) })
+    return () => { cancelled = true }
+  }, [result])
 
   async function run(file) {
     if (!file) return
@@ -159,15 +174,17 @@ export default function Otoscopy() {
             className="rounded-lg bg-teal-600 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50">
             {busy ? 'Reading…' : 'Upload otoscope image'}
           </button>
-          {analysis ? (
-            <span className="text-[12px] text-teal-700">
-              Will cross-check against the current audiogram.
-            </span>
-          ) : (
-            <span className="text-[12px] text-slate-400">
-              No audiogram loaded — run a test first to enable the cross-check.
-            </span>
-          )}
+          <span className="text-[12px] text-slate-500">
+            Will cross-check against{' '}
+            {[analysis && 'the audiogram', assessment && 'the symptom history']
+              .filter(Boolean).join(' and ') || 'nothing yet'}
+            {!analysis || !assessment ? (
+              <span className="text-slate-400">
+                {' '}— add {[!analysis && 'a test', !assessment && 'a history']
+                  .filter(Boolean).join(' and ')} for the full comparison.
+              </span>
+            ) : '.'}
+          </span>
         </div>
 
         {validation && (
@@ -324,6 +341,71 @@ export default function Otoscopy() {
                 </p>
               )}
             </div>
+
+            {/* The differential this image produces on its own. No history and
+                no audiogram — a scope goes in the ear before the patient is in
+                the booth, and the appearance already narrows the list. */}
+            {fromImage?.available && (
+              <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <h3 className="text-[15px] font-semibold text-slate-900">
+                    Diseases this appearance points to
+                  </h3>
+                  <span className="text-[11.5px] text-slate-500">from the image alone</span>
+                </div>
+                <p className="mt-1.5 text-[12.5px] leading-relaxed text-slate-700">
+                  {fromImage.headline}
+                </p>
+
+                {fromImage.differential.length > 0 && (
+                  <ul className="mt-3 space-y-2">
+                    {fromImage.differential.slice(0, 5).map((d, i) => (
+                      <li key={d.key}>
+                        <div className="flex items-baseline justify-between gap-3 text-[12.5px]">
+                          <span className={i === 0 && fromImage.separated
+                            ? 'font-semibold text-slate-900' : 'text-slate-700'}>
+                            {d.name}
+                          </span>
+                          <span className="font-mono text-[11.5px] text-slate-500">
+                            {Math.round(d.score * 100)}
+                          </span>
+                        </div>
+                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                          <div className="h-full rounded-full bg-teal-500"
+                            style={{ width: `${Math.max(3, Math.round(d.score * 100))}%` }} />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {fromImage.other_conditions.length > 0 && (
+                  <p className="mt-3 text-[12px] leading-relaxed text-slate-600">
+                    <span className="font-semibold">Also consider:</span>{' '}
+                    {fromImage.other_conditions.join(' · ')}
+                  </p>
+                )}
+                {fromImage.argues_against.length > 0 && (
+                  <p className="mt-1.5 text-[12px] leading-relaxed text-slate-600">
+                    <span className="font-semibold text-rose-700">Argues against:</span>{' '}
+                    {fromImage.argues_against.map((d) => d.name).join(' · ')}
+                  </p>
+                )}
+                {fromImage.reasoning.map((r) => (
+                  <p key={r} className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+                    {r}
+                  </p>
+                ))}
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
+                  {fromImage.note}
+                </p>
+              </div>
+            )}
+
+            {/* Does the history confirm the image? This is the check the
+                classifier's weakness makes most valuable — two independent
+                methods reaching the same answer from different evidence. */}
+            <LinkagePanel side={side} />
 
             {/* Cross-check: independent of whether the classifier is right. */}
             {conc && (

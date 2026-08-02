@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import LinkagePanel from '../components/LinkagePanel.jsx'
 
 const URGENCY = {
   emergency: { label: 'Emergency', cls: 'border-rose-300 bg-rose-50 text-rose-900' },
@@ -31,7 +32,7 @@ const CATEGORY_STYLE = {
 }
 
 export default function Symptoms() {
-  const { analysis, showToast } = useApp()
+  const { analysis, assessment, setAssessment, showToast } = useApp()
   const [catalog, setCatalog] = useState(null)
   const [age, setAge] = useState(analysis?.patient?.age ?? 40)
   const [side, setSide] = useState('unspecified')
@@ -39,12 +40,29 @@ export default function Symptoms() {
   const [duration, setDuration] = useState('unspecified')
   const [picked, setPicked] = useState(() => new Set())
   const [notes, setNotes] = useState('')
-  const [result, setResult] = useState(null)
-  const [correlation, setCorrelation] = useState(null)
+  // The assessment is kept in the shared store, not here: the otoscopy page
+  // and the dashboard both cross-check against it, and a finding that only
+  // exists in one page's local state cannot be linked from another.
+  const result = assessment
+  const setResult = setAssessment
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     api.symptomCatalog().then(setCatalog).catch(() => setCatalog(null))
+  }, [])
+
+  // Coming back to the page should show the checklist that produced the
+  // assessment on screen, not an empty form beside a filled-in result.
+  useEffect(() => {
+    if (!assessment) return
+    setPicked(new Set((assessment.reported?.symptoms || []).map((s) => s.key)))
+    setAge(assessment.age)
+    setOnset(assessment.onset || 'unknown')
+    setSide(assessment.side || 'unspecified')
+    setDuration(assessment.duration || 'unspecified')
+    // Deliberately once, on mount: re-running on every assessment change would
+    // fight the user's edits between one Assess and the next.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const toggle = (key) => setPicked((prev) => {
@@ -62,9 +80,6 @@ export default function Symptoms() {
         age: Number(age), symptoms: [...picked], notes, side, duration, onset,
       })
       setResult(assessment)
-      setCorrelation(analysis
-        ? await api.correlateSymptoms(assessment, analysis)
-        : null)
     } catch (e) {
       showToast(e.message || 'Assessment failed', 'error')
     } finally {
@@ -76,7 +91,6 @@ export default function Symptoms() {
     setPicked(new Set())
     setNotes('')
     setResult(null)
-    setCorrelation(null)
   }
 
   const urgency = URGENCY[result?.urgency] || URGENCY.none
@@ -99,7 +113,6 @@ export default function Symptoms() {
     setPicked(new Set(ex.symptoms))
     setNotes(ex.notes)
     setResult(null)
-    setCorrelation(null)
   }
 
   return (
@@ -341,30 +354,11 @@ export default function Symptoms() {
                 </ol>
               </div>
 
-              {correlation && (
-                <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
-                  <h2 className="text-[15px] font-semibold text-slate-900">
-                    Against the audiogram on file
-                  </h2>
-                  {!correlation.available ? (
-                    <p className="mt-1.5 text-[12.5px] text-slate-500">{correlation.note}</p>
-                  ) : (
-                    <>
-                      <p className="mt-1.5 text-[12.5px] font-medium text-slate-700">
-                        {correlation.verdict}
-                      </p>
-                      {[...correlation.supports.map((s) => ['✓', s, true]),
-                        ...correlation.against.map((s) => ['⚠', s, false])].map(([icon, line, ok]) => (
-                        <p key={line}
-                          className={`mt-1.5 rounded-lg px-3 py-1.5 text-[12px] leading-relaxed ${
-                            ok ? 'bg-emerald-50 text-emerald-900' : 'bg-amber-50 text-amber-900'}`}>
-                          {icon} {line}
-                        </p>
-                      ))}
-                    </>
-                  )}
-                </div>
-              )}
+              {/* Every cross-check this history now enables — against the
+                  audiogram, the otoscope image and the tympanogram. This
+                  replaced a narrower "against the audiogram" card that said a
+                  subset of the same thing in a second place on the page. */}
+              <LinkagePanel side={side === 'left' ? 'left' : 'right'} />
 
               {result.complaint_guides.map((g) => (
                 <div key={g.complaint}

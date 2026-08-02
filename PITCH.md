@@ -180,7 +180,7 @@ matched pitch while neighbouring bands are preserved.
 | 0:25 | 🔬 Pre-clinical case | *"Normal audiogram. Hearing age 55 at age 26. Every other tool sends him back to work."* |
 | 0:50 | 🚨 Sudden asymmetric | *"This one is an emergency, and it sorts above everything else."* |
 | 1:05 | Snap a paper audiogram | *"Paper to interpretation, offline, human confirms before anything is issued."* |
-| 1:20 | 👁 Otoscopy — normal drum on a conductive case | *"The picture argues with the measurement. That conflict doesn't need the classifier to be right."* |
+| 1:20 | 👁 Otoscopy — normal drum on a conductive case | *"Four links, and two of them go amber. The picture argues with the history AND with the measurement. Neither conflict needs the classifier to be right."* |
 | 1:40 | 📉 Immittance — early effusion | *"Normal peak height. Gradient 208 against a ceiling of 114. Three numbers call this normal; the curve doesn't."* |
 | 1:55 | 🎧 Simulator | Normal → patient → aided → cheap amplifier → smoke alarm |
 | 2:20 | 🧭 Listening Lab | *"With his ears, everything sounds like it's on the right."* |

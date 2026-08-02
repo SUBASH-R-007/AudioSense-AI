@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, FREQ_LABELS } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import BOAPanel from '../components/BOAPanel.jsx'
 import ThresholdGrid from '../components/ThresholdGrid.jsx'
 
 const EMPTY = () => ({ right: { ac: {}, bc: {} }, left: { ac: {}, bc: {} } })
@@ -16,10 +17,13 @@ export default function NewTest() {
   })
   const [thresholds, setThresholds] = useState(EMPTY())
   const [speech, setSpeech] = useState({
-    right: { srt: '', wrs: '', wrsLevel: '' },
-    left: { srt: '', wrs: '', wrsLevel: '' },
+    right: { sdt: '', srt: '', wrs: '', wrsLevel: '', nWords: '25' },
+    left: { sdt: '', srt: '', wrs: '', wrsLevel: '', nWords: '25' },
   })
   const [masked, setMasked] = useState({ right: false, left: false })
+  // The transducer sets interaural attenuation, and therefore decides at
+  // which frequencies masking is required at all.
+  const [transducer, setTransducer] = useState('supra_aural')
   const EMPTY_BATTERY = () => ({
     tymp_pressure: '', tymp_compliance: '', tymp_ecv: '',
     reflex_ipsi: '', reflex_contra: '', reflex_tested: false,
@@ -49,9 +53,11 @@ export default function NewTest() {
     // Demo cases carry speech audiometry and masking status too — load the
     // whole record, not just the thresholds, or the form silently overrides it.
     const speechOf = (ear) => ({
+      sdt: ear.sdt ?? '',
       srt: ear.srt ?? '',
       wrs: ear.wrs?.length ? ear.wrs[0].score : '',
       wrsLevel: ear.wrs?.length ? ear.wrs[0].level : '',
+      nWords: ear.wrs?.length ? (ear.wrs[0].n_words ?? 25) : '25',
     })
     setSpeech({ right: speechOf(c.record.right), left: speechOf(c.record.left) })
     setMasked({
@@ -118,8 +124,11 @@ export default function NewTest() {
           ...thresholds[ear],
           masked: masked[ear],
           ...(s.srt !== '' ? { srt: parseInt(s.srt, 10) } : {}),
+          ...(s.sdt !== '' && s.sdt !== undefined
+            ? { sdt: parseInt(s.sdt, 10) } : {}),
           ...(s.wrs !== '' && s.wrsLevel !== ''
-            ? { wrs: [{ level: parseInt(s.wrsLevel, 10), score: parseFloat(s.wrs) }] }
+            ? { wrs: [{ level: parseInt(s.wrsLevel, 10), score: parseFloat(s.wrs),
+                        n_words: parseInt(s.nWords || 25, 10) }] }
             : {}),
           ...(num(b.tymp_pressure) !== undefined ? { tymp_pressure: num(b.tymp_pressure) } : {}),
           ...(num(b.tymp_compliance) !== undefined ? { tymp_compliance: num(b.tymp_compliance) } : {}),
@@ -131,7 +140,7 @@ export default function NewTest() {
           ...(oae.length ? { oae } : {}),
         }
       }
-      const result = await api.analyze({ patient, ...built })
+      const result = await api.analyze({ patient, transducer, ...built })
       setAnalysis(result)
       navigate('/dashboard')
     } catch (e) {
@@ -277,12 +286,30 @@ export default function NewTest() {
           PTA points to exaggerated thresholds, and word scores that fall at higher
           levels (rollover) point to retrocochlear pathology.
         </p>
+
+        <label className="mt-3 flex flex-wrap items-center gap-2 text-[12.5px]">
+          <span className="font-medium text-slate-600">Transducer</span>
+          <select value={transducer} onChange={(e) => setTransducer(e.target.value)}
+            className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-[13px]">
+            <option value="supra_aural">Supra-aural — 40 dB interaural attenuation</option>
+            <option value="insert">Insert — 50–60 dB</option>
+            <option value="circumaural">Circumaural — 45 dB</option>
+          </select>
+          <span className="text-[11.5px] text-slate-500">
+            Sets the level at which sound crosses the skull, and therefore where
+            masking becomes necessary.
+          </span>
+        </label>
         <div className="mt-3 grid gap-4 sm:grid-cols-2">
           {['right', 'left'].map((ear) => (
             <div key={ear} className="rounded-xl border border-slate-200 p-3">
               <div className={`text-[12px] font-bold uppercase ${
                 ear === 'right' ? 'text-red-600' : 'text-blue-600'}`}>{ear} ear</div>
               <div className="mt-2 grid grid-cols-3 gap-2">
+                <label className="block"><span className="text-[11px] text-slate-500">SDT (dB)</span>
+                  <input type="number" className={field} value={speech[ear].sdt}
+                    onChange={(e) => setSpeech({ ...speech, [ear]: { ...speech[ear], sdt: e.target.value } })}
+                    placeholder="—" /></label>
                 <label className="block"><span className="text-[11px] text-slate-500">SRT (dB)</span>
                   <input type="number" className={field} value={speech[ear].srt}
                     onChange={(e) => setSpeech({ ...speech, [ear]: { ...speech[ear], srt: e.target.value } })}
@@ -295,6 +322,13 @@ export default function NewTest() {
                   <input type="number" className={field} value={speech[ear].wrsLevel}
                     onChange={(e) => setSpeech({ ...speech, [ear]: { ...speech[ear], wrsLevel: e.target.value } })}
                     placeholder="—" /></label>
+                <label className="block"><span className="text-[11px] text-slate-500">list size</span>
+                  <select className={field} value={speech[ear].nWords}
+                    onChange={(e) => setSpeech({ ...speech, [ear]: { ...speech[ear], nWords: e.target.value } })}>
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                  </select></label>
               </div>
               <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[12px] text-slate-600">
                 <input type="checkbox" checked={masked[ear]} className="h-3.5 w-3.5 accent-teal-600"
@@ -303,6 +337,18 @@ export default function NewTest() {
               </label>
             </div>
           ))}
+        </div>
+      </details>
+
+      {/* Behavioural observation sits under the pure-tone form because that
+          is where paediatric audiometry starts — and because the mistake it
+          invites is writing its levels into the threshold grid above. */}
+      <details className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+        <summary className="cursor-pointer text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+          Behavioural observation (BOA) <span className="ml-1 normal-case text-slate-400">(infants under 6 months)</span>
+        </summary>
+        <div className="mt-3">
+          <BOAPanel />
         </div>
       </details>
 

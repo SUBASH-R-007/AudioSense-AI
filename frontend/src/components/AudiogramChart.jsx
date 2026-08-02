@@ -214,13 +214,23 @@ export default function AudiogramChart({
   phonemes = null,
   showBanana = false,
   showPhonemes = false,
-  showGlow = true,
+  // Overlays default off and the grid defaults square, so a chart rendered
+  // without options is the plain clinical audiogram a clinician is trained to
+  // read rather than a decorated one.
+  showGlow = false,
   showAnnotations = true,
   height = 440,
+  square = true,
 }) {
   const annotations = showAnnotations ? deriveAnnotations(data) : []
+  // A clinical audiogram is conventionally drawn on a square grid, one octave
+  // occupying the same distance as 20 dB. Recharts' `aspect` keeps that true
+  // at any container width, which a fixed pixel height cannot.
+  const sizing = square
+    ? { width: '100%', aspect: 1 }
+    : { width: '100%', height }
   return (
-    <ResponsiveContainer width="100%" height={height}>
+    <ResponsiveContainer {...sizing}>
       <ComposedChart data={data} margin={{ top: 12, right: 24, bottom: 8, left: 4 }}>
         <CartesianGrid stroke="#e2e8f0" />
         <XAxis

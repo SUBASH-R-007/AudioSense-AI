@@ -41,19 +41,35 @@ function spiralPath(steps = 260) {
   return d
 }
 
-const severityColor = (db) => {
+// Ear identity is carried by hue and severity by darkness, so the map reads
+// the same way as the audiogram beside it: red is the right ear, blue is the
+// left. A single shared severity ramp made the two maps indistinguishable
+// once the toggle was off screen.
+const RAMPS = {
+  right: ['#fecdd3', '#fda4af', '#fb7185', '#e11d48', '#881337'],
+  left: ['#c7d2fe', '#93c5fd', '#60a5fa', '#2563eb', '#1e3a8a'],
+}
+const EAR_TONE = { right: '#dc2626', left: '#2563eb' }
+const BANDS = ['normal', 'mild', 'moderate', 'severe', 'profound']
+
+const severityIndex = (db) => {
+  if (db < 20) return 0
+  if (db < 35) return 1
+  if (db < 50) return 2
+  if (db < 65) return 3
+  return 4
+}
+
+const severityColor = (db, ear = 'right') => {
   if (db == null) return '#cbd5e1'
-  if (db < 20) return '#10b981'
-  if (db < 35) return '#facc15'
-  if (db < 50) return '#fb923c'
-  if (db < 65) return '#f43f5e'
-  return '#9f1239'
+  return (RAMPS[ear] || RAMPS.right)[severityIndex(db)]
 }
 
 const toNum = (v) => (v === 'NR' ? 120 : typeof v === 'number' ? v : null)
 
 export default function CochleaMap({ thresholds, ear = 'right' }) {
   const ac = thresholds?.[ear]?.ac || {}
+  const ramp = RAMPS[ear] || RAMPS.right
 
   // Greenwood x runs apex→base; our spiral t runs base→apex, so invert.
   // Normalize across the audiometric range so the drawn region is the part
@@ -69,31 +85,37 @@ export default function CochleaMap({ thresholds, ear = 'right' }) {
     const db = toNum(ac[f])
     const t = tOf(f)
     const [x, y] = spiralPoint(t)
-    return { f, db, x, y, color: severityColor(db) }
+    return { f, db, x, y, color: severityColor(db, ear) }
   })
 
   const damaged = points.filter((p) => p.db != null && p.db >= 35)
 
   return (
     <div>
-      <svg viewBox="0 0 260 236" className="w-full">
+      <svg viewBox="0 0 260 236" className="w-full"
+        role="img"
+        aria-label={`Cochlear damage map for the ${ear} ear, shown on a ${
+          ear === 'right' ? 'red' : 'blue'} scale.`}>
         <defs>
-          <filter id="cochlea-glow" x="-60%" y="-60%" width="220%" height="220%">
+          {/* Per-ear filter ids: two of these maps can be on screen at once,
+              and duplicate ids would make both render through one filter. */}
+          <filter id={`cochlea-glow-${ear}`} x="-60%" y="-60%" width="220%" height="220%">
             <feGaussianBlur stdDeviation="5" result="b" />
             <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
           </filter>
         </defs>
 
-        {/* the membrane */}
-        <path d={spiralPath()} fill="none" stroke="#e2e8f0" strokeWidth="13"
-          strokeLinecap="round" />
+        {/* the membrane, tinted to the ear it belongs to */}
+        <path d={spiralPath()} fill="none" stroke={EAR_TONE[ear]} strokeOpacity="0.16"
+          strokeWidth="13" strokeLinecap="round" />
         <path d={spiralPath()} fill="none" stroke="#f8fafc" strokeWidth="7"
           strokeLinecap="round" />
 
         {/* lesion glow on damaged regions */}
         {damaged.map((p) => (
           <circle key={`glow-${p.f}`} cx={p.x} cy={p.y} r={13} fill={p.color}
-            opacity={0.35} filter="url(#cochlea-glow)" className="animate-pulse-soft" />
+            opacity={0.35} filter={`url(#cochlea-glow-${ear})`}
+            className="animate-pulse-soft" />
         ))}
 
         {/* hair-cell region markers */}
@@ -116,10 +138,13 @@ export default function CochleaMap({ thresholds, ear = 'right' }) {
       </svg>
 
       <div className="mt-1 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[10.5px] text-slate-500">
-        {[['#10b981', 'normal'], ['#facc15', 'mild'], ['#fb923c', 'moderate'],
-          ['#f43f5e', 'severe'], ['#9f1239', 'profound']].map(([c, l]) => (
-          <span key={l} className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full" style={{ background: c }} />{l}
+        <span className="font-semibold" style={{ color: EAR_TONE[ear] }}>
+          {ear === 'right' ? 'Right ear' : 'Left ear'}
+        </span>
+        {BANDS.map((label, i) => (
+          <span key={label} className="flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full" style={{ background: ramp[i] }} />
+            {label}
           </span>
         ))}
       </div>

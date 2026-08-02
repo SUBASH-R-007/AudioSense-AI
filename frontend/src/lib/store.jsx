@@ -17,8 +17,30 @@ export function AppProvider({ children }) {
   const [analysis, setAnalysisRaw] = useState(() => load('as_analysis', null))
   // History of analyzed tests in this session — feeds the Progression page.
   const [history, setHistory] = useState(() => load('as_history', []))
+  // The symptom history and the otoscope reading for the case in progress.
+  //
+  // These live here rather than on their own pages because the whole point of
+  // them is that they constrain each other: the image is checked against what
+  // the patient reported, the differential against the thresholds. A finding
+  // that only exists inside one page's local state cannot be cross-checked
+  // from another.
+  const [assessment, setAssessmentRaw] = useState(() => load('as_assessment', null))
+  const [otoscopy, setOtoscopyRaw] = useState(() => load('as_otoscopy', null))
   const [aiStatus, setAiStatus] = useState(null)
   const [toast, setToast] = useState(null)
+
+  const persist = useCallback((key, value, setter) => {
+    setter(value)
+    try {
+      if (value === null) sessionStorage.removeItem(key)
+      else sessionStorage.setItem(key, JSON.stringify(value))
+    } catch { /* quota or private mode — in-memory state still works */ }
+  }, [])
+
+  const setAssessment = useCallback(
+    (a) => persist('as_assessment', a, setAssessmentRaw), [persist])
+  const setOtoscopy = useCallback(
+    (o) => persist('as_otoscopy', o, setOtoscopyRaw), [persist])
 
   const setAnalysis = useCallback((a) => {
     setAnalysisRaw(a)
@@ -63,7 +85,11 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider
-      value={{ analysis, setAnalysis, history, aiStatus, refreshAiStatus, toast, showToast }}
+      value={{
+        analysis, setAnalysis, history,
+        assessment, setAssessment, otoscopy, setOtoscopy,
+        aiStatus, refreshAiStatus, toast, showToast,
+      }}
     >
       {children}
     </AppContext.Provider>

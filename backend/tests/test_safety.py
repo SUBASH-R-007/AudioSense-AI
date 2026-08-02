@@ -93,7 +93,10 @@ def test_masking_indicated_when_ac_exceeds_other_bc_by_40():
     result = masking_check(flat(70), bc_flat(65), flat(10), bc_flat(10))
     assert result["masking_indicated"] is True
     assert result["warning"] is True
-    assert "cross-hearing" in " ".join(result["reasons"])
+    assert "AC masking indicated" in " ".join(result["reasons"])
+    # The transducer that set the crossover point is named, because changing
+    # it changes the answer.
+    assert result["interaural_attenuation_db"] == 40
 
 
 def test_no_masking_warning_when_reported_as_masked():

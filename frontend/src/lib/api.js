@@ -212,6 +212,82 @@ export const api = {
       body: JSON.stringify({ assessment, analysis }),
     }).then(json),
 
+  // --- cross-modal linkage ------------------------------------------------
+  linkage: (payload) =>
+    http('/api/linkage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  linkageReference: () => http('/api/linkage/reference').then(json),
+  diseasesFromOtoscopy: (otoscopy) =>
+    http('/api/linkage/from-otoscopy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ otoscopy }),
+    }).then(json),
+  diseasesFromAudiogram: (analysis, side = 'right') =>
+    http('/api/linkage/from-audiogram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ analysis, side }),
+    }).then(json),
+
+  // --- evoked potentials and behavioural observation ----------------------
+  aepReference: () => http('/api/aep/reference').then(json),
+  abr: (payload) =>
+    http('/api/aep/abr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  abrThreshold: (series) =>
+    http('/api/aep/abr/threshold', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ series }),
+    }).then(json),
+  mlr: (payload) =>
+    http('/api/aep/mlr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  llr: (payload) =>
+    http('/api/aep/llr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  aepBattery: (payload) =>
+    http('/api/aep/battery', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  boaReference: () => http('/api/boa/reference').then(json),
+  boa: (payload) =>
+    http('/api/boa/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
+  // --- speech audiometry: SDT, SRT, WRS -----------------------------------
+  speechReference: () => http('/api/speech/reference').then(json),
+  speech: (payload) =>
+    http('/api/speech/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+  compareWordScores: (payload) =>
+    http('/api/speech/compare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
   // --- immittance and emissions as instruments ----------------------------
   tympanometryReference: () => http('/api/tympanometry/reference').then(json),
   tympanometry: (payload) =>
