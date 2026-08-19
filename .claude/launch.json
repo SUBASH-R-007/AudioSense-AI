@@ -4,15 +4,55 @@
     {
       "name": "backend",
       "runtimeExecutable": "backend/.venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "uvicorn", "--app-dir", "backend", "app.main:app",
-                      "--port", "8000", "--reload", "--reload-dir", "backend/app"],
-      "port": 8000
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "--app-dir",
+        "backend",
+        "app.main:app",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "backend/app"
+      ],
+      "port": 8000,
+      "autoPort": false,
+      "env": {
+        "AUDIOSENSE_ALLOW_ANONYMOUS": "1"
+      },
+      "_comment": "autoPort must stay false: frontend/vite.config.js proxies /api to a hardcoded http://localhost:8000, so a reassigned port leaves the UI unable to reach the API."
     },
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "frontend",
+        "run",
+        "dev"
+      ],
       "port": 5173
+    },
+    {
+      "name": "backend-protected",
+      "runtimeExecutable": "backend/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "--app-dir",
+        "backend",
+        "app.main:app",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "backend/app"
+      ],
+      "port": 8000,
+      "autoPort": false,
+      "env": {},
+      "_comment": "Credentials come from the gitignored backend/.env. autoPort must stay false — see the 'backend' entry above."
     }
   ]
 }

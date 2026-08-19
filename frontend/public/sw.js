@@ -7,7 +7,7 @@
 // but a cached response is served if the request fails.
 
 // Bump this on any change to the caching strategy — it drops old caches.
-const CACHE = 'audiosense-v2'
+const CACHE = 'audiosense-v3'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg',
   '/audio/speech_sample.wav']
 
@@ -32,6 +32,16 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
+
+  // Video is handled by the browser, not by us. Two reasons, both fatal:
+  // a media element fetches with Range headers and the 206 Partial Content
+  // reply cannot be written to the Cache API — cache.put() throws on it — and
+  // the catch-all below falls back to index.html on a miss, which would hand
+  // an HTML document to a <video> element instead of a clean failure. The
+  // anatomy clips are also tens of megabytes, which is not what this cache is
+  // for.
+  if (request.destination === 'video'
+      || /\.(mp4|webm|mov|m4v)$/i.test(url.pathname)) return
 
   // API: fresh data preferred, cached copy as a fallback when offline.
   if (url.pathname.startsWith('/api/')) {

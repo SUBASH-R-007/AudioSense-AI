@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence
 
+from app.clinical.rules import WHO_GRADES
 from app.clinical.symptom_kb import (
     DISEASE_AUDIOGRAM, DISEASES, OTOSCOPY_DISEASE_LINKS, OTOSCOPY_LINKS,
     REFLEX_LINKS, SYMPTOM_LABELS, TYMPANOGRAM_LINKS,
@@ -34,11 +35,16 @@ from app.clinical.symptom_kb import (
 #: characteristic shape.
 MATCH_FREQS = [250, 500, 1000, 2000, 4000, 8000]
 
-#: WHO 2021 grade boundaries, reused so linkage speaks the same language as
-#: the rules engine rather than inventing a second vocabulary.
+#: WHO 2021 grade boundaries, DERIVED from the rules engine so linkage speaks
+#: the same language rather than inventing a second vocabulary. This was a
+#: hand-copied list, and it had drifted: its first band started at 0 where the
+#: rules engine starts at -inf, so a PTA below zero — thresholds down to
+#: -10 dB HL are valid, and a young ear reaches them — fell through every band
+#: and was labelled "profound" beside the very same number the rules engine
+#: graded "Normal hearing".
 WHO_BANDS = [
-    (0, 20, "normal"), (20, 35, "mild"), (35, 50, "moderate"),
-    (50, 65, "moderately severe"), (65, 80, "severe"), (80, 999, "profound"),
+    (lo, hi, grade.lower().replace(" hearing loss", "").replace(" hearing", ""))
+    for lo, hi, grade, _note in WHO_GRADES
 ]
 
 
@@ -48,7 +54,7 @@ def _grade(pta: Optional[float]) -> Optional[str]:
     for lo, hi, name in WHO_BANDS:
         if lo <= pta < hi:
             return name
-    return "profound"
+    return "profound"  # unreachable: the bands are open at both ends
 
 
 def _disease_name(key: str) -> str:
@@ -353,7 +359,10 @@ def audiogram_vs_diseases(analysis: Optional[dict], side: str = "right") -> dict
     mixed = "mixed" in ear_type
 
     rules = analysis.get("rules") or {}
-    ptas = [(rules.get(s) or {}).get("ac_pta", {}).get("value")
+    # The guard above only covers the requested `side`; the OTHER ear may still
+    # be untested, and rules.py emits "ac_pta": None for it rather than
+    # omitting the key — so this reads through None exactly as line 350 does.
+    ptas = [((rules.get(s) or {}).get("ac_pta") or {}).get("value")
             for s in ("right", "left")]
     ptas = [p for p in ptas if p is not None]
     asymmetry = round(max(ptas) - min(ptas), 1) if len(ptas) == 2 else None

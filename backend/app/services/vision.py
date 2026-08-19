@@ -222,11 +222,16 @@ def digitize(image_bytes: bytes) -> dict:
             out = {
                 "ok": True,
                 "method": f"llm:{cfg.provider}",
-                "right": _intkeys(data.get("right", {})),
-                "left": _intkeys(data.get("left", {})),
+                # `or {}`: this dict is parsed out of an LLM reply, so any key
+                # may arrive present-but-null. A `{}` default does not fire on
+                # that, and the next .get would raise inside the try — landing
+                # in the OpenCV fallback below and reporting a vision failure
+                # that never happened.
+                "right": _intkeys(data.get("right") or {}),
+                "left": _intkeys(data.get("left") or {}),
                 "confidence": {
-                    "right": _intkeys(data.get("confidence", {}).get("right", {})),
-                    "left": _intkeys(data.get("confidence", {}).get("left", {})),
+                    "right": _intkeys((data.get("confidence") or {}).get("right") or {}),
+                    "left": _intkeys((data.get("confidence") or {}).get("left") or {}),
                 },
                 "warnings": [],
             }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, apiUrl, AC_FREQS, FREQ_LABELS } from '../lib/api.js'
+import { api, AC_FREQS, FREQ_LABELS } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
 import { HearingSimulator } from '../audio/simulatorGraph.js'
 import { SOUNDSCAPES, buildSoundscape } from '../audio/soundscapes.js'
@@ -115,12 +115,11 @@ export default function Simulator() {
 
   const scoreTranscript = useCallback(async (text) => {
     try {
-      const res = await fetch(apiUrl('/api/speech-words'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ac: thresholds, text }),
-      })
-      if (res.ok) setLiveWords(await res.json())
+      // Goes through the api client rather than a bare fetch so it carries the
+      // session token. A raw fetch here would 401 on every utterance once the
+      // instance is password-protected, and — because the swallowed catch
+      // below is the whole error path — it would do so in complete silence.
+      setLiveWords(await api.speechWords(thresholds, text))
     } catch { /* transient — keep listening */ }
   }, [thresholds])
 
@@ -130,9 +129,20 @@ export default function Simulator() {
       setListening(false)
       return
     }
+    // Stop whatever came before. Without this a listener that errored out but
+    // is still running gets orphaned here — unreachable even by the unmount
+    // cleanup, which only ever sees the newest ref.
+    listenerRef.current?.stop()
     const listener = new ConversationListener(
       (text) => scoreTranscript(text),
-      (err) => { showToast(err, 'error'); setListening(false) },
+      (err) => {
+        showToast(err, 'error')
+        // The library already stops itself on a fatal error; this covers the
+        // rest, so a listener is never left running behind a button that has
+        // reverted to "Start talking".
+        listenerRef.current?.stop()
+        setListening(false)
+      },
     )
     if (listener.start()) {
       listenerRef.current = listener

@@ -162,22 +162,37 @@ export default function LinkagePanel({ side = 'right', compact = false }) {
   const { analysis, assessment, otoscopy } = useApp()
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
+  // "The call failed" and "nothing has been recorded" are different facts, and
+  // collapsing them told a clinician with a full case on file that their case
+  // was empty. Symptoms.jsx already distinguishes them for its own correlate
+  // call; this panel now matches.
+  const [failed, setFailed] = useState(false)
+  const nothingRecorded = !analysis && !assessment && !otoscopy
 
   useEffect(() => {
-    if (!analysis && !assessment && !otoscopy) { setResult(null); return }
+    if (nothingRecorded) { setResult(null); setFailed(false); return }
     let cancelled = false
     setBusy(true)
+    setFailed(false)
     api.linkage({ analysis, assessment, otoscopy, side })
       .then((r) => { if (!cancelled) setResult(r) })
-      .catch(() => { if (!cancelled) setResult(null) })
+      .catch(() => { if (!cancelled) { setResult(null); setFailed(true) } })
       .finally(() => { if (!cancelled) setBusy(false) })
     return () => { cancelled = true }
-  }, [analysis, assessment, otoscopy, side])
+  }, [analysis, assessment, otoscopy, side, nothingRecorded])
 
   if (!result) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-300 p-5 text-[12.5px] text-slate-400">
-        {busy ? 'Cross-checking…' : (
+      <div className={`rounded-2xl border border-dashed p-5 text-[12.5px] ${
+        failed ? 'border-amber-300 bg-amber-50/60 text-amber-900'
+          : 'border-slate-300 text-slate-400'}`}>
+        {busy ? 'Cross-checking…' : failed ? (
+          <>
+            The cross-check could not be run. Nothing recorded in this case has
+            changed — but the findings have <b>not</b> been reconciled against
+            each other, so any disagreement between them is still unchecked.
+          </>
+        ) : (
           <>
             Record a symptom history, an otoscope image or an audiogram and this
             panel reconciles them against each other.{' '}

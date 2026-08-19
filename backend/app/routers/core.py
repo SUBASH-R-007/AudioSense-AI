@@ -90,9 +90,12 @@ def analyze(record: TestRecord):
     speech["comparison"] = compare_ears(speech["right"], speech["left"])
 
     # --- the rest of the test battery, and whether it agrees --------------
+    # The age decides which normative band a tympanogram is judged against.
+    # Withholding it here made the battery type a child's ear as an adult's,
+    # disagreeing with the standalone tympanometry page on the same numbers.
     immittance = {
-        "right": analyze_immittance(record.right, r_pta),
-        "left": analyze_immittance(record.left, l_pta),
+        "right": analyze_immittance(record.right, r_pta, record.patient.age),
+        "left": analyze_immittance(record.left, l_pta, record.patient.age),
     }
     oae = {
         "right": analyze_oae(record.right, ear_to_numeric(record.right.ac)),

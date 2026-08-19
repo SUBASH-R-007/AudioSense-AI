@@ -232,3 +232,76 @@ def test_progression_endpoint_returns_the_narrative():
                        json={"baseline": pair["baseline"], "current": pair["current"]}).json()
     assert body["progression"]["narrative"]["flagged"] is True
     assert body["progression"]["narrative"]["lines"]
+
+
+# ------------------------------------------------ the headline grade ----
+#
+# `_worse_grade` picks which ear the single headline sentence describes. Every
+# other verdict test drives DEMO_CASES, and the only demo case whose ears grade
+# differently takes the emergency branch and returns before the grade is read —
+# so `min` (worse ear) and `max` (better ear) were indistinguishable to the
+# whole suite while the difference is "deaf in one ear" versus "normal".
+
+def test_verdict_headlines_the_worse_ear_when_the_ears_differ():
+    record = {
+        "patient": {"name": "Asym", "age": 55, "sex": "male",
+                    "occupation": "Farmer", "test_date": "2026-08-01",
+                    "onset": "gradual", "symptoms": []},
+        "right": {"ac": flat(95), "bc": flat(95, (250, 500, 1000, 2000, 4000)),
+                  "masked": True},
+        "left": {"ac": flat(10), "bc": flat(10, (250, 500, 1000, 2000, 4000)),
+                 "masked": True},
+    }
+    body = client.post("/api/analyze", json=record).json()
+    # Without this the case could be routed back through the emergency branch
+    # by a future safety rule and quietly stop testing the grade at all.
+    assert body["safety"]["has_emergency"] is False
+    headline = body["verdict"]["headline"].lower()
+    assert "profound" in headline
+    assert "normal limits" not in headline
+    assert body["verdict"]["tone"] == "loss"
+
+
+def test_worse_grade_is_side_independent():
+    from app.services.verdict import _worse_grade
+    worse = {"who_grade": {"grade": "Profound hearing loss"}}
+    better = {"who_grade": {"grade": "Normal hearing"}}
+    assert _worse_grade({"right": worse, "left": better}) == "Profound hearing loss"
+    assert _worse_grade({"right": better, "left": worse}) == "Profound hearing loss"
+
+
+# --------------------------------------------------- single-ear tests ----
+#
+# An ear with no PTA-frequency thresholds is emitted as "ac_pta": None and
+# "who_grade": None, not as a missing key. Readers that used `.get(k, {})`
+# crashed on it, so a genuinely one-sided test 500'd.
+
+@pytest.mark.parametrize("tested,blank", [("right", "left"), ("left", "right")])
+def test_a_single_ear_test_analyses_without_crashing(tested, blank):
+    record = {
+        "patient": {"name": "One Ear", "age": 40},
+        tested: {"ac": flat(45), "bc": flat(20, (250, 500, 1000, 2000, 4000))},
+        blank: {"ac": {}, "bc": {}},
+    }
+    r = client.post("/api/analyze", json=record)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["verdict"]["headline"]
+    assert body["rules"][blank]["ac_pta"] is None
+    assert body["rules"][blank]["who_grade"] is None
+
+
+def test_an_empty_record_analyses_without_crashing():
+    r = client.post("/api/analyze", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["verdict"]["headline"]
+
+
+def test_an_ear_tested_off_the_pta_frequencies_analyses():
+    """250 and 8000 Hz only: measured, but no PTA — the same None shape."""
+    r = client.post("/api/analyze", json={
+        "patient": {"name": "Edges", "age": 40},
+        "right": {"ac": {250: 30, 8000: 60}, "bc": {}},
+        "left": {"ac": {}, "bc": {}},
+    })
+    assert r.status_code == 200, r.text

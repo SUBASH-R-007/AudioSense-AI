@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api")
 def make_pdf(request: Request, payload: dict = Body(...)):
     base = str(request.base_url).rstrip("/")
     pdf_bytes = pdf.build_pdf(payload, verify_url_base=base)
-    name = (payload.get("patient", {}).get("name") or "report").replace(" ", "_")
+    name = ((payload.get("patient") or {}).get("name") or "report").replace(" ", "_")
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

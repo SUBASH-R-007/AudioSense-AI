@@ -213,3 +213,59 @@ def test_battery_absent_when_only_audiogram_supplied():
     assert body["battery"]["tests_run"] >= 1
     assert body["immittance"]["right"] is None
     assert body["oae"]["right"] is None
+
+
+# ------------------------------------------- age-matched tympanometry ----
+#
+# The battery used to call classify_tympanogram without the age, so it fell
+# back to the adult band while the standalone tympanometry page — which does
+# send the age — typed the same numbers against the child band. The same
+# child's ear was therefore typed two different ways by two screens.
+
+
+def _analyze_tymp(age, pressure, compliance, ecv):
+    body = {"patient": {"name": "Child", "age": age, "sex": "male"},
+            "right": {"ac": flat(20), "tymp_pressure": pressure,
+                      "tymp_compliance": compliance, "tymp_ecv": ecv},
+            "left": {"ac": flat(20)}}
+    r = client.post("/api/analyze", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()["immittance"]["right"]["tympanogram"]
+
+
+def test_the_battery_types_a_child_against_the_child_band():
+    tymp = _analyze_tymp(4, 0, 1.5, 0.8)
+    assert tymp["normative"]["band"] == "child"
+    # 1.5 mmho is inside the adult range but above the child ceiling of 1.25.
+    assert tymp["type"] == "Ad"
+
+
+def test_the_battery_and_the_instrument_page_agree_on_the_same_ear():
+    """Two screens, one ear, one answer. This is the invariant that broke."""
+    for age, values in ((4, (0, 1.5, 0.8)), (4, (0, 0.05, 1.5)),
+                        (40, (0, 1.5, 0.8)), (8, (-200, 0.3, 1.0))):
+        battery = _analyze_tymp(age, *values)
+        standalone = classify_tympanogram(*values, age_years=age)
+        assert battery["type"] == standalone["type"], (
+            f"age {age} {values}: battery says {battery['type']}, "
+            f"the tympanometry page says {standalone['type']}")
+        assert battery["normative"]["band"] == standalone["normative"]["band"]
+
+
+def test_the_type_b_ecv_split_uses_the_child_band_too():
+    """Large ECV means the probe is measuring past the drum — a perforation.
+
+    The adult ceiling is 2.0 ml and the child's is 1.0, so an ECV of 1.5 in a
+    four-year-old is the difference between reporting an effusion behind an
+    intact drum and reporting a perforation.
+    """
+    tymp = _analyze_tymp(4, 0, 0.05, 1.5)
+    assert tymp["type"] == "B"
+    assert tymp["ecv_flag"] == "large"
+    assert "perforation" in tymp["interpretation"].lower()
+
+
+def test_an_adult_is_still_judged_against_the_adult_band():
+    tymp = _analyze_tymp(40, 0, 1.5, 0.8)
+    assert tymp["normative"]["band"] == "adult"
+    assert tymp["type"] == "A"

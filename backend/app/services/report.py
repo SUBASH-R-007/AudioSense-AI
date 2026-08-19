@@ -69,7 +69,7 @@ def _ear_summary(ear: dict, side: str) -> str:
 
 def _etiology(analysis: dict) -> List[str]:
     """Occupation- and age-aware likely etiologies per detected pattern."""
-    patient = analysis.get("patient", {})
+    patient = analysis.get("patient") or {}
     occupation = (patient.get("occupation") or "").lower()
     age = patient.get("age") or 0
     noisy_job = any(k in occupation for k in NOISE_OCCUPATIONS)
@@ -167,7 +167,7 @@ def _etiology(analysis: dict) -> List[str]:
 
 
 def _recommendations(analysis: dict) -> List[str]:
-    rules = analysis.get("rules", {})
+    rules = analysis.get("rules") or {}
     disability = rules.get("disability") or {}
     recs: List[str] = []
 
@@ -217,16 +217,16 @@ def _recommendations(analysis: dict) -> List[str]:
 # ----------------------------------------------------- offline generator ---
 
 def generate_offline(analysis: dict) -> dict:
-    rules = analysis.get("rules", {})
-    phonemes = analysis.get("phonemes", {})
+    rules = analysis.get("rules") or {}
+    phonemes = analysis.get("phonemes") or {}
     disability = rules.get("disability")
 
     findings = [
-        _ear_summary(rules.get("right", {}), "right"),
-        _ear_summary(rules.get("left", {}), "left"),
+        _ear_summary(rules.get("right") or {}, "right"),
+        _ear_summary(rules.get("left") or {}, "left"),
     ]
     for side in ("right", "left"):
-        for c in rules.get(side, {}).get("caveats", []):
+        for c in (rules.get(side) or {}).get("caveats") or []:
             findings.append(f"Note ({side}): {c}.")
 
     for alert in (analysis.get("safety") or {}).get("alerts", []):
@@ -322,7 +322,7 @@ def verify_offline(report: dict, analysis: dict) -> dict:
     """Re-derive every key number from the structured JSON and confirm the
     draft report states it. Returns per-claim check results."""
     text = json.dumps(report, ensure_ascii=False)
-    rules = analysis.get("rules", {})
+    rules = analysis.get("rules") or {}
     checks = []
 
     def expect(claim: str, needle: str):
@@ -351,7 +351,7 @@ def counseling_sheet(analysis: dict) -> dict:
     Built from the pre-authored phrase tables in ``languages.py`` so the
     same clinical facts are stated identically in every language.
     """
-    rules = analysis.get("rules", {})
+    rules = analysis.get("rules") or {}
     name = (analysis.get("patient") or {}).get("name") or "You"
     disability = rules.get("disability")
     urgent = (analysis.get("safety") or {}).get("has_urgent")

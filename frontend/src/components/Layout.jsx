@@ -1,25 +1,30 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { api } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import { TOOLS, flowProgress, flowState } from '../lib/flow.js'
 import AISettingsPanel from './AISettingsPanel.jsx'
 import GuidedTour from './GuidedTour.jsx'
 
-// Ordered the way a consultation runs: history first, then look in the ear,
-// then measure, then interpret.
-const NAV = [
-  { to: '/symptoms', label: 'Signs & Symptoms', icon: 'M9 12h6m-3-3v6M4.5 8.5A7.5 7.5 0 0119 12v6a2 2 0 01-2 2H7a2 2 0 01-2-2v-4' },
-  { to: '/otoscopy', label: 'Otoscopy', icon: 'M12 20a8 8 0 100-16 8 8 0 000 16zm0-4a4 4 0 100-8 4 4 0 000 8z' },
-  { to: '/new-test', label: 'New Test', icon: 'M12 4v16m8-8H4' },
-  { to: '/screening', label: 'Screening Test', icon: 'M12 18.5a6.5 6.5 0 100-13 6.5 6.5 0 000 13zm0-9.5a3 3 0 100 6 3 3 0 000-6z' },
-  { to: '/immittance', label: 'Immittance, OAE & Speech', icon: 'M3 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0' },
-  { to: '/evoked-potentials', label: 'Evoked Potentials', icon: 'M2 12h3l2-6 3 12 3-9 2 3h7' },
-  { to: '/dashboard', label: 'Results Dashboard', icon: 'M3 13h4v8H3zm7-9h4v17h-4zm7 5h4v12h-4z' },
-  { to: '/simulator', label: 'Hearing Simulator', icon: 'M3 10v4m4-8v12m4-15v18m4-14v10m4-7v4' },
-  { to: '/listening-lab', label: 'Listening Lab', icon: 'M12 3v18M8 7v10M4 10v4M16 6v12M20 9v6' },
-  { to: '/progression', label: 'Progression', icon: 'M3 17l6-6 4 4 8-8m0 0v5m0-5h-5' },
-  { to: '/batch', label: 'Batch Analysis', icon: 'M4 6h16M4 12h16M4 18h10' },
-  { to: '/records', label: 'Patient Records', icon: 'M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2zM8 9h4m-4 4h8m-8 4h8' },
-]
+
+/** A step's number, or the mark that replaces it once the step is settled. */
+function StepMark({ step }) {
+  const base = 'flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-[9.5px] font-bold'
+  if (step.state === 'done') {
+    return <span className={`${base} bg-teal-600 text-white`} aria-label="done">✓</span>
+  }
+  if (step.state === 'skipped') {
+    return <span className={`${base} bg-slate-200 text-slate-500`} aria-label="skipped">–</span>
+  }
+  if (step.state === 'blocked') {
+    return <span className={`${base} border border-slate-200 text-slate-300`}>{step.index}</span>
+  }
+  return (
+    <span className={`${base} border border-slate-300 text-slate-500 group-hover:border-teal-400 group-hover:text-teal-700`}>
+      {step.index}
+    </span>
+  )
+}
 
 function Logo() {
   return (
@@ -42,16 +47,61 @@ function Logo() {
   )
 }
 
+const POLL_MS = 30000
+
+// The whole interface renders from static assets, so it looks perfectly healthy
+// with the backend dead behind it — and the first sign of trouble is a failed
+// analysis halfway through a consultation. Whether the model is trained matters
+// separately: without it, pattern classification silently drops out and the
+// interpretation falls back to the rule engine alone, which is a different
+// product from the one the screen appears to be offering.
+function describeBackend(health) {
+  if (health === null) {
+    return { dot: 'bg-slate-300', box: 'text-slate-400', label: 'Checking backend…' }
+  }
+  if (health === false) {
+    return {
+      dot: 'bg-rose-500', box: 'bg-rose-50 text-rose-800',
+      label: 'Backend unreachable',
+      detail: 'Nothing can be analysed until it answers. Retrying every 30 s.',
+    }
+  }
+  if (!health.model_trained) {
+    return {
+      dot: 'bg-amber-500', box: 'bg-amber-50 text-amber-900',
+      label: 'Model not trained',
+      detail: 'Backend is up. Pattern classification is unavailable; rule-based grading and typing still run.',
+    }
+  }
+  return { dot: 'bg-emerald-500', box: 'text-slate-400', label: 'Backend online' }
+}
+
 export default function Layout({ children }) {
-  const { aiStatus, toast } = useApp()
+  const { aiStatus, toast, patient, assessment, otoscopy, analysis, aep, skipped } = useApp()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [navOpen, setNavOpen] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
+  // null while the first probe is in flight, false once it has failed.
+  const [health, setHealth] = useState(null)
   const location = useLocation()
   const apiMode = aiStatus?.config?.mode === 'api'
 
   // On a phone the drawer must close when you navigate, or it covers the page.
   useEffect(() => { setNavOpen(false) }, [location.pathname])
+
+  useEffect(() => {
+    let cancelled = false
+    const probe = () => api.health()
+      .then((h) => { if (!cancelled) setHealth(h) })
+      .catch(() => { if (!cancelled) setHealth(false) })
+    probe()
+    const timer = setInterval(probe, POLL_MS)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [])
+
+  const steps = flowState({ patient, assessment, otoscopy, analysis, aep, skipped })
+  const progress = flowProgress({ patient, assessment, otoscopy, analysis, aep, skipped })
+  const backend = describeBackend(health)
   const providerLabel = apiMode
     ? aiStatus?.providers?.[aiStatus.config.provider]?.label || aiStatus.config.provider
     : null
@@ -85,26 +135,85 @@ export default function Layout({ children }) {
               strokeWidth="2" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
           </button>
         </div>
-        <nav className="mt-8 flex flex-1 flex-col gap-1" aria-label="Main">
-          {NAV.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              className={({ isActive }) =>
-                `flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13.5px] font-medium transition ${
-                  isActive
-                    ? 'bg-teal-50 text-teal-700 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.15)]'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                }`
-              }
-            >
-              <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none"
-                stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d={n.icon} />
-              </svg>
-              {n.label}
-            </NavLink>
-          ))}
+        <nav className="mt-6 flex flex-1 flex-col overflow-y-auto" aria-label="Main">
+          {/* The consultation, in the order it runs. The sidebar is the flow —
+              a clinician should never have to already know which screen comes
+              next, and a step that was deliberately skipped must look different
+              from one that was simply never reached. */}
+          <div className="flex items-baseline justify-between px-3">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              Consultation
+            </span>
+            <span className="font-mono text-[10px] text-slate-400">
+              {progress.settled}/{progress.total}
+            </span>
+          </div>
+          <div className="mx-3 mt-1.5 h-1 overflow-hidden rounded-full bg-slate-100">
+            <div className="h-full rounded-full bg-teal-500 transition-all"
+              style={{ width: `${(progress.settled / progress.total) * 100}%` }} />
+          </div>
+
+          <div className="mt-2 flex flex-col gap-0.5" data-tour="flow-nav">
+            {steps.map((n) => (
+              <NavLink
+                key={n.to}
+                to={n.to}
+                aria-disabled={n.state === 'blocked'}
+                title={n.state === 'blocked'
+                  ? 'Available once there are thresholds to interpret'
+                  : n.why}
+                className={({ isActive }) =>
+                  `group flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition ${
+                    isActive
+                      ? 'bg-teal-50 text-teal-700 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.15)]'
+                      : n.state === 'blocked'
+                        ? 'text-slate-300'
+                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  }`
+                }
+              >
+                <StepMark step={n} />
+                <span className="flex-1 truncate">{n.label}</span>
+                {n.state === 'skipped' && (
+                  <span className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400">
+                    skipped
+                  </span>
+                )}
+                {!n.required && n.state === 'ready' && (
+                  <span className="text-[9.5px] uppercase tracking-wide text-slate-300">
+                    optional
+                  </span>
+                )}
+              </NavLink>
+            ))}
+          </div>
+
+          <div className="mt-5 px-3">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              Tools
+            </span>
+          </div>
+          <div className="mt-1.5 flex flex-col gap-0.5" data-tour="tools-nav">
+            {TOOLS.map((n) => (
+              <NavLink
+                key={n.to}
+                to={n.to}
+                className={({ isActive }) =>
+                  `flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition ${
+                    isActive
+                      ? 'bg-teal-50 text-teal-700 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.15)]'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  }`
+                }
+              >
+                <svg viewBox="0 0 24 24" className="h-[17px] w-[17px]" fill="none"
+                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d={n.icon} />
+                </svg>
+                <span className="truncate">{n.label}</span>
+              </NavLink>
+            ))}
+          </div>
         </nav>
 
         <button
@@ -116,6 +225,7 @@ export default function Layout({ children }) {
 
         <button
           onClick={() => setSettingsOpen(true)}
+          data-tour="ai-engine"
           className="group flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-left transition hover:border-teal-300 hover:bg-teal-50/40"
         >
           <div>
@@ -133,6 +243,18 @@ export default function Layout({ children }) {
             <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" />
           </svg>
         </button>
+
+        <div role="status" aria-live="polite" data-tour="backend-status"
+          className={`mt-2 rounded-xl px-3 py-2 ${backend.box}`}>
+          <div className="flex items-center gap-2 text-[12px] font-medium">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${backend.dot}`} aria-hidden="true" />
+            {backend.label}
+          </div>
+          {backend.detail && (
+            <div className="mt-1 text-[11px] leading-relaxed">{backend.detail}</div>
+          )}
+        </div>
+
         <div className="mt-3 px-1 text-[10px] leading-relaxed text-slate-400">
           AI-assisted interpretation; final diagnosis requires a qualified audiologist.
         </div>

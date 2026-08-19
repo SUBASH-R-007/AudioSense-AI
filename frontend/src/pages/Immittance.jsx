@@ -19,6 +19,7 @@ import { api } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
 import TympanogramAtlas from '../components/TympanogramAtlas.jsx'
 import SpeechAudiometry from '../components/SpeechAudiometry.jsx'
+import StepNav from '../components/StepNav.jsx'
 
 const TYPE_STYLE = {
   A: 'border-emerald-300 bg-emerald-50 text-emerald-900',
@@ -64,6 +65,12 @@ const OAE_PRESETS = [
   { label: 'Too noisy to judge', build: () => ({ amplitude: 4, noise_floor: 17 }) },
 ]
 
+// Module scope, deliberately. Written inline as a fallback it was a fresh
+// array on every render, which gave the `points` memo a new identity, which
+// re-ran the fetch effect, whose setState re-rendered — a tight loop of failing
+// POSTs and error toasts for as long as the OAE reference was unavailable.
+const DEFAULT_OAE_FREQS = [1000, 2000, 3000, 4000, 6000, 8000]
+
 function buildTrace({ peak, height, tail, width, notched = false, notchWidth = 60,
                      ceiling = null }) {
   const sigma = width / 2.355
@@ -88,9 +95,10 @@ function buildTrace({ peak, height, tail, width, notched = false, notchWidth = 6
   return out
 }
 
-function Panel({ title, children, right }) {
+function Panel({ title, children, right, tour }) {
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+      data-tour={tour}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-[15px] font-semibold text-slate-900">{title}</h2>
         {right}
@@ -117,9 +125,22 @@ function Measure({ label, value, unit, ok }) {
 
 // -------------------------------------------------------- tympanometry ----
 function Tympanometry({ reference, onType }) {
-  const { showToast } = useApp()
+  const { patient, showToast } = useApp()
   const [ear, setEar] = useState('right')
-  const [ageYears, setAgeYears] = useState(30)
+  // Age is not a label on this test, it is the test. It picks the normative
+  // band — ear-canal volume 0.3–1.0 ml in a child against 0.6–2.0 in an adult,
+  // static compliance 0.35–1.25 against 0.37–1.66 — and a 226 Hz probe is
+  // refused under six months because the infant canal is compliant enough to
+  // absorb the low-frequency probe and return a flat trace from a healthy ear.
+  // Defaulting to 30 therefore judged every child's tympanogram against adult
+  // norms, which reads a stiff paediatric ear as normal.
+  const recorded = Number(patient?.age)
+  const recordedAge = patient?.age == null || patient.age === '' || Number.isNaN(recorded)
+    ? null : recorded
+  const [ageYears, setAgeYears] = useState(recordedAge ?? 30)
+  // Re-seed when the patient arrives or changes — this page is reachable
+  // before the demographics are entered, and stale age is the whole bug.
+  useEffect(() => { if (recordedAge != null) setAgeYears(recordedAge) }, [recordedAge])
   const [probeHz, setProbeHz] = useState(226)
   const [preset, setPreset] = useState(TYMP_PRESETS[0])
   const [ipsi, setIpsi] = useState('85')
@@ -164,6 +185,7 @@ function Tympanometry({ reference, onType }) {
   return (
     <Panel
       title="Tympanometry"
+      tour="tympanogram"
       right={jerger && (
         <span className={`rounded-lg border px-2.5 py-1 text-[12px] font-semibold ${
           TYPE_STYLE[jerger.type] || 'border-slate-300 bg-slate-50 text-slate-700'}`}>
@@ -234,6 +256,16 @@ function Tympanometry({ reference, onType }) {
           <input type="number" min="0" step="0.25" value={ageYears}
             onChange={(e) => setAgeYears(e.target.value)}
             className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
+          {recordedAge != null && Number(ageYears) !== recordedAge && (
+            <span className="mt-1 block text-[10.5px] leading-snug text-amber-700">
+              Recorded age is {recordedAge}. These norms are not this patient's.
+            </span>
+          )}
+          {recordedAge == null && (
+            <span className="mt-1 block text-[10.5px] leading-snug text-slate-400">
+              No patient recorded — adult norms assumed.
+            </span>
+          )}
         </label>
         <label className="text-[12px]">
           <span className="mb-1 block font-medium text-slate-600">Probe</span>
@@ -345,7 +377,7 @@ function Emissions({ reference }) {
   const [preset, setPreset] = useState(OAE_PRESETS[1])
   const [result, setResult] = useState(null)
 
-  const freqs = reference?.frequencies || [1000, 2000, 3000, 4000, 6000, 8000]
+  const freqs = reference?.frequencies || DEFAULT_OAE_FREQS
   const points = useMemo(
     () => freqs.map((f) => ({ freq: f, ...preset.build(f) })),
     [freqs, preset],
@@ -380,6 +412,7 @@ function Emissions({ reference }) {
   return (
     <Panel
       title="Otoacoustic emissions"
+      tour="oae"
       right={result && (
         <span className={`rounded-lg border px-2.5 py-1 text-[12px] font-semibold uppercase ${
           OUTCOME_STYLE[result.outcome] || 'border-slate-300 bg-slate-50 text-slate-700'}`}>
@@ -618,6 +651,8 @@ export default function Immittance() {
           </p>
         </div>
       )}
+
+      <StepNav stepKey="immittance" />
     </div>
   )
 }

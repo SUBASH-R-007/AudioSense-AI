@@ -78,31 +78,66 @@ function Notes({ items, tone = 'slate' }) {
   )
 }
 
+const buildPayload = (ear, preset) => ({
+  ear,
+  ac: Object.fromEntries(FREQS.map((f) => [f, preset.ac])),
+  sdt: preset.sdt,
+  srt: preset.srt,
+  wrs: preset.wrs,
+})
+
 export default function SpeechAudiometry() {
   const [reference, setReference] = useState(null)
   const [ear, setEar] = useState('right')
-  const [preset, setPreset] = useState(PRESETS[2])
-  const [result, setResult] = useState(null)
+  // Each ear holds its own preset. The ear-to-ear word-score comparison is the
+  // single most useful thing speech audiometry produces, and it cannot be asked
+  // for at all if both ears are forced to share one set of numbers.
+  const [presets, setPresets] = useState({ right: PRESETS[2], left: PRESETS[1] })
+  const [results, setResults] = useState({ right: null, left: null })
+  const [comparison, setComparison] = useState(null)
+
+  const preset = presets[ear]
 
   useEffect(() => {
     api.speechReference().then(setReference).catch(() => {})
   }, [])
 
-  const payload = useMemo(() => ({
-    ear,
-    ac: Object.fromEntries(FREQS.map((f) => [f, preset.ac])),
-    sdt: preset.sdt,
-    srt: preset.srt,
-    wrs: preset.wrs,
-  }), [ear, preset])
+  const payloads = useMemo(() => ({
+    right: buildPayload('right', presets.right),
+    left: buildPayload('left', presets.left),
+  }), [presets])
 
   useEffect(() => {
     let cancelled = false
-    api.speech(payload)
-      .then((r) => { if (!cancelled) setResult(r) })
-      .catch(() => { if (!cancelled) setResult(null) })
+    Promise.all([api.speech(payloads.right), api.speech(payloads.left)])
+      .then(([r, l]) => { if (!cancelled) setResults({ right: r, left: l }) })
+      .catch(() => { if (!cancelled) setResults({ right: null, left: null }) })
     return () => { cancelled = true }
-  }, [payload])
+  }, [payloads])
+
+  const result = results[ear]
+  const rightWrs = results.right?.wrs
+  const leftWrs = results.left?.wrs
+  const rightPbMax = rightWrs?.pb_max ?? null
+  const leftPbMax = leftWrs?.pb_max ?? null
+  // The comparison is only as fine as the shorter list allows — the longer list
+  // cannot lend the shorter one precision it never had.
+  const compareWords = rightWrs && leftWrs
+    ? Math.min(rightWrs.n_words, leftWrs.n_words) : null
+
+  useEffect(() => {
+    if (rightPbMax === null || leftPbMax === null || !compareWords) {
+      setComparison(null)
+      return undefined
+    }
+    let cancelled = false
+    api.compareWordScores({
+      right_score: rightPbMax, left_score: leftPbMax, n_words: compareWords,
+    })
+      .then((c) => { if (!cancelled) setComparison(c) })
+      .catch(() => { if (!cancelled) setComparison(null) })
+    return () => { cancelled = true }
+  }, [rightPbMax, leftPbMax, compareWords])
 
   // Performance-intensity data, with the confidence interval as an error bar
   // so the uncertainty is on the chart rather than in a footnote.
@@ -117,7 +152,8 @@ export default function SpeechAudiometry() {
   const wrs = result?.wrs
 
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+      data-tour="speech-audiometry">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-[15px] font-semibold text-slate-900">
           Speech audiometry — SDT, SRT, WRS
@@ -129,7 +165,8 @@ export default function SpeechAudiometry() {
 
       <div className="mt-3 flex flex-wrap gap-2">
         {PRESETS.map((p) => (
-          <button key={p.label} type="button" onClick={() => setPreset(p)}
+          <button key={p.label} type="button"
+            onClick={() => setPresets((prev) => ({ ...prev, [ear]: p }))}
             className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
               preset.label === p.label
                 ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
@@ -148,6 +185,11 @@ export default function SpeechAudiometry() {
           ))}
         </div>
       </div>
+
+      <p className="mt-2 text-[11px] text-slate-400">
+        A preset applies to the selected ear only. Set each ear separately —
+        the right-versus-left word-score test below needs both.
+      </p>
 
       <div className="mt-4 grid gap-2 sm:grid-cols-4">
         <Row label="SDT" value={sdt?.sdt} unit="dB HL" />
@@ -264,6 +306,70 @@ export default function SpeechAudiometry() {
             </p>
             <Notes items={wrs.notes} tone="amber" />
           </div>
+        )}
+      </div>
+
+      {/* --- right versus left -------------------------------------------
+          Two word scores are two samples, so the clinically useful question is
+          never "which number is bigger" but "is this gap larger than a list of
+          this length could produce by chance". Thornton & Raffin answer it, and
+          a negative answer is a finding in its own right — an ear-to-ear gap
+          that fails the test is evidence against asymmetry, which is why the
+          wording below never leaves it looking like an absent result. */}
+      <div className="mt-4">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Right versus left word recognition
+        </div>
+        {comparison ? (
+          <div className="mt-2 rounded-xl border border-slate-200 p-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="text-[12.5px] font-semibold text-slate-800">
+                {comparison.significant
+                  ? 'These ears really do differ'
+                  : 'These ears score the same, as far as this list can tell'}
+              </span>
+              <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                comparison.significant ? 'bg-rose-100 text-rose-700'
+                  : 'bg-emerald-100 text-emerald-700'}`}>
+                {comparison.significant ? 'difference is real' : 'tested — equivalent'}
+              </span>
+            </div>
+            <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+              <Row label="Right PB max" value={comparison.right_score} unit="%"
+                tone="text-red-600" />
+              <Row label="Left PB max" value={comparison.left_score} unit="%"
+                tone="text-blue-600" />
+              <Row label="Gap" value={Math.abs(comparison.difference)} unit="points" />
+            </div>
+            <p className="mt-2 text-[12.5px] leading-relaxed text-slate-700">
+              Both ears were scored and the two scores were tested against each
+              other. {comparison.message}
+              {!comparison.significant && (
+                <> This is a <b>measured equivalence</b>, not a missing or
+                  un-run comparison.</>
+              )}
+            </p>
+            <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-500">
+              95% intervals — <span className="text-red-600">right{' '}
+              {comparison.right_ci.low}–{comparison.right_ci.high}%</span>,{' '}
+              <span className="text-blue-600">left{' '}
+              {comparison.left_ci.low}–{comparison.left_ci.high}%</span>.
+            </p>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
+              Thornton &amp; Raffin (1978) critical difference, applied on the
+              shorter of the two lists ({comparison.n_words} words). A short list
+              can only call a large gap real — a smaller true asymmetry would
+              need a 50-word list before this test could see it, so a
+              non-significant result rules out a large asymmetry, not every one.
+            </p>
+          </div>
+        ) : (
+          <p className="mt-2 rounded-xl border border-dashed border-slate-200 px-3 py-2 text-[12px] leading-relaxed text-slate-500">
+            Not run — a word score is present for{' '}
+            {rightWrs ? 'the right ear only' : leftWrs ? 'the left ear only' : 'neither ear'}.
+            The test needs a score on both ears; choose a preset with word scores
+            for each ear using the ear switch above.
+          </p>
         )}
       </div>
 

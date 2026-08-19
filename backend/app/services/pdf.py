@@ -81,11 +81,13 @@ def lookup_hash(h: str) -> dict | None:
 
 def build_pdf(payload: dict, verify_url_base: str = "http://localhost:8000") -> bytes:
     """payload: {patient, analysis, report_bundle, chart_png_b64?}."""
-    patient = payload.get("patient", {})
-    analysis = payload.get("analysis", {})
-    bundle = payload.get("report_bundle", {})
-    report = bundle.get("report", {})
-    counseling = bundle.get("counseling", {})
+    # `or {}` throughout: these come straight off a client payload, where a
+    # key present with an explicit null slips past a `{}` default.
+    patient = payload.get("patient") or {}
+    analysis = payload.get("analysis") or {}
+    bundle = payload.get("report_bundle") or {}
+    report = bundle.get("report") or {}
+    counseling = bundle.get("counseling") or {}
 
     h = result_hash(analysis)
     register_hash(h, patient.get("name", ""))
@@ -159,8 +161,8 @@ def build_pdf(payload: dict, verify_url_base: str = "http://localhost:8000") -> 
             for line in lines:
                 story.append(Paragraph(f"• {line}", body))
 
-    en = counseling.get("english", {})
-    ta = counseling.get("tamil", {})
+    en = counseling.get("english") or {}
+    ta = counseling.get("tamil") or {}
     if en:
         story.append(Paragraph("Patient Counseling (English)", h2))
         for s in en.get("summary", []) + en.get("tips", []):

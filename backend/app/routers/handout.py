@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 
 import qrcode
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
 router = APIRouter(prefix="/api")
@@ -39,12 +39,12 @@ def create_handout(request: Request, payload: dict = Body(...)):
     """Store a counseling sheet and return its shareable URL + QR image URL."""
     from app.services.pdf import result_hash
 
-    analysis = payload.get("analysis", {})
+    analysis = payload.get("analysis") or {}
     h = result_hash(analysis)
     store = _load()
     store[h] = {
         "patient": (payload.get("patient") or {}).get("name", ""),
-        "counseling": payload.get("counseling", {}),
+        "counseling": payload.get("counseling") or {},
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     HANDOUT_STORE.write_text(json.dumps(store, ensure_ascii=False, indent=2),
@@ -57,10 +57,23 @@ def create_handout(request: Request, payload: dict = Body(...)):
     }
 
 
+#: Cap on the string this route will encode. QR version 40 tops out near
+#: 3,391 alphanumeric characters, and the only value this instance ever issues
+#: is a handout URL of about 100 — so 512 leaves ample headroom while keeping
+#: an anonymous caller (this route is on the auth allowlist) from spending a
+#: single-worker container's CPU on giant renders.
+QR_MAX_CHARS = 512
+
+
 @router.get("/qr")
-def qr(data: str):
+def qr(data: str = Query(..., min_length=1, max_length=QR_MAX_CHARS)):
     """Render any string as a QR PNG (server-side, no JS library needed)."""
-    img = qrcode.make(data)
+    try:
+        img = qrcode.make(data)
+    except ValueError as exc:
+        # The encoder rejected the payload; that is the caller's input, not a
+        # fault here, so it must not surface as a 500.
+        raise HTTPException(422, f"Cannot encode as QR: {exc}") from exc
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return Response(content=buf.getvalue(), media_type="image/png")
@@ -75,7 +88,7 @@ def view_handout(h: str):
             "<h1>Handout not found</h1><p>This link was not issued by this "
             "AudioSense AI instance.</p>", status_code=404)
 
-    counseling = entry.get("counseling", {})
+    counseling = entry.get("counseling") or {}
     langs = [k for k in ("english", "tamil", "hindi", "telugu", "kannada", "malayalam")
              if isinstance(counseling.get(k), dict)]
 

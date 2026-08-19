@@ -5,6 +5,8 @@ import { useApp } from '../lib/store.jsx'
 import { captureSvgAsPng } from '../lib/svgCapture.js'
 import AudiogramChart, { buildChartData } from '../components/AudiogramChart.jsx'
 import CochleaMap from '../components/CochleaMap.jsx'
+import DiagnosticPicture from '../components/DiagnosticPicture.jsx'
+import EarAnatomyVideo from '../components/EarAnatomyVideo.jsx'
 import LinkagePanel from '../components/LinkagePanel.jsx'
 import DiseaseAudiogram from '../components/DiseaseAudiogram.jsx'
 import MaskingPanel from '../components/MaskingPanel.jsx'
@@ -13,8 +15,8 @@ import {
   availableLanguages, speak, stopSpeaking, voiceAvailable, voiceDiagnostic,
 } from '../lib/speech.js'
 
-const Card = ({ title, children, badge }) => (
-  <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+const Card = ({ title, children, badge, tour }) => (
+  <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm" data-tour={tour}>
     <div className="flex items-center justify-between">
       <h3 className="text-[11.5px] font-semibold uppercase tracking-wider text-slate-400">{title}</h3>
       {badge}
@@ -32,6 +34,12 @@ const PATTERN_OPTIONS = [
   ['cookie_bite', 'Cookie-bite (mid-frequency)'],
   ['corner_audiogram', 'Corner audiogram'],
 ]
+
+const PATTERN_LABEL = Object.fromEntries(PATTERN_OPTIONS)
+/** The ensemble returns raw class keys, and it may know a class the override
+ *  list does not — so fall back to the key made readable rather than blank. */
+const prettyPattern = (key) =>
+  PATTERN_LABEL[key] || String(key || '').replace(/_/g, ' ')
 
 /** Clinician override — the disagreement is the training signal. */
 function CorrectionControl({ analysis, ear, ml, showToast }) {
@@ -103,6 +111,238 @@ function CorrectionControl({ analysis, ear, ml, showToast }) {
   )
 }
 
+const MODEL_NAME = { randomforest: 'RandomForest', deep_ensemble: 'Deep ensemble' }
+
+/** Head-to-head between the two classifiers, scored on the same hold-out split.
+ *
+ * The classification above comes from the forest, and the deep ensemble edges
+ * it out on raw accuracy — so the choice of primary model needs defending in
+ * front of the clinician who is reading its output, not only in the docs. The
+ * defence is calibration: a confidence figure that cannot be trusted is worse
+ * at the chairside than a fraction of a point of accuracy, because the number
+ * on screen is what decides whether the case gets a second look.
+ */
+function ModelComparison() {
+  const [open, setOpen] = useState(false)
+  const [comparison, setComparison] = useState(null)
+  const [failed, setFailed] = useState(null)
+
+  // The benchmark re-scores the hold-out split on the server on every call, so
+  // it is only worth paying for once someone asks to see it — never on load.
+  useEffect(() => {
+    if (!open || comparison || failed) return
+    let cancelled = false
+    api.modelComparison()
+      .then((c) => { if (!cancelled) setComparison(c) })
+      .catch((e) => { if (!cancelled) setFailed(e.message) })
+    return () => { cancelled = true }
+  }, [open, comparison, failed])
+
+  return (
+    <details className="mt-2 border-t border-slate-100 pt-2"
+      onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer text-[12px] font-medium text-teal-700">
+        Forest vs deep ensemble
+      </summary>
+      <div className="mt-2">
+        {failed && (
+          <p className="text-[11.5px] leading-snug text-slate-500">
+            The benchmark is unavailable: {failed}
+          </p>
+        )}
+        {!failed && !comparison && (
+          <p className="text-[11.5px] text-slate-400">Scoring the hold-out split…</p>
+        )}
+        {comparison && (
+          <>
+            <table className="w-full">
+              <thead>
+                <tr className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  <th className="text-left">Model</th>
+                  <th className="text-right">Accuracy</th>
+                  <th className="text-right">Log loss</th>
+                </tr>
+              </thead>
+              <tbody>
+                {['randomforest', 'deep_ensemble'].map((key) => (
+                  <tr key={key} className="border-t border-slate-100">
+                    <td className="py-1 text-left text-[12px] text-slate-700">
+                      {MODEL_NAME[key]}
+                      {key === comparison.primary_model && (
+                        <span className="ml-1 rounded bg-teal-100 px-1 py-0.5 text-[11px] font-bold uppercase text-teal-700">
+                          primary
+                        </span>
+                      )}
+                    </td>
+                    <td className={`py-1 text-right text-[12px] ${
+                      key === comparison.more_accurate
+                        ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>
+                      {(comparison[key].accuracy * 100).toFixed(2)}%
+                    </td>
+                    <td className={`py-1 text-right text-[12px] ${
+                      key === comparison.better_calibrated
+                        ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>
+                      {comparison[key].log_loss.toFixed(4)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="mt-1.5 text-[12px] leading-snug text-slate-600">
+              <div>
+                More accurate:{' '}
+                <b className="text-slate-800">{MODEL_NAME[comparison.more_accurate]}</b>
+                {comparison.margin > 0 && (
+                  <span className="text-slate-400">
+                    {' '}by {(comparison.margin * 100).toFixed(2)} points
+                  </span>
+                )}
+              </div>
+              <div>
+                Better calibrated:{' '}
+                <b className="text-slate-800">{MODEL_NAME[comparison.better_calibrated]}</b>
+                <span className="text-slate-400">
+                  {' '}on log loss, where lower is a more honest confidence
+                </span>
+              </div>
+            </div>
+            <p className="mt-2 rounded-lg bg-slate-50 p-2 text-[12px] leading-snug text-slate-600">
+              {comparison.verdict}
+            </p>
+            <p className="mt-1.5 text-[11px] leading-snug text-slate-400">
+              {comparison.n_test} held-out cases · deep ensemble of{' '}
+              {comparison.deep_ensemble.members} networks. {comparison.caveat}
+            </p>
+          </>
+        )}
+      </div>
+    </details>
+  )
+}
+
+/** The deep ensemble asked the same question, on the same ear.
+ *
+ * This is a second opinion and nothing more. The forest is the primary
+ * classifier because it is the better calibrated of the two, so where the two
+ * models agree that is reassurance rather than confirmation, and where they
+ * disagree the useful conclusion is about the CASE, not about the models: two
+ * classifiers trained on the same data part company on inputs that sit near a
+ * decision boundary, and a boundary case is one a human should look at. The
+ * ensemble is never shown as the tiebreaker, because being the second number
+ * on screen is not evidence of being the right one.
+ */
+function SecondOpinion({ side, ear, forest }) {
+  const [deep, setDeep] = useState(null)
+  const [unavailable, setUnavailable] = useState(null)
+
+  useEffect(() => {
+    if (!ear) return undefined
+    let cancelled = false
+    setDeep(null)
+    setUnavailable(null)
+    api.deepPredict({ ac: ear.ac || {}, bc: ear.bc || {} })
+      .then((d) => { if (!cancelled) setDeep(d) })
+      // The endpoint answers 503 on an install where the ensemble was never
+      // trained. That is a missing optional model, not a failure of the case,
+      // so it degrades to a quiet line rather than an error.
+      .catch((e) => { if (!cancelled) setUnavailable(e.message || 'not available') })
+    return () => { cancelled = true }
+  }, [ear, side])
+
+  if (!ear) return null
+
+  return (
+    <details className="mt-2 border-t border-slate-100 pt-2">
+      <summary className="cursor-pointer text-[12px] font-medium text-teal-700">
+        Second opinion from the deep ensemble
+      </summary>
+      <div className="mt-2">
+        {unavailable && (
+          <p className="text-[11.5px] leading-snug text-slate-500">
+            Unavailable on this install — the deep ensemble is not trained
+            ({unavailable}). The classification above stands on the forest alone.
+          </p>
+        )}
+        {!unavailable && !deep && (
+          <p className="text-[11.5px] text-slate-400">Asking the ensemble…</p>
+        )}
+        {deep && (() => {
+          const agrees = deep.pattern === forest?.pattern
+          return (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                  agrees ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>
+                  {agrees ? 'agrees' : 'disagrees'}
+                </span>
+                <span className={`text-[12px] font-semibold ${
+                  side === 'right' ? 'text-red-600' : 'text-blue-600'}`}>
+                  {side} ear
+                </span>
+                <span className="text-[12px] text-slate-700">
+                  ensemble reads <b>{prettyPattern(deep.pattern)}</b> at{' '}
+                  {Math.round(deep.confidence * 100)}%
+                </span>
+              </div>
+
+              <p className={`mt-1.5 rounded-lg px-2.5 py-1.5 text-[12px] leading-snug ${
+                agrees ? 'bg-slate-50 text-slate-600' : 'bg-amber-50 text-amber-900'}`}>
+                {agrees ? (
+                  <>
+                    Five independently initialised networks reach the same pattern
+                    as the forest. Both models learned the same synthetic
+                    generator, so agreement is consistency rather than
+                    corroboration — it does not make the label more likely to be
+                    clinically correct.
+                  </>
+                ) : (
+                  <>
+                    The forest reads <b>{prettyPattern(forest?.pattern)}</b> and the
+                    ensemble reads <b>{prettyPattern(deep.pattern)}</b>. Two models
+                    trained on the same data part company on cases near a decision
+                    boundary, so this audiogram is ambiguous in shape and warrants
+                    human review. The ensemble is not a tiebreaker and does not
+                    overturn the call above — the forest remains primary because it
+                    is the better calibrated of the two.
+                  </>
+                )}
+              </p>
+
+              <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11.5px] text-slate-600">
+                <dt className="text-slate-400">Predictive entropy</dt>
+                <dd className="text-right">
+                  {deep.entropy}
+                  <span className="text-slate-400">
+                    {' '}({Math.round(deep.entropy_normalized * 100)}% of maximum)
+                  </span>
+                </dd>
+                <dt className="text-slate-400">Epistemic (member spread)</dt>
+                <dd className="text-right">{deep.epistemic_uncertainty}</dd>
+                <dt className="text-slate-400">Member disagreement</dt>
+                <dd className="text-right">{deep.member_disagreement}</dd>
+              </dl>
+
+              {deep.novel_input && (
+                <p className="mt-1.5 rounded-lg bg-rose-50 px-2.5 py-1.5 text-[11.5px] leading-snug text-rose-900">
+                  The networks disagree with <i>each other</i> here, which is the
+                  signature of an input unlike anything in training. Treat both
+                  models&rsquo; labels as unsupported on this audiogram.
+                </p>
+              )}
+
+              <p className="mt-1.5 text-[11px] leading-snug text-slate-400">
+                Ensemble of {deep.ensemble_size} networks over the same features as
+                the forest. Trained on synthetic audiograms, so neither model has
+                been shown to be accurate on real patients — see /api/validate.
+              </p>
+            </>
+          )
+        })()}
+      </div>
+    </details>
+  )
+}
+
 const EarRow = ({ side, color, children }) => (
   <div className="flex items-start gap-2 py-1">
     <span className={`mt-0.5 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${color}`}>{side}</span>
@@ -111,7 +351,7 @@ const EarRow = ({ side, color, children }) => (
 )
 
 export default function Dashboard() {
-  const { analysis, showToast } = useApp()
+  const { analysis, otoscopy, showToast } = useApp()
   const [bundle, setBundle] = useState(null)
   const [loadingReport, setLoadingReport] = useState(false)
   const [tab, setTab] = useState('report')
@@ -266,7 +506,7 @@ export default function Dashboard() {
 
       {/* safety alerts — these outrank everything else on the page */}
       {analysis.safety?.alerts?.length > 0 && (
-        <div className="mb-4 space-y-2">
+        <div className="mb-4 space-y-2" data-tour="safety-alerts">
           {analysis.safety.alerts.map((a, i) => {
             const style = {
               emergency: 'border-rose-300 bg-rose-50 text-rose-900',
@@ -331,7 +571,7 @@ export default function Dashboard() {
             </div>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2" data-tour="report-actions">
           <Link to="/simulator"
             className="rounded-lg border border-slate-300 px-4 py-2 text-[13px] font-semibold text-slate-700 transition hover:border-teal-400 hover:text-teal-700">
             🎧 Hear as this patient
@@ -351,6 +591,15 @@ export default function Dashboard() {
             {pdfBusy ? 'Building…' : '⬇ PDF Report'}
           </button>
         </div>
+      </div>
+
+      {/* Whether this workup is finished, and what to run next. It sits above
+          every panel that reports a single modality because a clinician needs
+          to know the battery is incomplete before reading any one result as an
+          answer — a conductive loss with no tympanogram is not a diagnosis, and
+          the evidence below reads as more settled than it is without this. */}
+      <div className="mt-5" data-tour="diagnostic-picture">
+        <DiagnosticPicture analysis={analysis} />
       </div>
 
       <div className="mt-5 grid gap-5 xl:grid-cols-3">
@@ -417,7 +666,7 @@ export default function Dashboard() {
 
         {/* side cards */}
         <div className="space-y-4">
-          <Card title="AI Pattern Classification"
+          <Card title="AI Pattern Classification" tour="ml-explain"
             badge={ml?.right?.ood || ml?.left?.ood ? (
               <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">
                 atypical — review
@@ -489,6 +738,19 @@ export default function Dashboard() {
                 </details>
               )
             })()}
+
+            {/* The same ear the explanation above is about, put to the other
+                model. Their disagreement is the part worth reading. */}
+            {(() => {
+              const side = ml?.[cochleaEar] ? cochleaEar : ml?.right ? 'right' : 'left'
+              const m = ml?.[side]
+              if (!m) return null
+              return (
+                <SecondOpinion side={side} ear={analysis.thresholds?.[side]} forest={m} />
+              )
+            })()}
+
+            <ModelComparison />
           </Card>
 
           <Card title="Degree (WHO 2021)">
@@ -601,7 +863,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          <Card title="Cochlear damage map"
+          <Card title="Cochlear damage map" tour="cochlea"
             badge={
               <div className="flex rounded-lg bg-slate-100 p-0.5">
                 {['right', 'left'].map((e) => (
@@ -622,7 +884,7 @@ export default function Dashboard() {
             </p>
           </Card>
 
-          <Card title="Disability (RPwD Act 2016)"
+          <Card title="Disability (RPwD Act 2016)" tour="disability"
             badge={disability?.benchmark_disability ? (
               <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">benchmark ≥40%</span>
             ) : null}>
@@ -655,8 +917,12 @@ export default function Dashboard() {
           that interprets them, because an unmasked threshold past the
           crossover point is not a measurement of the test ear at all. */}
       {analysis.safety?.masking_review && (
-        <div className="mt-5">
-          <MaskingPanel review={analysis.safety.masking_review} />
+        <div className="mt-5" data-tour="masking">
+          {/* The thresholds go in as well as the plan, so the panel can ask
+              the masking service what a different transducer would change
+              without the whole analysis being re-run. */}
+          <MaskingPanel review={analysis.safety.masking_review}
+            thresholds={analysis.thresholds} />
         </div>
       )}
 
@@ -666,7 +932,7 @@ export default function Dashboard() {
         <DiseaseAudiogram analysis={analysis} side={cochleaEar} />
       </div>
 
-      <div className="mt-5">
+      <div className="mt-5" data-tour="linkage">
         <LinkagePanel side={cochleaEar} />
       </div>
 
@@ -779,6 +1045,15 @@ export default function Dashboard() {
           ) : null}
         </div>
       )}
+
+      {/* What the patient is shown while it is explained to them. It sits
+          directly above the counseling sheet because that is the order the
+          conversation runs in: play the clip, then hand over the sheet. The
+          ear follows the same selector as every other per-ear panel. */}
+      <div className="mt-5">
+        <EarAnatomyVideo analysis={analysis} otoscopy={otoscopy}
+          side={cochleaEar} onSideChange={setCochleaEar} />
+      </div>
 
       {/* report + counseling */}
       <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white shadow-sm">
