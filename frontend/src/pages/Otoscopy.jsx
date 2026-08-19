@@ -207,6 +207,15 @@ export default function Otoscopy() {
             a time. Use the ranked list, not the headline.
           </p>
         )}
+
+        {/* Unconditional, unlike the measured figures above — those only render
+            once the model card loads, and this caveat has to hold whether or
+            not it does. */}
+        <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+          <span className="font-semibold text-slate-600">Note:</span> these
+          results are not yet reliable, because the training set is small. The
+          accuracy will improve in further iterations of the software.
+        </p>
       </div>
 
       {/* --- result ------------------------------------------------------ */}
