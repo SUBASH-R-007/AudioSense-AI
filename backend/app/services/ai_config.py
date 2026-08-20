@@ -12,7 +12,11 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+from app.services.state_paths import state_dir
+
+# Writable state. Resolved through state_paths so a deployment can move it
+# onto a volume that survives a redeploy; unset, this is the original path.
+DATA_DIR = state_dir()
 CONFIG_PATH = DATA_DIR / "ai_config.json"
 
 PROVIDERS = {
