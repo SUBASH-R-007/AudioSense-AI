@@ -10,7 +10,7 @@
 // 5.4 ms at 90 dB nHL and near 7.5 ms at 20 dB — an absolute latency without
 // its intensity cannot be judged.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Bar, BarChart, CartesianGrid, ComposedChart, ErrorBar, Legend, Line,
   ReferenceArea, ReferenceLine, ResponsiveContainer, Scatter, Tooltip,
@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 import { api } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
+import StepNav from '../components/StepNav.jsx'
 
 const EAR_TONE = { right: '#dc2626', left: '#2563eb' }
 
@@ -76,9 +77,10 @@ function Notes({ items }) {
   )
 }
 
-function Panel({ title, right, children }) {
+function Panel({ title, right, children, tour }) {
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+      data-tour={tour}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-[15px] font-semibold text-slate-900">{title}</h2>
         {right}
@@ -107,9 +109,18 @@ function Presets({ options, active, onPick }) {
 // ------------------------------------------------------------------- ABR ---
 function ABRSection({ ear, onResult }) {
   const { showToast } = useApp()
-  const [preset, setPreset] = useState(ABR_PRESETS[0])
+  // Each ear keeps its own run. The two ears are recorded separately in the
+  // booth, and a retrocochlear picture is one-sided by nature — carrying one
+  // ear's trace over to the other would make the interaural comparison
+  // meaningless before it was ever made.
+  const [presets, setPresets] = useState(
+    { right: ABR_PRESETS[0], left: ABR_PRESETS[0] })
+  const preset = presets[ear]
   const [result, setResult] = useState(null)
   const [ladder, setLadder] = useState(null)
+
+  const pickPreset = useCallback(
+    (p) => setPresets((prev) => ({ ...prev, [ear]: p })), [ear])
 
   useEffect(() => {
     let cancelled = false
@@ -146,13 +157,14 @@ function ABRSection({ ear, onResult }) {
   return (
     <Panel
       title="ABR — eighth nerve and brainstem"
+      tour="abr-latency"
       right={result && (
         <span className="text-[11.5px] text-slate-500">
           compared against the {result.norm_row_db_nhl} dB nHL row
         </span>
       )}
     >
-      <Presets options={ABR_PRESETS} active={preset.label} onPick={setPreset} />
+      <Presets options={ABR_PRESETS} active={preset.label} onPick={pickPreset} />
 
       {result && (
         <>
@@ -341,17 +353,40 @@ function MLRSection({ ear, onResult }) {
 
 // ------------------------------------------------------------------- LLR ---
 function LLRSection({ ear, onResult }) {
+  const { patient } = useApp()
   const [preset, setPreset] = useState(LLR_PRESETS[0])
   const [result, setResult] = useState(null)
+  // P1 is the one measurement on this page that cannot be read without the
+  // age. The maturation table expects 140 ms in infancy and 55 ms after
+  // puberty, so the same 120 ms peak is age-appropriate in a toddler and the
+  // marker of an unstimulated cortex in an adult — the finding that decides
+  // cochlear-implant candidacy. The recorded patient governs; a preset's own
+  // age is only the fallback when the page is used standalone, with nobody
+  // registered. The API takes months, so years are converted here.
+  const recorded = Number(patient?.age)
+  const recordedMonths = patient?.age == null || patient.age === '' || Number.isNaN(recorded)
+    ? null : Math.round(recorded * 12)
+  const [ageMonths, setAgeMonths] = useState(recordedMonths ?? LLR_PRESETS[0].age)
+
+  useEffect(() => {
+    if (recordedMonths != null) setAgeMonths(recordedMonths)
+  }, [recordedMonths])
+
+  // Picking a preset carries its scenario age only when there is no patient to
+  // contradict it; otherwise the waveform is being judged for this patient.
+  const pickPreset = useCallback((p) => {
+    setPreset(p)
+    if (recordedMonths == null) setAgeMonths(p.age)
+  }, [recordedMonths])
 
   useEffect(() => {
     let cancelled = false
     api.llr({ ear, peaks: preset.peaks, amplitudes: { 'N1-P2': preset.amp },
-      age_months: preset.age })
+      age_months: ageMonths === '' ? null : Number(ageMonths) })
       .then((r) => { if (!cancelled) { setResult(r); onResult?.(r) } })
       .catch(() => { if (!cancelled) setResult(null) })
     return () => { cancelled = true }
-  }, [ear, preset, onResult])
+  }, [ear, preset, ageMonths, onResult])
 
   const maturation = result?.maturation
 
@@ -364,7 +399,32 @@ function LLRSection({ ear, onResult }) {
         </Chip>
       )}
     >
-      <Presets options={LLR_PRESETS} active={preset.label} onPick={setPreset} />
+      <Presets options={LLR_PRESETS} active={preset.label} onPick={pickPreset} />
+
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <label className="text-[12px]">
+          <span className="mb-1 block font-medium text-slate-600">Age (months)</span>
+          <input type="number" min="0" step="1" value={ageMonths}
+            onChange={(e) => setAgeMonths(e.target.value)}
+            className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
+        </label>
+        <p className="self-end pb-1 text-[10.5px] leading-snug sm:col-span-3">
+          {recordedMonths == null ? (
+            <span className="text-slate-400">
+              No patient recorded, so P1 is judged against the age set here.
+            </span>
+          ) : Number(ageMonths) !== recordedMonths ? (
+            <span className="text-amber-700">
+              Recorded age is {recorded} {recorded === 1 ? 'year' : 'years'}{' '}
+              ({recordedMonths} months). P1 is being judged against a different age.
+            </span>
+          ) : (
+            <span className="text-slate-400">
+              From the recorded age of {recorded} {recorded === 1 ? 'year' : 'years'}.
+            </span>
+          )}
+        </p>
+      </div>
 
       {result && (
         <>
@@ -411,27 +471,252 @@ function LLRSection({ ear, onResult }) {
   )
 }
 
+// ------------------------------------------------------- interaural Wave V ---
+// The battery and the asymmetry screen both re-send the run rather than the
+// preset that produced it, so what is judged is what was actually recorded.
+const abrRun = (r) => ({
+  intensity_db_nhl: r.intensity_db_nhl,
+  waves: Object.fromEntries(r.absolute.filter((w) => w.present)
+    .map((w) => [w.wave, w.latency])),
+  latencies_include_delay: false,
+})
+
+const hasWaveV = (r) =>
+  Boolean(r?.absolute?.some((w) => w.wave === 'V' && w.present))
+
+function AsymmetrySection({ right, left }) {
+  const [result, setResult] = useState(null)
+  const ready = hasWaveV(right) && hasWaveV(left)
+
+  useEffect(() => {
+    if (!ready) { setResult(null); return undefined }
+    let cancelled = false
+    api.abrAsymmetry({ ear: 'right', ...abrRun(right) },
+      { ear: 'left', ...abrRun(left) })
+      .then((a) => { if (!cancelled) setResult(a) })
+      .catch(() => { if (!cancelled) setResult(null) })
+    return () => { cancelled = true }
+  }, [ready, right, left])
+
+  return (
+    <Panel
+      title="Interaural Wave V — retrocochlear screen"
+      right={result?.available !== false && result && (
+        <Chip tone={result.significant ? 'bad' : 'good'}>
+          {result.significant ? 'asymmetric' : 'symmetric'}
+        </Chip>
+      )}
+    >
+      {!ready && (
+        <p className="mt-2 text-[12.5px] leading-relaxed text-slate-500">
+          Record an ABR with an identifiable Wave V in both ears — switch the ear
+          above and choose a preset for the other side. The comparison needs two
+          traces; a single ear cannot be asymmetric with itself.
+        </p>
+      )}
+
+      {ready && result?.available === false && (
+        <p className="mt-2 text-[12.5px] leading-relaxed text-slate-500">{result.note}</p>
+      )}
+
+      {ready && result && result.available !== false && (
+        <>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <div className="rounded-xl border border-slate-200 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-red-600">
+                Right Wave V
+              </div>
+              <div className="mt-0.5 font-mono text-[15px] text-slate-800">
+                {result.right_wave_v} ms
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-600">
+                Left Wave V
+              </div>
+              <div className="mt-0.5 font-mono text-[15px] text-slate-800">
+                {result.left_wave_v} ms
+              </div>
+            </div>
+            <div className={`rounded-xl border p-3 ${
+              result.significant ? 'border-rose-300 bg-rose-50'
+                : 'border-emerald-200 bg-emerald-50/50'}`}>
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Difference
+              </div>
+              <div className="mt-0.5 font-mono text-[15px] text-slate-800">
+                {result.difference} ms
+              </div>
+              <div className="text-[10.5px] text-slate-500">
+                criterion {result.criterion} ms
+              </div>
+            </div>
+          </div>
+
+          <p className={`mt-3 rounded-lg border px-3 py-2 text-[12.5px] leading-relaxed ${
+            result.significant ? 'border-rose-300 bg-rose-50 text-rose-900'
+              : 'border-emerald-300 bg-emerald-50 text-emerald-900'}`}>
+            {result.message}
+            {result.poorer_ear && (
+              <>
+                {' '}The later response is on the{' '}
+                <span className={`font-semibold ${
+                  result.poorer_ear === 'right' ? 'text-red-600' : 'text-blue-600'}`}>
+                  {result.poorer_ear}
+                </span>.
+              </>
+            )}
+          </p>
+
+          {/* An asymmetry beyond the criterion says the two sides conduct
+              differently, not why. It raises the question of a lesion on the
+              eighth nerve or in the brainstem; only imaging answers it. */}
+          <p className="mt-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-[11.5px] leading-relaxed text-slate-700">
+            <span className="font-semibold">A screen, not a diagnosis.</span> A
+            difference beyond {result.criterion} ms means the later ear should be
+            investigated for retrocochlear pathology — typically with MRI of the
+            internal auditory meati — not that a tumour is present. It is also
+            blind to a bilateral lesion, which delays both ears equally and
+            leaves this comparison looking normal, and it is only interpretable
+            when the two ears were recorded at the same intensity and hearing
+            loss is not itself shifting Wave V on one side.
+          </p>
+        </>
+      )}
+    </Panel>
+  )
+}
+
+// -------------------------------------------------------------- reference ---
+function ReferenceSection() {
+  const [reference, setReference] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api.aepReference()
+      .then((r) => { if (!cancelled) setReference(r) })
+      .catch(() => { if (!cancelled) setReference(null) })
+    return () => { cancelled = true }
+  }, [])
+
+  if (!reference?.abr) return null
+  const { protocol, norms, note, insert_delay_ms: insertDelay,
+    interaural_v_criterion_ms: interaural } = reference.abr
+
+  const cell = (v) => (v ? (
+    <>
+      <span className="font-mono">{v.mean.toFixed(2)}</span>
+      <span className="text-slate-400"> ± {v.sd.toFixed(2)}</span>
+      <span className="ml-1 text-[10px] text-slate-300">n={v.n}</span>
+    </>
+  ) : <span className="text-slate-300">—</span>)
+
+  return (
+    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+      <details>
+        <summary className="cursor-pointer text-[12.5px] font-medium text-teal-700">
+          The ABR normative table and protocol these judgements are made against
+        </summary>
+
+        <div className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Absolute and interwave latencies by stimulus intensity
+        </div>
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-[12px]">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wide text-slate-400">
+                <th className="py-1 pr-3 font-medium">dB nHL</th>
+                <th className="py-1 pr-3 font-medium">Peak SPL</th>
+                <th className="py-1 pr-3 font-medium">Wave I</th>
+                <th className="py-1 pr-3 font-medium">Wave III</th>
+                <th className="py-1 pr-3 font-medium">Wave V</th>
+                <th className="py-1 font-medium">I–V</th>
+              </tr>
+            </thead>
+            <tbody>
+              {norms.map((row) => (
+                <tr key={row.intensity_db_nhl} className="border-t border-slate-100">
+                  <td className="py-1.5 pr-3 font-semibold text-slate-700">
+                    {row.intensity_db_nhl}
+                  </td>
+                  <td className="py-1.5 pr-3 font-mono text-slate-500">{row.psp_db}</td>
+                  <td className="py-1.5 pr-3 text-slate-600">{cell(row.waves.I)}</td>
+                  <td className="py-1.5 pr-3 text-slate-600">{cell(row.waves.III)}</td>
+                  <td className="py-1.5 pr-3 text-slate-600">{cell(row.waves.V)}</td>
+                  <td className="py-1.5 text-slate-600">{cell(row.interwave['I-V'])}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+          Mean ± one standard deviation in milliseconds, with the number of
+          subjects contributing each value. {note}
+        </p>
+        {/* A thin row is a weak norm. Wave I disappears below 40 dB nHL in most
+            ears, so a missing early wave near threshold is expected rather than
+            a finding — the n column is what makes that visible. */}
+        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+          Where n is small the row rests on very few ears, and a wave missing at
+          that level is unremarkable. The table is from normal-hearing young
+          adult females; it is not age- or sex-corrected, so it understates
+          normal latency in older ears and in males.
+        </p>
+
+        <div className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Recording protocol
+        </div>
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          {[
+            ['Stimulus', protocol.stimulus],
+            ['Recording window', `${protocol.recording_window_ms} ms`],
+            ['Clinically useful waves', protocol.clinically_useful_waves.join(', ')],
+            ['Threshold wave', protocol.threshold_wave],
+            ['Typical intensities',
+              `${protocol.typical_intensities_db_nhl.join(' and ')} dB nHL`],
+            ['Click rate', `${protocol.click_rates_per_s.join(' and ')} per second`],
+            ['Expected amplitude',
+              `${protocol.amplitude_uv[0]}–${protocol.amplitude_uv[1]} µV`],
+            ['Insert-earphone delay', `${insertDelay} ms`],
+            ['Interaural Wave V criterion', `${interaural} ms`],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-lg bg-slate-50 px-2.5 py-2">
+              <div className="text-[10.5px] font-medium text-slate-500">{label}</div>
+              <div className="mt-0.5 text-[12.5px] text-slate-800">{value}</div>
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
+          {protocol.note}
+        </p>
+      </details>
+    </div>
+  )
+}
+
 // --------------------------------------------------------------- the page ---
 export default function EvokedPotentials() {
+  const { setAep } = useApp()
   const [ear, setEar] = useState('right')
-  const [abr, setAbr] = useState(null)
+  // Both ears are held, not just the one on screen, because the interaural
+  // Wave V comparison needs the ear the clinician is not currently looking at.
+  const [abrByEar, setAbrByEar] = useState({})
   const [mlr, setMlr] = useState(null)
   const [llr, setLlr] = useState(null)
   const [battery, setBattery] = useState(null)
 
+  const handleAbr = useCallback(
+    (r) => setAbrByEar((prev) => ({ ...prev, [r.ear]: r })), [])
+  const abr = abrByEar[ear]
+
   // The battery is recomputed from the three current results, because its
   // whole value is comparative — which level is abnormal with which below it.
   useEffect(() => {
-    if (!abr && !mlr && !llr) return
+    if (!abr && !mlr && !llr) return undefined
     let cancelled = false
     const level = (r, fields) => (r ? fields(r) : undefined)
     api.aepBattery({
-      abr: level(abr, (r) => ({
-        ear: r.ear, intensity_db_nhl: r.intensity_db_nhl,
-        waves: Object.fromEntries(r.absolute.filter((w) => w.present)
-          .map((w) => [w.wave, w.latency])),
-        latencies_include_delay: false,
-      })),
+      abr: level(abr, (r) => ({ ear: r.ear, ...abrRun(r) })),
       mlr: level(mlr, (r) => ({
         ear: r.ear,
         peaks: Object.fromEntries(r.peaks.filter((p) => p.present)
@@ -444,10 +729,18 @@ export default function EvokedPotentials() {
           .map((p) => [p.peak, p.latency])),
       })),
     })
-      .then((b) => { if (!cancelled) setBattery(b) })
+      .then((b) => {
+        if (cancelled) return
+        setBattery(b)
+        // Only the battery leaves this page. It is the conclusion the three
+        // recordings exist to produce, and it is what the dashboard needs to
+        // stop counting evoked potentials as never performed; the individual
+        // waveforms are working detail and would only bloat the stored case.
+        setAep(b?.available ? b : null)
+      })
       .catch(() => { if (!cancelled) setBattery(null) })
     return () => { cancelled = true }
-  }, [abr, mlr, llr])
+  }, [abr, mlr, llr, setAep])
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -475,7 +768,8 @@ export default function EvokedPotentials() {
       </header>
 
       {battery?.available && (
-        <div className="mt-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+        <div className="mt-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+          data-tour="aep-battery">
           <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
             Where along the pathway
           </h2>
@@ -511,10 +805,14 @@ export default function EvokedPotentials() {
       )}
 
       <div className="mt-5 space-y-5">
-        <ABRSection ear={ear} onResult={setAbr} />
+        <ABRSection ear={ear} onResult={handleAbr} />
+        <AsymmetrySection right={abrByEar.right} left={abrByEar.left} />
         <MLRSection ear={ear} onResult={setMlr} />
         <LLRSection ear={ear} onResult={setLlr} />
+        <ReferenceSection />
       </div>
+
+      <StepNav stepKey="aep" />
     </div>
   )
 }

@@ -1,20 +1,80 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, FREQ_LABELS } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
 import BOAPanel from '../components/BOAPanel.jsx'
+import TuningForkPanel from '../components/TuningForkPanel.jsx'
 import ThresholdGrid from '../components/ThresholdGrid.jsx'
+import ScreeningRunner from '../components/ScreeningRunner.jsx'
+import StepNav from '../components/StepNav.jsx'
 
 const EMPTY = () => ({ right: { ac: {}, bc: {} }, left: { ac: {}, bc: {} } })
 
+const ONSET_LABELS = {
+  unknown: 'Not recorded',
+  gradual: 'Gradual',
+  sudden: 'Sudden (within 72 h)',
+  congenital: 'Present since birth',
+}
+
+const PROCEDURE_LABELS = {
+  bayesian: 'Bayesian adaptive procedure',
+  staircase: 'modified Hughson-Westlake staircase',
+}
+
+/**
+ * Per-cell confidence for a screening run, in the shape ThresholdGrid reads:
+ * confidence[ear][cond][freq] as a number in 0–1, badged on the cell and drawn
+ * amber below 0.7.
+ *
+ * A badge answers "how far should this number be trusted before it is used",
+ * which for a screening run has two separate limits — and only one of them can
+ * be expressed per cell at all.
+ *
+ * What varies per cell is how well the procedure pinned each threshold, and the
+ * two procedures differ: the Bayesian estimator stops on a credible interval and
+ * so knows when it is done, while the staircase returns a bare number with no
+ * error bar. A run the catch trials flagged unreliable is worse than either,
+ * because the patient was responding to silence.
+ *
+ * What cannot be expressed per cell is the calibration: the whole scale was
+ * anchored by ear on consumer headphones, so every value may share the same
+ * 10–15 dB offset from ISO 389. A systematic offset is invisible in a per-cell
+ * number, which is why no screening cell is allowed above the grid's 0.7
+ * review-this line, and why the banner states the limit in words as well.
+ */
+const screeningConfidence = (right, left, procedure, reliability) => {
+  const per = reliability && !reliability.reliable
+    ? 0.3
+    : procedure === 'bayesian' ? 0.6 : 0.5
+  const mark = (ac) => Object.fromEntries(Object.keys(ac).map((f) => [f, per]))
+  // Bone conduction is left unbadged because it is left unmeasured — a badge on
+  // an empty cell would suggest the screening had an opinion about it.
+  return {
+    right: { ac: mark(right), bc: {} },
+    left: { ac: mark(left), bc: {} },
+  }
+}
+
+/** One read-only fact in the patient strip. */
+function Fact({ label, value }) {
+  return (
+    <div>
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        {label}
+      </div>
+      <div className="mt-0.5 text-[13px] text-slate-800">{value || '—'}</div>
+    </div>
+  )
+}
+
 export default function NewTest() {
   const navigate = useNavigate()
-  const { setAnalysis, showToast } = useApp()
-  const [patient, setPatient] = useState({
-    name: '', age: 40, sex: 'male', occupation: '',
-    test_date: new Date().toISOString().slice(0, 10),
-    onset: 'unknown', symptoms: [],
-  })
+  // The patient is captured once on /patient and read from the store here. It
+  // used to be typed into this form, halfway through the battery, so the
+  // screens before it could not see the age — and the age is what selects the
+  // normative bands every other test is judged against.
+  const { patient, setPatient, setAnalysis, showToast } = useApp()
   const [thresholds, setThresholds] = useState(EMPTY())
   const [speech, setSpeech] = useState({
     right: { sdt: '', srt: '', wrs: '', wrsLevel: '', nWords: '25' },
@@ -36,6 +96,11 @@ export default function NewTest() {
   const [demoCases, setDemoCases] = useState([])
   const [digitizing, setDigitizing] = useState(false)
   const [digitizeInfo, setDigitizeInfo] = useState(null)
+  // screeningOpen is the run in progress; screeningInfo is the provenance of the
+  // values now sitting in the grid, and outlives the run because the operator
+  // has to keep seeing what these thresholds are.
+  const [screeningOpen, setScreeningOpen] = useState(false)
+  const [screeningInfo, setScreeningInfo] = useState(null)
   const [analyzing, setAnalyzing] = useState(false)
   const fileRef = useRef(null)
 
@@ -80,6 +145,9 @@ export default function NewTest() {
     setBattery({ right: batteryOf(c.record.right), left: batteryOf(c.record.left) })
     setConfidence(null)
     setDigitizeInfo(null)
+    // Where the numbers came from has to be replaced along with the numbers, or
+    // a demo case inherits the last run's screening warning.
+    setScreeningInfo(null)
   }
 
   const onPhoto = async (file) => {
@@ -97,6 +165,7 @@ export default function NewTest() {
         })
         setConfidence(res.confidence)
         setDigitizeInfo(res)
+        setScreeningInfo(null)
       }
     } catch (e) {
       showToast(`Digitize failed: ${e.message}`, 'error')
@@ -104,7 +173,29 @@ export default function NewTest() {
     setDigitizing(false)
   }
 
+  // The measured run lands in the AC rows and nowhere else. Bone conduction is
+  // cleared rather than carried over, because a screening cannot measure it: a
+  // BC row left over from a demo case or an earlier photo, sitting under freshly
+  // screened AC values, would read as an air-bone gap that nobody tested for.
+  // The analysis then reports the type as provisional, which is the truth.
+  const onScreeningComplete = ({ right, left, reliability, procedure }) => {
+    setThresholds({
+      right: { ac: { ...right }, bc: {} },
+      left: { ac: { ...left }, bc: {} },
+    })
+    setConfidence(screeningConfidence(right, left, procedure, reliability))
+    setScreeningInfo({ procedure, reliability })
+    setDigitizeInfo(null)
+    setScreeningOpen(false)
+  }
+
   const analyze = async () => {
+    // Analysing without demographics loses the age for good, and the age is what
+    // selects the normative bands downstream — so this refuses rather than
+    // quietly assuming an adult.
+    if (!patient) {
+      return showToast('Enter the patient first — the age selects the normative bands', 'warn')
+    }
     const hasData = Object.keys(thresholds.right.ac).length || Object.keys(thresholds.left.ac).length
     if (!hasData) return showToast('Enter at least one air-conduction threshold', 'warn')
     setAnalyzing(true)
@@ -140,7 +231,18 @@ export default function NewTest() {
           ...(oae.length ? { oae } : {}),
         }
       }
-      const result = await api.analyze({ patient, transducer, ...built })
+      // The backend's PatientInfo takes exactly these fields; the store keeps
+      // no symptoms list, so it is sent empty rather than omitted.
+      const patientInfo = {
+        name: patient.name || '',
+        age: Number(patient.age),
+        sex: patient.sex || 'unspecified',
+        occupation: patient.occupation || '',
+        test_date: patient.test_date || null,
+        onset: patient.onset || 'unknown',
+        symptoms: patient.symptoms || [],
+      }
+      const result = await api.analyze({ patient: patientInfo, transducer, ...built })
       setAnalysis(result)
       navigate('/dashboard')
     } catch (e) {
@@ -150,13 +252,37 @@ export default function NewTest() {
   }
 
   const field = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20'
-  const label = 'text-[12px] font-medium text-slate-600'
+
+  // A screening run needs the operator watching the patient's hand, not a form.
+  // The rest of the page is taken off screen for the duration — an editable
+  // threshold grid beside a live run is an invitation to type into the row the
+  // run is about to overwrite, and the tone presentations are being timed by eye.
+  if (screeningOpen) {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <h1 className="text-xl font-semibold tracking-tight">Screening audiometry</h1>
+        <p className="mt-1 text-[13.5px] text-slate-500">
+          The rest of the form is hidden until this finishes. Accepting the run writes
+          the measured levels into the air-conduction rows and marks them as screening
+          values; cancelling leaves the form exactly as you left it.
+        </p>
+        <ScreeningRunner
+          onComplete={onScreeningComplete}
+          onCancel={() => setScreeningOpen(false)}
+          subjectLabel={patient?.name || undefined}
+          acceptLabel="Use these thresholds →"
+          busyLabel="Filling the grid…"
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="mx-auto max-w-5xl">
       <h1 className="text-xl font-semibold tracking-tight">New Audiometry Test</h1>
       <p className="mt-1 text-[13.5px] text-slate-500">
-        Enter thresholds manually, load a demo case, or snap-to-digitize a paper audiogram.
+        Type the thresholds in, snap-to-digitize a paper audiogram, or measure them
+        here on headphones. Or load a demo case.
       </p>
 
       {/* demo cases */}
@@ -169,50 +295,36 @@ export default function NewTest() {
         ))}
       </div>
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-3">
-        {/* patient details */}
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
-          <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">Patient</h2>
-          <div className="mt-3 space-y-3">
-            <label className="block"><span className={label}>Full name</span>
-              <input className={field} value={patient.name}
-                onChange={(e) => setPatient({ ...patient, name: e.target.value })} placeholder="Patient name" /></label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block"><span className={label}>Age</span>
-                <input type="number" min="0" max="120" className={field} value={patient.age}
-                  onChange={(e) => setPatient({ ...patient, age: +e.target.value })} /></label>
-              <label className="block"><span className={label}>Sex</span>
-                <select className={field} value={patient.sex}
-                  onChange={(e) => setPatient({ ...patient, sex: e.target.value })}>
-                  <option>male</option><option>female</option><option>other</option>
-                </select></label>
+      {/* Who this audiogram belongs to — read-only. The details are captured
+          once on /patient, and duplicating the inputs here is exactly how the
+          age used to end up recorded in two places and disagreeing. */}
+      {patient && (
+        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="grid flex-1 grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
+              <Fact label="Name" value={patient.name} />
+              <Fact label="Age" value={patient.age != null && patient.age !== '' ? `${patient.age} yr` : ''} />
+              <Fact label="Sex" value={patient.sex} />
+              <Fact label="Occupation" value={patient.occupation} />
+              <Fact label="Test date" value={patient.test_date} />
+              <Fact label="Onset" value={ONSET_LABELS[patient.onset] || patient.onset} />
             </div>
-            <label className="block"><span className={label}>Occupation</span>
-              <input className={field} value={patient.occupation}
-                onChange={(e) => setPatient({ ...patient, occupation: e.target.value })}
-                placeholder="e.g. Factory worker" /></label>
-            <label className="block"><span className={label}>Test date</span>
-              <input type="date" className={field} value={patient.test_date || ''}
-                onChange={(e) => setPatient({ ...patient, test_date: e.target.value })} /></label>
-            <label className="block">
-              <span className={label}>Onset of hearing loss</span>
-              <select className={field} value={patient.onset}
-                onChange={(e) => setPatient({ ...patient, onset: e.target.value })}>
-                <option value="unknown">Not recorded</option>
-                <option value="gradual">Gradual (months / years)</option>
-                <option value="sudden">Sudden (within 72 hours)</option>
-              </select>
-              {patient.onset === 'sudden' && (
-                <span className="mt-1 block text-[11px] font-medium text-rose-600">
-                  Sudden sensorineural loss is an emergency — steroids are time-critical.
-                </span>
-              )}
-            </label>
+            <Link to="/patient"
+              className="rounded-lg border border-slate-200 px-2.5 py-1 text-[12px] font-medium text-slate-600 transition hover:border-teal-400 hover:text-teal-700">
+              Edit
+            </Link>
           </div>
+          {patient.onset === 'sudden' && (
+            <p className="mt-3 text-[11px] font-medium text-rose-600">
+              Sudden sensorineural loss is an emergency — steroids are time-critical.
+            </p>
+          )}
         </div>
+      )}
 
+      <div className="mt-5">
         {/* digitize */}
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm lg:col-span-2"
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
           data-tour="digitize">
           <div className="flex items-center justify-between">
             <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
@@ -256,28 +368,135 @@ export default function NewTest() {
             </div>
           )}
         </div>
+
+        {/* Measure them here — the third way in, for a room with no audiometer.
+            It sits beside Snap-to-Digitize because both are ways of filling the
+            same grid from something other than a keyboard, and both hand back
+            values the operator is expected to review rather than trust. */}
+        <div className="mt-4 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+          data-tour="screening-launch">
+          <div className="flex items-center justify-between">
+            <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+              Measure thresholds here
+            </h2>
+            {screeningInfo && (
+              <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
+                screening values in grid
+              </span>
+            )}
+          </div>
+          <p className="mt-2 text-[12.5px] leading-relaxed text-slate-500">
+            No audiometer in the room? Run the browser screening on headphones — six
+            frequencies per ear, with silent catch trials — and the measured levels drop
+            straight into the air-conduction rows below, ready to be corrected and carried
+            through the rest of the battery.
+          </p>
+          {patient ? (
+            <button
+              onClick={() => setScreeningOpen(true)}
+              className="mt-3 rounded-xl bg-teal-600 px-5 py-2.5 text-[13.5px] font-semibold text-white shadow-sm shadow-teal-600/25 transition hover:bg-teal-700"
+            >
+              {screeningInfo ? 'Screen again →' : 'Start screening run →'}
+            </button>
+          ) : (
+            // Thresholds live in this page's state only. Sending the operator to
+            // /patient after a run would unmount the form and throw the whole
+            // measurement away, so the patient is captured before a tone is played.
+            <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 px-4 py-3 text-[12.5px] text-slate-600">
+              Enter the patient first — a run started now would be lost on the way to
+              recording who it belonged to.{' '}
+              <Link to="/patient" className="font-semibold text-teal-700 hover:underline">
+                Enter patient details →
+              </Link>
+            </div>
+          )}
+
+          {/* THE LIMIT, stated where the values are and left there. A toast would
+              be gone by the time anyone reads the audiogram. */}
+          {screeningInfo && (
+            <div className="mt-3 space-y-2">
+              <div className="rounded-lg bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-800">
+                <b>Screening thresholds — not a diagnostic audiogram.</b> These were
+                measured on uncalibrated consumer headphones against an anchor the
+                operator set by ear at 1 kHz, so the whole scale may sit 10–15 dB away
+                from ISO 389 dB HL: the <i>shape</i> of the loss is far more trustworthy
+                than its depth. Air conduction only and unmasked — the air-bone gap was
+                never measured, so conductive and sensorineural loss cannot be told
+                apart, and a threshold close to the other ear's may be that ear
+                responding. Confirm on a calibrated audiometer before diagnosing,
+                certifying, or fitting anything.
+                <div className="mt-1.5">
+                  Recorded by the {PROCEDURE_LABELS[screeningInfo.procedure]
+                    || screeningInfo.procedure}. Every screening-derived cell carries a
+                  confidence badge in the grid below — no screening value is badged above
+                  the review-this line, however cleanly it measured. Correct any of them
+                  by hand; the grid is what gets analysed.
+                </div>
+              </div>
+              {screeningInfo.reliability && (
+                <div className={`rounded-lg border px-3 py-2 text-[12.5px] ${
+                  screeningInfo.reliability.reliable
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                    : 'border-rose-300 bg-rose-50 text-rose-900'
+                }`}>
+                  <b>{screeningInfo.reliability.reliable
+                    ? 'Responses reliable' : 'Results unreliable'}</b>
+                  {' — '}{screeningInfo.reliability.message}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* thresholds */}
-      <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+      <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+        data-tour="threshold-grid">
         <div className="flex items-center justify-between">
           <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
             Thresholds (dB HL) — AC &amp; BC per ear
           </h2>
-          <button onClick={() => { setThresholds(EMPTY()); setConfidence(null) }}
-            className="text-[12px] font-medium text-slate-400 hover:text-rose-600">Clear all</button>
+          {patient && (
+            <button onClick={() => {
+              setThresholds(EMPTY()); setConfidence(null)
+              setScreeningInfo(null); setDigitizeInfo(null)
+            }}
+              className="text-[12px] font-medium text-slate-400 hover:text-rose-600">Clear all</button>
+          )}
         </div>
-        <div className="mt-3">
-          <ThresholdGrid thresholds={thresholds} onChange={setThresholds} confidence={confidence} />
-        </div>
-        <div className="mt-2 text-[11.5px] text-slate-400">
-          NR = No Response at audiometer limits. Leave blank if untested — analysis
-          proceeds cautiously and flags provisional results.
-        </div>
+        {patient ? (
+          <>
+            <div className="mt-3">
+              <ThresholdGrid thresholds={thresholds} onChange={setThresholds} confidence={confidence} />
+            </div>
+            <div className="mt-2 text-[11.5px] text-slate-400">
+              NR = No Response at audiometer limits. Leave blank if untested — analysis
+              proceeds cautiously and flags provisional results.
+            </div>
+          </>
+        ) : (
+          // Thresholds recorded against nobody cannot be given an age later —
+          // the record is filed without the one field the norms depend on.
+          <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 px-4 py-7 text-center">
+            <p className="text-[13px] font-medium text-slate-700">
+              No patient has been entered for this consultation yet.
+            </p>
+            <p className="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-slate-500">
+              The age decides which normative bands this audiogram and the rest of
+              the battery are judged against, so it is captured before any
+              thresholds are taken.
+            </p>
+            <Link to="/patient"
+              className="mt-4 inline-block rounded-lg bg-teal-600 px-4 py-1.5 text-[13px] font-semibold text-white shadow-sm transition hover:bg-teal-700">
+              Enter patient details →
+            </Link>
+          </div>
+        )}
       </div>
 
       {/* speech audiometry — the cross-check on the pure tones */}
-      <details className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+      <details className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+        data-tour="speech-masking">
         <summary className="cursor-pointer text-[13px] font-semibold uppercase tracking-wider text-slate-400">
           Speech audiometry &amp; masking <span className="ml-1 normal-case text-slate-400">(optional)</span>
         </summary>
@@ -340,10 +559,24 @@ export default function NewTest() {
         </div>
       </details>
 
+      {/* Tuning forks come before audiometry at the bedside, and their value
+          here is that the audiogram entered above can judge them: the gap the
+          forks imply is drawn against the gap actually measured. */}
+      <details className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+        data-tour="tuning-fork">
+        <summary className="cursor-pointer text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+          Tuning fork tests <span className="ml-1 normal-case text-slate-400">(Rinne, Weber, Bing, Schwabach)</span>
+        </summary>
+        <div className="mt-3">
+          <TuningForkPanel thresholds={thresholds} />
+        </div>
+      </details>
+
       {/* Behavioural observation sits under the pure-tone form because that
           is where paediatric audiometry starts — and because the mistake it
           invites is writing its levels into the threshold grid above. */}
-      <details className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+      <details className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+        data-tour="boa">
         <summary className="cursor-pointer text-[13px] font-semibold uppercase tracking-wider text-slate-400">
           Behavioural observation (BOA) <span className="ml-1 normal-case text-slate-400">(infants under 6 months)</span>
         </summary>
@@ -427,12 +660,19 @@ export default function NewTest() {
         </div>
       </details>
 
-      <div className="mt-6 flex justify-end">
-        <button onClick={analyze} disabled={analyzing}
+      <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+        {!patient && (
+          <span className="text-[12px] text-slate-500">
+            Enter the patient before analysing — the age selects the normative bands.
+          </span>
+        )}
+        <button onClick={analyze} disabled={analyzing || !patient}
           className="rounded-xl bg-teal-600 px-8 py-3 text-[15px] font-semibold text-white shadow-md shadow-teal-600/25 transition hover:bg-teal-700 disabled:opacity-50">
           {analyzing ? 'Analyzing…' : 'Analyze →'}
         </button>
       </div>
+
+      <StepNav stepKey="pure_tone" />
     </div>
   )
 }

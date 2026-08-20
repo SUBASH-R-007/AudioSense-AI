@@ -222,12 +222,113 @@ npm run preview          # :4173, already an allowed CORS origin
 
 ---
 
+## Access control — do this before the first deploy
+
+The instance holds patient records. It ships **locked**: with nothing
+configured, every API request is refused with a 503 rather than served. That is
+deliberate — an operator who forgets this section gets a support call, not a
+breach.
+
+**1. Create an account.** On your machine, in `backend/`:
+
+```bash
+python -m scripts.make_user clinician
+```
+
+It asks for a password twice, echoes nothing, and prints two values.
+
+**2. Put them in the backend's environment**, alongside `CORS_ORIGINS`:
+
+```
+AUDIOSENSE_USERS=clinician:pbkdf2_sha256$600000$....$....
+AUDIOSENSE_SECRET=<the long random value the script printed>
+```
+
+More people, same variable, comma-separated:
+
+```
+AUDIOSENSE_USERS=alice:pbkdf2_sha256$...,bob:pbkdf2_sha256$...
+```
+
+**3. Confirm it took.** After redeploying:
+
+```bash
+curl -s https://your-backend/api/auth/status
+```
+
+`{"mode":"protected", ...}` is what you want. `"locked"` means the variable did
+not arrive. `"anonymous"` means `AUDIOSENSE_ALLOW_ANONYMOUS` is set — remove it.
+
+Then check the door is actually shut:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}
+' https://your-backend/api/records/patients
+```
+
+`401` is correct. `200` means you are serving patient records to the internet.
+
+### What this does and does not do
+
+| | |
+|---|---|
+| Protected | Every API route, plus `/docs`, `/redoc` and `/openapi.json` |
+| Public by design | `/api/health` (uptime probes), `/api/auth/status`, `/api/auth/login`, `/` (banner), `/api/qr`, `/api/handout/{h}` and `/api/verify/{h}` (a patient opens these by scanning the QR on their printed report — protecting them would mean issuing patients accounts), `/api/otoscopy/image/...` (reference atlas photographs, no patient data, loaded as `<img>`) |
+| Sessions | Signed with `AUDIOSENSE_SECRET`, valid 12 hours, held in `sessionStorage` so they die with the browser tab |
+| Removing access | Delete the entry from `AUDIOSENSE_USERS` and restart. Their existing sessions stop working immediately — the token is re-checked against the account list on every request |
+| Revoking everything | Rotate `AUDIOSENSE_SECRET`. Every session everywhere is invalidated |
+
+**What it is not.** One shared account per role, no per-user audit trail, no
+password reset, no lockout that survives a restart, and no roles — everyone who
+signs in can see everything. It stops strangers; it does not tell two
+clinicians apart. Section 4 of [SCALING.md](SCALING.md) covers what a
+multi-clinic deployment needs beyond this.
+
+### The login throttle, and `AUDIOSENSE_TRUSTED_PROXIES`
+
+Eight failed logins for one account from one address make that pair wait five
+minutes. The counter is in-process, so it resets on restart and is not shared
+between replicas; it raises the cost of guessing rather than preventing it.
+
+The bucket is keyed on **(client address, username)**. The address half is
+taken from the socket, *not* from `X-Forwarded-For` — that header is written by
+the caller, and a throttle keyed on something the caller chooses is not a
+throttle. Honouring it unconditionally broke the control in both directions:
+rotating the header bought unlimited guesses, and setting it to somebody else's
+address filled *their* bucket and locked them out of their own instance.
+
+Behind a platform ingress (Hugging Face Spaces, Koyeb, a load balancer) every
+request arrives from the proxy, so the socket address is the same for everyone
+and the whole clinic would share one bucket. Set:
+
+```
+AUDIOSENSE_TRUSTED_PROXIES=10.0.0.1,10.0.0.2
+```
+
+to the ingress addresses. The header is then read only for requests that
+genuinely arrive from one of them, and only its **rightmost** entry — the hop
+that trusted proxy appended itself. The leftmost entry is whatever the client
+sent and is never used. Leave it unset when nothing sits in front of the app.
+
+**`/api/verify/{h}` still returns the patient's name** to anyone holding a valid
+report hash, because that is how someone checks a printout is genuine. The hash
+is 64 bits and not enumerable, but it is the one place a name is reachable
+without a login. Say so if that is unacceptable for your setting and it can be
+reduced to a yes/no.
+
+---
+
 ## Environment variables
 
 ### Backend
 
 | Variable | Required | Purpose |
 |---|---|---|
+| **`AUDIOSENSE_USERS`** | **yes in prod** | **Accounts. Without it the instance refuses every request.** `name:hash,name:hash` — mint each with `python -m scripts.make_user <name>` |
+| **`AUDIOSENSE_SECRET`** | **yes in prod** | **Session signing key.** Unset means a random key per process: sessions drop on restart and are not shared between replicas |
+| `AUDIOSENSE_SESSION_HOURS` | no | Session lifetime, default 12. Read at call time, so it works from `backend/.env` as well as from a real environment variable |
+| `AUDIOSENSE_ALLOW_ANONYMOUS` | **never in prod** | `1` disables the login entirely. For local development only |
+| `AUDIOSENSE_TRUSTED_PROXIES` | recommended behind a proxy | Peer addresses whose `X-Forwarded-For` may be believed, comma-separated. See below |
 | `PORT` | auto | Injected by the platform; the Dockerfile uses it |
 | `CORS_ORIGINS` | yes in prod | Comma-separated allowed origins |
 | `CORS_ORIGIN_REGEX` | no | Regex for preview domains |

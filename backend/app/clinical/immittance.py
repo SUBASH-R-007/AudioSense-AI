@@ -16,12 +16,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from app.clinical.tympanometry import (
-    COMPLIANCE_NORMAL_ADULT as COMPLIANCE_NORMAL,
-    ECV_NORMAL_ADULT as ECV_NORMAL,
-    PRESSURE_NORMAL,
-    classify,
-)
+from app.clinical.tympanometry import classify
 
 #: Acoustic reflex thresholds are normally 70-100 dB SL above threshold.
 REFLEX_SL_NORMAL = (70, 100)
@@ -87,9 +82,21 @@ def analyze_reflexes(
     }
 
 
-def analyze_immittance(ear, pta: Optional[float] = None) -> Optional[dict]:
-    """Full immittance review for one ear (EarData)."""
-    tymp = classify_tympanogram(ear.tymp_pressure, ear.tymp_compliance, ear.tymp_ecv)
+def analyze_immittance(ear, pta: Optional[float] = None,
+                       age_years: Optional[float] = None) -> Optional[dict]:
+    """Full immittance review for one ear (EarData).
+
+    ``age_years`` selects the normative band. Omitting it fell back to the
+    adult band, so a child's tympanogram analysed through the battery was
+    typed against adult norms while the standalone tympanometry page — which
+    does send the age — typed the same numbers differently. The child bands
+    are narrower (compliance 0.35–1.25 vs 0.37–1.66, ECV 0.3–1.0 vs 0.6–2.0),
+    and the divergence changes both the Jerger type and the Type B ECV split,
+    which is the difference between an effusion behind an intact drum and a
+    perforation.
+    """
+    tymp = classify_tympanogram(ear.tymp_pressure, ear.tymp_compliance,
+                                ear.tymp_ecv, age_years=age_years)
     reflexes = analyze_reflexes(ear.reflexes or {}, pta)
     if tymp is None and reflexes is None:
         return None

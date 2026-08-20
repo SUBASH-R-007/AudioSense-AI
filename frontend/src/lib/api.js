@@ -15,20 +15,118 @@ export const API_BASE = RAW_BASE.replace(/\/+$/, '')
 /** Absolute URL for an API path. Exported for the few callers outside this file. */
 export const apiUrl = (path) => `${API_BASE}${path}`
 
-const http = (path, options) => fetch(apiUrl(path), options)
+// ---------------------------------------------------------------------------
+// The session token
+// ---------------------------------------------------------------------------
+//
+// Held in a module variable so the hot path never touches storage, and mirrored
+// into sessionStorage so a refresh — which clinicians do constantly, mid-case —
+// does not sign anyone out. sessionStorage rather than localStorage on purpose:
+// the token dies with the tab, which is the behaviour you want on a shared
+// clinic machine where the next person inherits the browser but must not
+// inherit the session.
+
+const TOKEN_KEY = 'as_token'
+
+let token = (() => {
+  try { return sessionStorage.getItem(TOKEN_KEY) || null } catch { return null }
+})()
+
+/** Record a freshly issued token. Pass null or '' to forget the current one. */
+export function setToken(next) {
+  token = next || null
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token)
+    else sessionStorage.removeItem(TOKEN_KEY)
+  } catch { /* private mode — the in-memory copy still carries the session */ }
+}
+
+export const getToken = () => token
+export const clearToken = () => setToken(null)
+
+// Anyone who needs to know the session has ended. The store subscribes; nothing
+// else should need to.
+const expiryListeners = new Set()
+
+/** Subscribe to "the session just died". Returns an unsubscribe function. */
+export function onUnauthorized(listener) {
+  expiryListeners.add(listener)
+  return () => expiryListeners.delete(listener)
+}
+
+// A token that has expired takes every in-flight request down with it, and a
+// consultation screen can easily have a dozen of those. Handling it here, once,
+// means the app reacts a single time — it flips back to the login screen —
+// instead of each caller independently deciding to shout about it. The `token`
+// check is what makes it once: the first 401 to land clears it, and every
+// sibling 401 then finds nothing to clear and stays quiet.
+function noteUnauthorized(path) {
+  // A rejected login is a wrong password, not an expired session. Treating it
+  // as expiry would be harmless but confusing, since it would fire the
+  // "you have been signed out" path at someone who was never signed in.
+  if (path.startsWith('/api/auth/login')) return
+  if (!token) return
+  clearToken()
+  for (const listener of expiryListeners) {
+    try { listener() } catch { /* a bad listener must not break the response */ }
+  }
+}
+
+async function http(path, options = {}) {
+  // Headers are merged rather than replaced, and only Authorization is added.
+  // Several callers post FormData and rely on the browser generating the
+  // multipart Content-Type with its boundary; forcing a Content-Type here would
+  // produce a request the backend cannot parse.
+  const headers = new Headers(options.headers || {})
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+
+  const res = await fetch(apiUrl(path), { ...options, headers })
+  if (res.status === 401) noteUnauthorized(path)
+  return res
+}
 
 async function json(res) {
   if (!res.ok) {
     let detail = ''
     try { detail = (await res.json()).detail || '' } catch { /* ignore */ }
-    throw new Error(detail || `${res.status} ${res.statusText}`)
+    const err = new Error(detail || `${res.status} ${res.statusText}`)
+    // The login screen has to tell a wrong password (401) apart from a
+    // throttled client (429) and an instance with no accounts at all (503),
+    // and the message text is not a safe thing to switch on.
+    err.status = res.status
+    throw err
   }
   return res.json()
 }
 
 export const api = {
   health: () => http('/api/health').then(json),
+
+  // --- authentication -----------------------------------------------------
+  // status is public and answers before anyone has signed in, which is how the
+  // app finds out whether this instance has any accounts at all. me() is not
+  // public by design: its whole job is to say whether a stored token is still
+  // good, so it has to be a request that a bad token fails.
+  authStatus: () => http('/api/auth/status').then(json),
+  login: (username, password) =>
+    http('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    }).then(json),
+  me: () => http('/api/auth/me').then(json),
+
   demoCases: () => http('/api/demo-cases').then(json),
+
+  // Live captions score every utterance, so this is called continuously while
+  // the microphone is open — it must go through the client like everything
+  // else or it loses the session token.
+  speechWords: (ac, text) =>
+    http('/api/speech-words', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ac, text }),
+    }).then(json),
 
   analyze: (record) =>
     http('/api/analyze', {
@@ -259,6 +357,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }).then(json),
+  abrAsymmetry: (right, left) =>
+    http('/api/aep/abr/asymmetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ right, left }),
+    }).then(json),
   aepBattery: (payload) =>
     http('/api/aep/battery', {
       method: 'POST',
@@ -268,6 +372,52 @@ export const api = {
   boaReference: () => http('/api/boa/reference').then(json),
   boa: (payload) =>
     http('/api/boa/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
+  // --- masking as a live instrument ---------------------------------------
+  // The transducer changes whether masking is required at all, so it has to be
+  // switchable without re-running the whole analysis.
+  maskingReference: () => http('/api/masking/reference').then(json),
+  masking: (payload) =>
+    http('/api/masking/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
+  // A second opinion from the deep ensemble, whose disagreement with the
+  // forest is itself the signal worth showing.
+  deepPredict: (ear) =>
+    http('/api/model/deep-predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ear),
+    }).then(json),
+
+  // --- the complete diagnostic picture ------------------------------------
+  diagnosisReference: () => http('/api/diagnosis/reference').then(json),
+  diagnosisPicture: (payload) =>
+    http('/api/diagnosis/picture', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
+  anatomyReference: () => http('/api/anatomy/reference').then(json),
+  anatomyVideo: (payload) =>
+    http('/api/anatomy/video', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(json),
+
+  // --- tuning forks: Rinne, Weber, Bing, ABC/Schwabach, Gelle -------------
+  tuningForkReference: () => http('/api/tuning-fork/reference').then(json),
+  tuningFork: (payload) =>
+    http('/api/tuning-fork/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

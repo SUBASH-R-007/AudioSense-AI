@@ -200,3 +200,61 @@ def test_report_falls_back_to_offline_when_provider_errors(monkeypatch, tmp_path
     assert rep["fallback_used"] is True
     assert rep["report"]["findings"]
     monkeypatch.setattr(ai_config, "_current", None)
+
+
+# ------------------------------------------- present-but-null payloads ----
+#
+# `payload.get("analysis", {})` only defaults when the key is ABSENT. A client
+# that sends `{"analysis": null}` walks straight past it and the next `.get`
+# raises, which surfaces as a bare 500. That shipped in three separate places
+# (verdict, linkage, diagnosis) plus the referral PDF, so it is pinned here as
+# a property over every endpoint rather than case by case.
+
+#: Every key this API reads, present and explicitly null.
+_NULLED = {k: None for k in (
+    "analysis", "patient", "counseling", "report_bundle", "report", "rules",
+    "safety", "battery", "thresholds", "assessment", "otoscopy", "aep",
+    "tuning_fork", "boa", "skipped", "side", "baseline", "current", "right",
+    "left", "confidence", "differential", "prediction", "verdict")}
+
+_HOSTILE_BODIES = [
+    {}, None, [], {"analysis": None}, {"analysis": {}}, _NULLED,
+    {"analysis": _NULLED},
+    {"analysis": {"rules": {"right": None, "left": None}}},
+]
+
+
+def _post_paths():
+    for route in app.routes:
+        methods = getattr(route, "methods", set())
+        if "POST" in methods and "{" not in route.path \
+                and route.path.startswith("/api"):
+            yield route.path
+
+
+@pytest.mark.parametrize("body_index", range(len(_HOSTILE_BODIES)))
+def test_no_endpoint_500s_on_a_present_but_null_payload(body_index):
+    body = _HOSTILE_BODIES[body_index]
+    crashed = []
+    for path in _post_paths():
+        code = client.post(path, json=body).status_code
+        if code >= 500:
+            crashed.append(f"{path} -> {code}")
+    assert not crashed, (
+        "an endpoint crashed rather than degrading: " + "; ".join(crashed))
+
+
+def test_every_get_endpoint_answers_without_arguments():
+    crashed = []
+    for route in app.routes:
+        if "GET" not in getattr(route, "methods", set()) or "{" in route.path:
+            continue
+        code = client.get(route.path).status_code
+        if code >= 500:
+            crashed.append(f"{route.path} -> {code}")
+    assert not crashed, "; ".join(crashed)
+
+
+def test_a_referral_with_a_null_analysis_is_rejected_not_a_crash():
+    """The concrete case the property above was written from."""
+    assert client.post("/api/referral", json={"analysis": None}).status_code < 500

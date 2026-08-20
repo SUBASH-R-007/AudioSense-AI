@@ -19,6 +19,11 @@ backend/.venv/
 backend/data/otoscope_kaggle/
 backend/data/_kaggle_tmp/
 
+# Credentials. Account hashes and the session signing key live here for local
+# development; deployments set real environment variables instead. Never
+# committed — a hash of a short password is worth cracking offline.
+backend/.env
+
 # Runtime state — API keys, patient records and issued handouts
 backend/data/ai_config.json
 backend/data/verify_store.json

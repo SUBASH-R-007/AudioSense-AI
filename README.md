@@ -5,7 +5,7 @@
 Enter (or photograph!) an audiogram → get WHO-2021 grading, conductive/sensorineural typing, India RPwD Act 2016 disability percentage, an ML pattern classification with calibrated confidence + out-of-distribution flagging, a phoneme-level functional impact map, a verified clinical report with a Tamil+English patient counseling sheet — and then **hear the world through the patient's ears** with the Web Audio hearing loss simulator.
 
 📖 **[WALKTHROUGH.md](WALKTHROUGH.md)** — complete explanation of every part of the project
-🚀 **[DEPLOYMENT.md](DEPLOYMENT.md)** — deploy to Vercel + any Docker host (local development is unaffected)
+🚀 **[DEPLOYMENT.md](DEPLOYMENT.md)** — deploy to Vercel + any Docker host (deployment adds CORS; local development needs an account too — see Run it)
 🎤 **[PITCH.md](PITCH.md)** — the jury presentation, with a timed 3-minute demo running order
 
 ## 🎯 Against the problem statement
@@ -33,6 +33,7 @@ The brief asks for automatic analysis, pattern classification, degree and type p
 | ⌨️ **Four numbers in, the right curve out** | Clinical tympanometers print ECV, PP, SC and GRAD and never export the sweep — so all four can be typed in and the curve is **reconstructed from them**. The gradient is inverted properly (`GR = 1 − exp(−50²/2σ²)` solved for σ, converted to FWHM) rather than drawn to look plausible, so the curve's *measured* gradient reads back as the number entered. Tests round-trip it through the classifier to prove it |
 | 🔗 **Diseases from any single input** | A ranked differential from the **image alone**, or the **audiogram alone**, with no history required — a scope goes in the ear before the patient is in the booth. The audiogram is matched against a characteristic curve per disease on four separate axes (shape, degree, type, symmetry), all four shown, because a disease can match the shape perfectly and be excluded by the type |
 | 🎚 **Masking, decided per frequency** | Both air-conduction rules — AC(TE)−AC(NTE) ≥ IA **and** AC(TE)−BC(NTE) ≥ IA — because the second catches the case the first misses: a conductive loss in the *non-test* ear lowers the bar the crossed signal has to clear. Bone conduction masks at a 15 dB gap, with no interaural attenuation to rely on. The **transducer is a clinical choice, not a logistical one**: supra-aural 40 dB, insert 50–60 dB, and it changes the answer. Where the noise needed exceeds the level at which it crosses back, the app reports a **masking dilemma** rather than a threshold |
+| 🎵 **Tuning forks that bracket the gap** | Rinne, Weber, Bing, ABC/Schwabach and Gelle — and the quantitative fact most tools miss: **the frequency at which the Rinne reverses sizes the air-bone gap.** Reversal at 256 Hz alone means roughly 15–30 dB, at 256 and 512 means 30–45, at all three means 45 or more. **2048 and 4096 Hz have no valid crossover value, so the app refuses to infer a gap from them** rather than extrapolating the series. The killer result is the **false-negative Rinne**: a dead ear whose bone-conducted sound crosses the skull reads as conductive, and the tell is a Weber lateralising the wrong way — that combination gets a red banner and *no diagnosis*. All twelve Rinne × Weber cells are covered by exactly one rule, proven by test. And where the audiogram disagrees, **the audiogram wins**: a fork-derived conductive finding in an ear with no measured gap is retracted, with the predicted band and the measured gap drawn on one axis |
 | 🗣 **SDT, SRT and WRS with their real uncertainty** | All three speech measurements, cross-checked against each other and the tones. **A word score is a sample, not a measurement**: every score carries its exact binomial confidence interval, so 88% and 76% on a 25-word list are correctly reported as *not different*. SDT must track the best pure-tone threshold and sit 5–10 dB better than the SRT — a detection threshold poorer than reception is impossible and says so. A score taken nearer than 30 dB above the SRT is flagged rather than interpreted, because it measures the presentation level, not the patient |
 | 🧠 **ABR, MLR and LLR — the pathway, not one point on it** | Three recordings of the same ascending pathway at increasing heights: brainstem (0–10 ms), thalamocortical (10–80 ms), cortex (50–350 ms). **Their value is comparative** — a normal ABR under an abnormal MLR puts the lesion above the brainstem, and neither recording says that alone. Every latency is judged against the normative row **for the intensity actually used**, because Wave V sits near 5.4 ms at 90 dB nHL and near 7.5 ms at 20 dB, so an absolute latency without its intensity is uninterpretable. Interpeak intervals lead, since a conductive loss delays everything equally and leaves I–V intact while a retrocochlear lesion stretches it. Plus Wave V threshold estimation, the 0.9 ms insert delay, interaural asymmetry, the cochlear-microphonic window for auditory neuropathy, and **P1 latency as a cortical-maturation biomarker** judged against the child's age |
 | 👶 **BOA that refuses to become an audiogram** | Behavioural observation across eight age bands — and the one thing everyone gets wrong is built into the design: **these are minimum response levels, not thresholds.** A normal-hearing newborn responds to a warble tone near 78 dB SPL, some 75 dB above what they can actually hear; recording that as a threshold draws a hearing loss on a normal ear. The panel sits under the pure-tone form and **never offers to transfer a value into the threshold grid**. The curve falls from 78 to 26 dB SPL because the *behaviour* matures, not the hearing — and the caption says so. Habituation, single-observer bias and the VRA hand-off at 6 months are all flagged rather than assumed away |
@@ -88,6 +89,7 @@ flowchart LR
         NT[New Test / Digitize] --> DB[Results Dashboard<br/>audiogram · SII · cochlea map]
         IMM[Immittance & OAE<br/>tympanogram curve · DP-gram] --> DB
         AEP[Evoked Potentials<br/>ABR · MLR · LLR] --> DB
+        TF[Tuning forks<br/>Rinne · Weber · Bing] --> NT
         DB --> SIM[Hearing Simulator<br/>normal → patient → aided<br/>+ live captions]
         DB --> TTS[Counseling read aloud<br/>EN / Tamil]
         PROG[Progression + 5y forecast] & BATCH[Batch CSV]
@@ -103,6 +105,8 @@ flowchart LR
         EP[/api/aep/] --> EPN[Latency vs norms for the intensity used<br/>· interpeaks · Wave V threshold<br/>· MLR patterns · P1 maturation]
         EPN --> LVL[Where along the pathway<br/>brainstem / thalamus / cortex]
         BOAAPI[/api/boa/] --> MRL[Minimum response levels by age<br/>· never a threshold]
+        TFA[/api/tuning-fork/] --> TFG[Crossover ladder brackets the gap<br/>· Rinne x Weber grid<br/>· false-negative Rinne]
+        TFG --> BAT
         AN[/api/analyze/] --> RULES[Clinical Rules Engine<br/>WHO 2021 · ABG typing · RPwD 2016]
         AN --> ML[RandomForest + calibration<br/>+ IsolationForest OOD<br/>+ per-frequency explanation]
         AN --> PHON[Phoneme audibility · SII<br/>quiet / noise / aided]
@@ -138,6 +142,28 @@ python -m venv .venv
 .venv\Scripts\python -m uvicorn app.main:app --port 8000
 ```
 
+**1b. Create an account** — the instance ships **locked**
+
+The app holds patient records, so it fails closed: with no accounts configured
+every `/api` request is refused with a 503 and the frontend shows a sign-in
+screen nobody can get past. Mint one before the first run:
+
+```bash
+cd backend
+.venv\Scripts\python -m scripts.make_user clinician
+```
+
+Paste the two values it prints into `backend/.env` (gitignored; the app reads it
+at startup):
+
+```
+AUDIOSENSE_USERS=clinician:pbkdf2_sha256$600000$...$...
+AUDIOSENSE_SECRET=<the long random value the script printed>
+```
+
+Restart uvicorn. Full details — sessions, revocation, the public allowlist — are
+in [DEPLOYMENT.md](DEPLOYMENT.md#access-control--do-this-before-the-first-deploy).
+
 **2. Frontend** (second terminal)
 
 ```bash
@@ -146,9 +172,12 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173**. No API key needed — everything works offline. To enable LLM narratives, click the **AI Engine** panel (bottom-left gear) and paste a free Gemini key from [aistudio.google.com](https://aistudio.google.com).
+Open **http://localhost:5173** and sign in with the account you just created. No
+API key needed — everything works offline. To enable LLM narratives, click the
+**AI Engine** panel (bottom-left gear) and paste a free Gemini key from
+[aistudio.google.com](https://aistudio.google.com).
 
-**Tests** (663 tests, all passing: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry with its binomial intervals, ABR normative-table integrity, BOA age banding, tympanogram curve round-trips, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
+**Tests** (947 tests, all passing: guideline conformance swept across the whole input space, reproducibility, red-flag and masking logic, speech audiometry with its binomial intervals, ABR normative-table integrity, BOA age banding, tuning-fork grid completeness, tympanogram curve round-trips, triage routing, validation metrics, progression, phonemes, SII, NAL-R prescription, forecast, counterfactuals, camp statistics, six-language counseling, digitizer-vs-ground-truth, full API cycle):
 
 ```bash
 cd backend
@@ -207,6 +236,10 @@ backend/
                            · insert delay · Wave V threshold · asymmetry · cochlear
                            microphonic · MLR patterns · LLR + P1 maturation
                            · where-along-the-pathway battery)
+                   tuning_fork.py (Rinne crossover ladder · gap bracketing
+                                   · Weber x Rinne grid, 12 cells, 5 precedence
+                                   layers · false-negative Rinne · Bing/ABC/
+                                   Schwabach/Gelle · audiogram cross-check)
                    boa.py (8 age bands of minimum response levels · response
                            repertoire · habituation and observer-bias flags
                            · never a threshold)
@@ -227,31 +260,38 @@ backend/
                    records.py (SQLite visits) · referral.py (ENT letter)
                    validation.py (expert-label agreement, Cohen's kappa)
                    llm_provider.py (6 providers) · ai_config.py · pdf.py (QR hash)
+                   auth.py (PBKDF2 accounts · signed session tokens · allowlist)
   app/routers/     analyze · prescription · speech-words · digitize · report · progression
                    batch · pdf · settings · feedback · handout (QR) · clinic (records,
                    noise-dose, referral, atlas) · otoscopy · symptoms · instruments
                    (tympanometry + oae) · linkage · speech · masking
-                   aep (ABR/MLR/LLR/battery + BOA)
+                   aep (ABR/MLR/LLR/battery + BOA) · tuning-fork · diagnosis
+                   auth (login + the default-closed middleware every route sits behind)
   data/            otoscope_reference/ (62 labelled views, 8 patterns, ~1.3 MB)
                    otoscopy_model.joblib + model card
-  tests/           663 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
-  scripts/         make_samples.py (regenerates the demo photos + ground truth)
+  tests/           947 pytest tests incl. boundary values (PTA 20/35/50, ABG 10)
+  scripts/         make_user.py (mints an account hash for AUDIOSENSE_USERS)
+                   make_samples.py (regenerates the demo photos + ground truth)
                    extract_otoscope_reference.py (docx → labelled atlas)
                    train_otoscopy.py · fetch_otoscope_dataset.py
 samples/           2 audiogram photos + ground_truth.json + batch_sample.csv
 frontend/
-  src/pages/       Symptoms · Otoscopy · NewTest · Screening · Immittance
+  src/pages/       Login (the gate) · Patient (step 1 — demographics, age, onset)
+                   Symptoms · Otoscopy · NewTest · Screening · Immittance
                    EvokedPotentials · Dashboard · Simulator · ListeningLab
                    Progression · Batch · Records
   src/components/  ... SpeechAudiometry (P-I function with binomial whiskers)
                    MaskingPanel (per-frequency grid · plateau · dilemma)
                    BOAPanel (developmental MRL curve, under the pure-tone form)
+                   TuningForkPanel (crossover ladder · implied gap band drawn
+                                    against the measured gap)
   src/components/  AudiogramChart (clinical symbols, glow, banana) · CochleaMap (Greenwood)
                    ThresholdGrid · AISettingsPanel
   src/audio/       simulatorGraph.js (loss + aid + compression + babble + binaural)
                    soundscapes.js (synthesized everyday sounds) · toneAudiometer.js
                    bayesianThreshold.js (QUEST/ZEST + catch trials)
-  src/lib/         api.js · store.jsx · speech.js (6-language TTS) · conversation.js
+  src/lib/         api.js · store.jsx · flow.js (the seven-step consultation order)
+                   speech.js (6-language TTS) · conversation.js
                    svgCapture.js
   public/          audio/speech_sample.wav · sw.js (offline) · manifest.webmanifest
 ```
@@ -267,6 +307,7 @@ frontend/
 - **Speech audiometry**: SDT tracks the best threshold in the speech range and sits 5–10 dB better than the SRT (Chaiklin 1959; ASHA 1988). SRT/PTA agreement within ±10 dB, compared against Fletcher's best-two-of-three average as well as the four-frequency mean. Word scores carry an exact Clopper–Pearson binomial interval and differences are tested rather than eyeballed (Thornton & Raffin 1978); PB max is expected 30 dB or more above the SRT; rollover index > 0.45 remains the retrocochlear indicator, and a rollover the word list cannot resolve is called out as such. Speech interaural attenuation 45 dB for the shadow-response check.
 - **Immittance**: eight tympanogram types (A/As/Ad/Add/B/C/D/E) per the supplied immittance reference (Gelfand, *Essentials of Audiology*, 4th ed., pp. 187–192). Ear-canal volume 0.3–1.0 ml in children and 0.6–2.0 ml in adults; peak pressure +50 to −100 daPa; static admittance 0.35–1.25 mmho in children and 0.37–1.66 in adults; tympanic gradient > 0.2. Type B splits three ways on canal volume — normal is effusion, large is perforation or a patent grommet, small is cerumen or a blocked probe. Tympanometric width is also reported (51–114 daPa adults, Margolis & Heller 1987; 60–150 children, ASHA 1997). A 226 Hz probe is refused below 6 months of age, where it can read normal over a middle ear full of fluid.
 - **OAE**: DPOAE counted present at ≥6 dB above the noise floor; absent emissions with normal thresholds reported as pre-clinical outer-hair-cell damage. Absent emissions where the threshold already exceeds ~50 dB HL are marked *uninformative* rather than counted as damage, and a noise floor above 10 dB SPL invalidates the frequency instead of failing it.
+- **Tuning forks**: the Rinne reversal crossover by fork — 256 Hz at an air-bone gap of about 15 dB, 512 Hz at 20–30, 1024 Hz at 45–50 — reported as bands with medium confidence, because sources disagree and the empirical 512 Hz transition sits below the textbook figure. No crossover exists for 2048 or 4096 Hz and none is extrapolated. The Bing and Gelle are restricted to 256 and 512 Hz, where the occlusion effect is large; from 1 kHz upward "no change" is the normal finding and is marked uninterpretable rather than negative (occlusion-effect frequency dependence after Dean & Martin 2000: 9 dB at 250 Hz, 7 at 500, 0 at 1000). Bone conduction crosses the skull essentially unattenuated, which is the mechanism of the false-negative Rinne. Method and placement follow StatPearls *Rinne Test* (NBK431071), *Weber Test* (NBK526135) and *Bone Conduction Evaluation* (NBK578177). **No sensitivity or specificity figure is quoted**, because none could be verified.
 - **Evoked potentials**: ABR latencies compared against the supplied reference's normative table (Table 2-3, normal-hearing females 20–30) for the **stimulus intensity actually used**, reported in standard deviations with both 2 SD and 3 SD limits because clinics differ on the cut-off; the stored means and SDs are verified to regenerate the reference's own published range table. Interpeak I–III, III–V and I–V lead the interpretation, since a conductive loss shifts all waves equally and leaves the intervals intact. Insert-earphone delay 0.9 ms applied explicitly; interaural Wave V difference significant at 0.4 ms; cochlear microphonic sought in the first millisecond to separate auditory neuropathy from an absent response; Wave V tracked down the intensity series for an *electrophysiological* threshold that approximates the behavioural one and is not a substitute for it. MLR Na–Pa–Nb–Pb and LLR P1–N1–P2–N2 against normative windows (Hall 2007; Katz et al.; Musiek & Baran; Atcherson & Stoody 2012), with age-banded P1 maturation for cortical development. The LLR is state-dependent and the app says so.
 - **Behavioural observation audiometry**: minimum response levels by age band after Northern & Downs, *Hearing in Children* — 78 dB SPL warble at birth falling to 26 dB SPL, with the speech MRL alongside. **Never reported as a threshold**: MRLs run tens of decibels above true threshold, are neither ear- nor frequency-specific, and habituate within a session. Visual reinforcement audiometry replaces BOA from 6 months, and concern routes to ABR/ASSR rather than to more BOA.
 - **Symptom differential**: two supplied clinical documents — a presenting-complaint guide ranked by age band (otorrhoea, otalgia, vertigo, headache) and a 14-disease reference giving symptoms, prone age group and the audiological tests that establish each diagnosis. Free text is matched by synonym table, not inferred; unmatched words are reported back. Every ranked entry names which source put it there.

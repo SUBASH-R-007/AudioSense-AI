@@ -10,9 +10,11 @@
 // which of the two source documents put it there.
 
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
 import LinkagePanel from '../components/LinkagePanel.jsx'
+import StepNav from '../components/StepNav.jsx'
 
 const URGENCY = {
   emergency: { label: 'Emergency', cls: 'border-rose-300 bg-rose-50 text-rose-900' },
@@ -31,11 +33,29 @@ const CATEGORY_STYLE = {
   guide: 'bg-slate-100 text-slate-600',
 }
 
+// Each correlation line opens with the ear it describes. Colouring that first
+// word red for right and blue for left is the convention the audiogram itself
+// uses, and it is what lets a clinician see at a glance whether the ear that
+// disagrees is the ear the history was about.
+function EarLine({ text }) {
+  const [first, ...rest] = text.split(' ')
+  const cls = first === 'Right' ? 'font-semibold text-red-600'
+    : first === 'Left' ? 'font-semibold text-blue-600' : ''
+  if (!cls) return text
+  return <><span className={cls}>{first}</span> {rest.join(' ')}</>
+}
+
 export default function Symptoms() {
-  const { analysis, assessment, setAssessment, showToast } = useApp()
+  const { patient, analysis, assessment, setAssessment, showToast } = useApp()
   const [catalog, setCatalog] = useState(null)
-  const [age, setAge] = useState(analysis?.patient?.age ?? 40)
-  const [side, setSide] = useState('unspecified')
+  // The age band is not a detail here — it is what decides whether ear discharge
+  // is otitis media in a child or necrotizing otitis externa at seventy, and
+  // whether a red flag is raised at all. It therefore has to come from the
+  // patient recorded at the start of the consultation. This screen runs BEFORE
+  // the audiogram, so seeding it from the analysis meant it was never available
+  // and every history was assessed as a 40-year-old's.
+  const [age, setAge] = useState(patient?.age ?? analysis?.patient?.age ?? 40)
+  const [side, setSide] = useState(patient?.side || 'unspecified')
   const [onset, setOnset] = useState('unknown')
   const [duration, setDuration] = useState('unspecified')
   const [picked, setPicked] = useState(() => new Set())
@@ -46,10 +66,29 @@ export default function Symptoms() {
   const result = assessment
   const setResult = setAssessment
   const [busy, setBusy] = useState(false)
+  const [correlation, setCorrelation] = useState(null)
+  const [correlating, setCorrelating] = useState(false)
 
   useEffect(() => {
     api.symptomCatalog().then(setCatalog).catch(() => setCatalog(null))
   }, [])
+
+  // The differential above is built from what the patient said, and nothing
+  // else. Once thresholds exist the two can be held against each other: a
+  // condition that predicts a conductive loss, in an ear measured as purely
+  // sensorineural, is a differential that needs revisiting rather than a
+  // result to be reported. The check runs itself, because a clinician who has
+  // to press a button for it is a clinician who will sometimes not press it.
+  useEffect(() => {
+    if (!result || !analysis) { setCorrelation(null); return }
+    let cancelled = false
+    setCorrelating(true)
+    api.correlateSymptoms(result, analysis)
+      .then((r) => { if (!cancelled) setCorrelation(r) })
+      .catch(() => { if (!cancelled) setCorrelation(null) })
+      .finally(() => { if (!cancelled) setCorrelating(false) })
+    return () => { cancelled = true }
+  }, [result, analysis])
 
   // Coming back to the page should show the checklist that produced the
   // assessment on screen, not an empty form beside a filled-in result.
@@ -73,6 +112,23 @@ export default function Symptoms() {
 
   const canRun = picked.size > 0 || notes.trim().length > 0
 
+  // The age stays editable because a clinician does sometimes take a history
+  // about somebody other than the patient on file — the accompanying child, the
+  // relative in the room. What it must never do is diverge quietly: the
+  // differential below is ranked for the age in this box, not the one in the
+  // record, and the two disagreeing is worth seeing.
+  // This page is reachable before /patient is filled in, so the age has to
+  // follow the record when it arrives — otherwise a history opened first stays
+  // pinned to the fallback 40 for the rest of the consultation. Immittance
+  // already re-seeds this way; without it the two screens disagree about the
+  // same patient.
+  useEffect(() => {
+    if (patient?.age != null && patient.age !== '') setAge(patient.age)
+  }, [patient?.age])
+
+  const recordedAge = patient?.age ?? null
+  const ageDiffers = recordedAge != null && Number(age) !== Number(recordedAge)
+
   async function run() {
     setBusy(true)
     try {
@@ -95,6 +151,12 @@ export default function Symptoms() {
 
   const urgency = URGENCY[result?.urgency] || URGENCY.none
   const band = result?.age_band?.label
+
+  // Disagreement outranks agreement: one ear whose measured type contradicts
+  // the leading diagnosis is the finding, even if the other ear fits.
+  const disagrees = Boolean(correlation?.available && correlation.against?.length)
+  const agrees = Boolean(correlation?.available && !disagrees
+    && correlation.supports?.length)
 
   const examples = useMemo(() => ([
     { label: 'Water discharge from the ear', age: 34,
@@ -139,7 +201,7 @@ export default function Symptoms() {
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_1.2fr]">
         {/* --- intake ---------------------------------------------------- */}
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+        <div data-tour="symptom-intake" className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <label className="text-[12.5px]">
               <span className="mb-1 block font-medium text-slate-600">Age</span>
@@ -177,6 +239,16 @@ export default function Symptoms() {
               </select>
             </label>
           </div>
+
+          {ageDiffers && (
+            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] leading-relaxed text-amber-900">
+              This history is being assessed for a {age}-year-old, but{' '}
+              {(patient?.name || '').trim() || 'the patient on file'} is recorded
+              as {recordedAge}. Age bands change which conditions are likely and
+              which red flags apply — correct it here, or on the patient details
+              step, so the differential is ranked for the right person.
+            </p>
+          )}
 
           <label className="mt-4 block text-[12.5px]">
             <span className="mb-1 block font-medium text-slate-600">
@@ -248,7 +320,7 @@ export default function Symptoms() {
               </div>
 
               {result.red_flags.length > 0 && (
-                <div className="rounded-2xl border border-rose-200 bg-white p-5 shadow-sm">
+                <div data-tour="red-flags" className="rounded-2xl border border-rose-200 bg-white p-5 shadow-sm">
                   <h2 className="text-[15px] font-semibold text-rose-900">Red flags</h2>
                   <ul className="mt-2 space-y-2.5">
                     {result.red_flags.map((f) => (
@@ -270,7 +342,7 @@ export default function Symptoms() {
                 </div>
               )}
 
-              <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+              <div data-tour="differential" className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
                 <h2 className="text-[15px] font-semibold text-slate-900">Differential</h2>
                 <ul className="mt-3 space-y-3">
                   {result.differential.map((d, i) => (
@@ -330,7 +402,112 @@ export default function Symptoms() {
                 </ul>
               </div>
 
+              {/* Sits immediately under the differential, and deliberately so:
+                  the list above is the thing this card can overturn, and a
+                  ranking read without the thresholds that contradict it is a
+                  ranking read wrongly. It asks a narrower question than the
+                  case linkage panel further down — only whether the type of
+                  loss the leading diagnosis predicts is the type measured. */}
               <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+                <h2 className="text-[15px] font-semibold text-slate-900">
+                  Does the audiogram fit?
+                </h2>
+                <p className="mt-1 text-[12px] text-slate-500">
+                  The leading possibility, checked against the thresholds
+                  actually measured.
+                </p>
+
+                {!analysis ? (
+                  <p className="mt-3 rounded-xl border border-dashed border-slate-300 px-3 py-2.5 text-[12.5px] leading-relaxed text-slate-500">
+                    No audiogram in this session, so there is nothing to check the
+                    differential against — it rests on the history alone. Enter or
+                    import thresholds on{' '}
+                    <Link to="/new-test" className="font-medium text-teal-700 underline">
+                      New test
+                    </Link>{' '}and this card fills itself in.
+                  </p>
+                ) : correlating ? (
+                  <p className="mt-3 text-[12.5px] text-slate-400">Reconciling…</p>
+                ) : !correlation ? (
+                  <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-[12.5px] leading-relaxed text-slate-600">
+                    The correlation could not be run. Nothing above has changed —
+                    the differential still stands on the history — but it has not
+                    been checked against the thresholds.
+                  </p>
+                ) : !correlation.available ? (
+                  // Most conditions in the reference set predict no particular
+                  // audiometric type, and saying so is a real answer. Dressing
+                  // it up as a failure would teach the reader to distrust a
+                  // card that is working exactly as intended.
+                  <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Nothing to reconcile
+                    </span>
+                    <p className="mt-1 text-[12.5px] leading-relaxed text-slate-600">
+                      {correlation.note}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className={`mt-3 rounded-xl border px-3 py-2.5 ${
+                      disagrees ? 'border-amber-300 bg-amber-50'
+                        : agrees ? 'border-emerald-300 bg-emerald-50'
+                          : 'border-slate-200 bg-slate-50'}`}>
+                      <span className={`text-[11px] font-semibold uppercase tracking-wide ${
+                        disagrees ? 'text-amber-700'
+                          : agrees ? 'text-emerald-700' : 'text-slate-500'}`}>
+                        {disagrees ? 'Differential worth revisiting'
+                          : agrees ? 'Consistent' : 'Not enough to say'}
+                      </span>
+                      <p className={`mt-1 text-[13px] font-medium leading-relaxed ${
+                        disagrees ? 'text-amber-900'
+                          : agrees ? 'text-emerald-900' : 'text-slate-600'}`}>
+                        {disagrees ? '⚠ ' : agrees ? '✓ ' : ''}{correlation.verdict}
+                      </p>
+                      <p className={`mt-1 text-[11.5px] leading-relaxed ${
+                        disagrees ? 'text-amber-800'
+                          : agrees ? 'text-emerald-800' : 'text-slate-500'}`}>
+                        {correlation.diagnosis} predicts a {correlation.expected_type}
+                        {' '}picture — {correlation.expected_pattern}.
+                      </p>
+                    </div>
+
+                    {/* Ears that contradict the diagnosis are listed first and
+                        never folded away behind the verdict line. */}
+                    {correlation.against?.length > 0 && (
+                      <ul className="mt-2.5 space-y-1.5">
+                        {correlation.against.map((line) => (
+                          <li key={line}
+                            className="rounded-lg bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900">
+                            <EarLine text={line} />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {correlation.supports?.length > 0 && (
+                      <ul className="mt-2.5 space-y-1.5">
+                        {correlation.supports.map((line) => (
+                          <li key={line}
+                            className="rounded-lg bg-emerald-50 px-3 py-2 text-[12px] leading-relaxed text-emerald-900">
+                            <EarLine text={line} />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    <p className="mt-2.5 text-[11px] leading-relaxed text-slate-400">
+                      One field of one diagnosis: the type of loss predicted
+                      against the type measured, ear by ear. Agreement is not
+                      confirmation — several conditions predict the same type,
+                      and the degree, configuration and immittance are not read
+                      here. Disagreement points at the history or the
+                      thresholds; it does not rule the diagnosis out.
+                    </p>
+                  </>
+                )}
+              </div>
+
+              <div data-tour="battery-order" className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
                 <h2 className="text-[15px] font-semibold text-slate-900">
                   Recommended battery
                 </h2>
@@ -390,6 +567,8 @@ export default function Symptoms() {
           )}
         </div>
       </div>
+
+      <StepNav stepKey="symptoms" />
     </div>
   )
 }

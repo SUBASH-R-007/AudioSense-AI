@@ -178,3 +178,52 @@ def test_atlas_projection_places_a_patient():
         pytest.skip("model not trained")
     body = r.json()
     assert isinstance(body["x"], float) and isinstance(body["y"], float)
+
+
+# ------------------------------------------------------------ erasure ----
+#
+# The deletion path is what a data-erasure request goes through, and it was
+# verified only to be behind a login: both DELETE statements could be removed
+# and the whole suite stayed green while patients and their visits — which
+# hold the full record JSON — survived the call.
+
+
+def test_deleting_a_patient_erases_the_visits_too(temp_db):
+    import sqlite3
+
+    case = next(c for c in DEMO_CASES if c["id"] == "noise_notch")
+    analysis = client.post("/api/analyze", json=case["record"]).json()
+    first = temp_db.save_visit(analysis)
+    later = {**analysis, "patient": {**analysis["patient"],
+                                     "test_date": "2027-07-18"}}
+    temp_db.save_visit(later)
+    pid = first["patient_id"]
+    assert len(temp_db.patient_history(pid)["visits"]) == 2
+
+    assert temp_db.delete_patient(pid) is True
+    assert temp_db.list_patients() == []
+    assert temp_db.patient_history(pid) is None
+
+    # The visit rows carry the record JSON, so an orphaned visit is retained
+    # patient data even once the patient row is gone.
+    con = sqlite3.connect(temp_db.DB_PATH)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM visits").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_deleting_an_unknown_patient_reports_false(temp_db):
+    assert temp_db.delete_patient(999999) is False
+
+
+def test_the_delete_route_erases_and_then_reports_gone(temp_db):
+    """Route-level cover: only the 401 path had a test before."""
+    case = next(c for c in DEMO_CASES if c["id"] == "noise_notch")
+    analysis = client.post("/api/analyze", json=case["record"]).json()
+    pid = temp_db.save_visit(analysis)["patient_id"]
+
+    r = client.delete(f"/api/records/patients/{pid}")
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+    assert client.get(f"/api/records/patients/{pid}").status_code == 404

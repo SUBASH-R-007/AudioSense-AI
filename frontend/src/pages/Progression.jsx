@@ -20,7 +20,7 @@ function ForecastPanel({ forecast }) {
   }))
 
   return (
-    <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+    <div data-tour="forecast" className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
@@ -258,7 +258,7 @@ export default function Progression() {
             </div>
           )}
 
-          <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+          <div data-tour="progression-chart" className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
                 Threshold shift by frequency (positive = worse)

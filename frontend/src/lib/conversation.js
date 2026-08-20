@@ -14,6 +14,11 @@ export function recognitionSupported() {
     && !!(window.SpeechRecognition || window.webkitSpeechRecognition)
 }
 
+//: Errors that cannot resolve by trying again. Everything else — a dropped
+//: network, a long silence — is worth a restart; these are a standing refusal,
+//: and restarting on them is an infinite loop.
+const FATAL_ERRORS = new Set(['not-allowed', 'service-not-allowed', 'audio-capture'])
+
 export class ConversationListener {
   /**
    * @param {(text: string, isFinal: boolean) => void} onTranscript
@@ -53,6 +58,12 @@ export class ConversationListener {
     }
     rec.onerror = (e) => {
       if (e.error === 'no-speech' || e.error === 'aborted') return
+      // Retrying a denied microphone just gets it denied again. Tear the
+      // listener down BEFORE onend fires, or the restart below spins forever:
+      // a permanent error toast per iteration and a recogniser that only stops
+      // when the page is left. Stopping first also means the consumer's error
+      // callback observes an already-stopped listener.
+      if (FATAL_ERRORS.has(e.error)) this.stop()
       this.onError?.(
         e.error === 'not-allowed'
           ? 'Microphone permission denied — allow it to use conversation mode.'

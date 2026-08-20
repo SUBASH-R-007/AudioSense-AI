@@ -4,6 +4,15 @@ __pycache__/
 .pytest_cache/
 tests/
 
+# Local credentials. The build context is backend/ and the Dockerfile does
+# COPY . ., so a developer's .env would be baked into the image — and app
+# main.py reads it at startup on any host that does not set those variables
+# itself. That would hand every deployment built from this tree the same
+# account hash and the same token-signing key, defeating the fail-closed
+# default in app/services/auth.py.
+.env
+.env.*
+
 # Runtime state — never bake a developer's local records into the image.
 data/records.db
 data/handouts.json

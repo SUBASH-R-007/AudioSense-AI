@@ -1,6 +1,9 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Layout from './components/Layout.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import { useApp } from './lib/store.jsx'
+import Login, { SessionBar } from './pages/Login.jsx'
+import Patient from './pages/Patient.jsx'
 import NewTest from './pages/NewTest.jsx'
 import Screening from './pages/Screening.jsx'
 import Symptoms from './pages/Symptoms.jsx'
@@ -15,14 +18,35 @@ import Records from './pages/Records.jsx'
 import ListeningLab from './pages/ListeningLab.jsx'
 
 export default function App() {
+  const { booting, session } = useApp()
+  const location = useLocation()
+
+  // Nothing at all while the stored token is being checked. A spinner would be
+  // honest too, but the check is one request and a flash of the login screen at
+  // someone who is already signed in is worse than a blank moment.
+  if (booting) return null
+
+  // The gate is structural: with no session the router, the sidebar and every
+  // page are not rendered, so there is no route to reach and no markup to
+  // inspect. A route guard would leave the whole app mounted behind it, one
+  // URL away from whatever the guard forgot to cover.
+  if (!session) return <Login />
+
   return (
     <Layout>
       <a href="#main-content" className="skip-link rounded-lg bg-teal-600 px-3 py-2 text-[13px] font-semibold text-white">
         Skip to main content
       </a>
-      <ErrorBoundary>
+      <SessionBar />
+      {/* Keyed on the path so a crashed page does not outlive the navigation
+          away from it. The boundary holds the error in instance state with no
+          reset, so once any route threw, the error card was rendered for every
+          subsequent route too — while its own text told the reader "the rest of
+          the application is unaffected — use the navigation to continue". */}
+      <ErrorBoundary key={location.pathname}>
       <Routes>
-        <Route path="/" element={<Navigate to="/new-test" replace />} />
+        <Route path="/" element={<Navigate to="/patient" replace />} />
+        <Route path="/patient" element={<Patient />} />
         <Route path="/new-test" element={<NewTest />} />
         <Route path="/symptoms" element={<Symptoms />} />
         <Route path="/otoscopy" element={<Otoscopy />} />

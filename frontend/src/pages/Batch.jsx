@@ -15,6 +15,7 @@ export default function Batch() {
   const [busy, setBusy] = useState(false)
   const [validation, setValidation] = useState(null)
   const [onlyReview, setOnlyReview] = useState(false)
+  const [zipBusy, setZipBusy] = useState(false)
   const fileRef = useRef(null)
   const photoRef = useRef(null)
   const validateRef = useRef(null)
@@ -76,6 +77,46 @@ export default function Batch() {
     URL.revokeObjectURL(a.href)
   }
 
+  // A camp is only finished when every person leaves with a report in hand, so
+  // the ZIP is the point of the batch run, not an extra.
+  //
+  // The server builds each PDF from a full analysis, but a worklist row only
+  // carries the digitized thresholds on the photo path — a CSV row leaves its
+  // numbers behind on the server. Re-analysing the rows whose thresholds we do
+  // hold is what makes those reports say anything clinical; the rest go out as
+  // a named cover sheet, which is honest, rather than as a blank that looks
+  // like a report.
+  const exportReports = async () => {
+    if (!data?.results?.length) return
+    setZipBusy(true)
+    try {
+      const cases = await Promise.all(data.results.map(async (r) => {
+        if (!r.thresholds) return { name: r.name }
+        const patient = { name: r.name }
+        if (String(r.age ?? '').trim() !== '') patient.age = Number(r.age)
+        if (r.occupation) patient.occupation = r.occupation
+        try {
+          const analysis = await api.analyze({
+            patient, right: r.thresholds.right, left: r.thresholds.left,
+          })
+          return { name: r.name, analysis }
+        } catch {
+          return { name: r.name }
+        }
+      }))
+      const blob = await api.bulkReports(cases)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `AudioSense_reports_${cases.length}_cases.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      showToast(`Bulk report export failed: ${e.message}`, 'error')
+    }
+    setZipBusy(false)
+  }
+
   const EarCell = ({ ear }) => (
     <td className="px-3 py-2.5 text-[12.5px]">
       {ear.pta != null ? (
@@ -129,13 +170,55 @@ export default function Batch() {
           className="text-[13px] font-medium text-teal-700 underline decoration-teal-300 underline-offset-2 hover:decoration-teal-600">
           labelled sample
         </a>
-        {data && (
-          <button onClick={exportCsv}
-            className="ml-auto rounded-lg border border-slate-300 px-4 py-2 text-[13px] font-semibold text-slate-700 hover:border-teal-400 hover:text-teal-700">
-            ⬇ Export results CSV
-          </button>
+        {data?.results?.length > 0 && (
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            <button onClick={exportCsv}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-[13px] font-semibold text-slate-700 hover:border-teal-400 hover:text-teal-700">
+              ⬇ Export results CSV
+            </button>
+            <button onClick={exportReports} disabled={zipBusy}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-[13px] font-semibold text-slate-700 hover:border-teal-400 hover:text-teal-700 disabled:opacity-50">
+              {zipBusy
+                ? `Building ${data.results.length} report(s)…`
+                : `⬇ Export ${data.results.length} PDF report(s)`}
+            </button>
+          </div>
         )}
       </div>
+
+      {data?.results?.length > 0 && (
+        <p className="mt-2 text-[11px] text-slate-400">
+          The PDF export builds one report per row. Rows digitized from photos
+          carry their thresholds and produce a full report; rows read from a CSV
+          are exported as a named cover sheet only, because the batch response
+          does not return their thresholds to this page.
+        </p>
+      )}
+
+      {/* Rows the backend could not interpret. A camp upload of 200 rows
+          must not silently become 199 — the operator needs the row and the
+          column so the sheet can be corrected and re-uploaded. */}
+      {data?.errors?.length > 0 && (
+        <div className="mt-5 rounded-2xl border border-amber-300 bg-amber-50 p-4">
+          <h2 className="text-[13px] font-semibold text-amber-900">
+            {data.errors.length} row{data.errors.length === 1 ? '' : 's'} could
+            not be read and {data.errors.length === 1 ? 'was' : 'were'} left out
+          </h2>
+          <p className="mt-1 text-[12px] leading-relaxed text-amber-800">
+            The other {data.count} row{data.count === 1 ? '' : 's'} analysed
+            normally. Nothing was guessed for these — correct the cells below
+            and upload the file again.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {data.errors.map((e) => (
+              <li key={e.row} className="text-[12px] text-amber-900">
+                <b>Row {e.row}</b>
+                {e.name ? ` (${e.name})` : ''} — {e.problems.join('; ')}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* validation report */}
       {validation && (

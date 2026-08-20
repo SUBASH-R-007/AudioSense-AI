@@ -23,25 +23,39 @@ from app.models.schemas import AC_FREQS, BC_FREQS, EarData
 router = APIRouter(prefix="/api")
 
 
+#: Valid threshold range in dB HL, matching EarData's own validator
+#: (schemas.py:91). Checked here as well as there so a bad cell is reported
+#: with its row and column instead of surfacing as a pydantic error deep in
+#: the loop — where it used to abort the whole upload.
+DB_MIN, DB_MAX = -10, 120
+
+
 def _cell(row, col):
+    """Parse one cell. Returns (value, complaint); exactly one is not None."""
     if col not in row or pd.isna(row[col]) or str(row[col]).strip() == "":
-        return None
+        return None, None
     v = str(row[col]).strip().upper()
     if v == "NR":
-        return "NR"
+        return "NR", None
     try:
-        return int(float(v))
+        n = int(float(v))
     except ValueError:
-        return None
+        return None, f"{col} = {str(row[col]).strip()!r} is not a number, NR or blank"
+    if not (DB_MIN <= n <= DB_MAX):
+        return None, f"{col} = {n} is outside {DB_MIN}..{DB_MAX} dB HL"
+    return n, None
 
 
 def _thresholds(row, prefix, freqs):
-    out = {}
+    """Thresholds for one ear and one transducer, plus any bad cells found."""
+    out, bad = {}, []
     for f in freqs:
-        v = _cell(row, f"{prefix}_{f}")
-        if v is not None:
+        v, complaint = _cell(row, f"{prefix}_{f}")
+        if complaint:
+            bad.append(complaint)
+        elif v is not None:
             out[f] = v
-    return out
+    return out, bad
 
 
 @router.post("/batch")
@@ -53,41 +67,64 @@ async def batch(file: UploadFile = File(...)):
         raise HTTPException(400, f"could not parse CSV: {exc}")
 
     results = []
+    errors: List[dict] = []
     timings: List[float] = []
     batch_started = time.perf_counter()
     for i, row in df.iterrows():
         case_started = time.perf_counter()
-        r_ac = _thresholds(row, "r_ac", AC_FREQS)
-        r_bc = _thresholds(row, "r_bc", BC_FREQS)
-        l_ac = _thresholds(row, "l_ac", AC_FREQS)
-        l_bc = _thresholds(row, "l_bc", BC_FREQS)
-        rr = rules.analyze_test(r_ac, r_bc, l_ac, l_bc)
+        r_ac, bad_r_ac = _thresholds(row, "r_ac", AC_FREQS)
+        r_bc, bad_r_bc = _thresholds(row, "r_bc", BC_FREQS)
+        l_ac, bad_l_ac = _thresholds(row, "l_ac", AC_FREQS)
+        l_bc, bad_l_bc = _thresholds(row, "l_bc", BC_FREQS)
 
-        ml = {"right": None, "left": None}
+        # A screening camp uploads hundreds of rows typed by hand. One bad
+        # cell used to raise inside the loop and abort the entire file with a
+        # bare 500, throwing away every good row and naming neither the row
+        # nor the column. Report the offending row and carry on with the rest.
+        bad = bad_r_ac + bad_r_bc + bad_l_ac + bad_l_bc
+        if bad:
+            errors.append({"row": int(i) + 1,
+                           "name": str(row.get("name", f"Row {int(i)+1}")),
+                           "problems": bad})
+            continue
+
+        # Backstop for anything the range check above does not anticipate. A
+        # malformed row is worth one error entry, never the whole upload.
         try:
-            ml = {"right": classifier.classify_ear(r_ac, r_bc, explain=False),
-                  "left": classifier.classify_ear(l_ac, l_bc, explain=False)}
-        except FileNotFoundError:
-            pass
+            rr = rules.analyze_test(r_ac, r_bc, l_ac, l_bc)
 
-        def summarize(side):
-            ear, m = rr[side], ml[side]
-            return {
-                "pta": (ear.get("ac_pta") or {}).get("value"),
-                "grade": (ear.get("who_grade") or {}).get("grade"),
-                "type": ear.get("type"),
-                "provisional": ear.get("provisional"),
-                "pattern": m.get("pattern_label") if m else None,
-                "confidence": m.get("confidence") if m else None,
-                "ood": m.get("ood") if m else None,
-            }
+            ml = {"right": None, "left": None}
+            try:
+                ml = {"right": classifier.classify_ear(r_ac, r_bc, explain=False),
+                      "left": classifier.classify_ear(l_ac, l_bc, explain=False)}
+            except FileNotFoundError:
+                pass
 
-        disability = rr.get("disability") or {}
-        safety = safety_review(
-            EarData(ac=r_ac, bc=r_bc), EarData(ac=l_ac, bc=l_bc)
-        )
-        # Triage needs the same shape the single-case endpoint produces.
-        triage = triage_case({"safety": safety, "rules": rr, "ml": ml, "battery": {}})
+            def summarize(side):
+                ear, m = rr[side], ml[side]
+                return {
+                    "pta": (ear.get("ac_pta") or {}).get("value"),
+                    "grade": (ear.get("who_grade") or {}).get("grade"),
+                    "type": ear.get("type"),
+                    "provisional": ear.get("provisional"),
+                    "pattern": m.get("pattern_label") if m else None,
+                    "confidence": m.get("confidence") if m else None,
+                    "ood": m.get("ood") if m else None,
+                }
+
+            disability = rr.get("disability") or {}
+            safety = safety_review(
+                EarData(ac=r_ac, bc=r_bc), EarData(ac=l_ac, bc=l_bc)
+            )
+            # Triage needs the same shape the single-case endpoint produces.
+            triage = triage_case({"safety": safety, "rules": rr, "ml": ml,
+                                  "battery": {}})
+        except Exception as exc:
+            errors.append({"row": int(i) + 1,
+                           "name": str(row.get("name", f"Row {int(i)+1}")),
+                           "problems": [f"could not be interpreted: {exc}"]})
+            continue
+
         elapsed_ms = round((time.perf_counter() - case_started) * 1000, 1)
         timings.append(elapsed_ms)
 
@@ -111,6 +148,10 @@ async def batch(file: UploadFile = File(...)):
     return {
         "count": len(results),
         "results": ordered,
+        # Rows that could not be interpreted, named so they can be corrected
+        # and re-uploaded. Empty for a clean file.
+        "errors": errors,
+        "skipped": len(errors),
         "summary": camp_summary(results),
         "worklist": worklist_summary(results),
         "performance": _performance(timings, total_s),

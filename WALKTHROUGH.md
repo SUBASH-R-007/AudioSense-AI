@@ -3,9 +3,9 @@
 A full explanation of what this project is, how every part works, why each
 design decision was made, and what has actually been measured.
 
-**Scale:** ~15,600 lines of backend Python across 70 modules, ~10,600 lines of
-frontend across 40 files, **663 automated tests**, 12 application pages,
-14 components, 27 test files, 67 API endpoints.
+**Scale:** ~16,900 lines of backend Python across 72 modules, ~11,000 lines of
+frontend across 48 files, **947 automated tests**, 14 application pages,
+18 components, 30 test files, 72 API endpoints across 69 paths.
 
 ---
 
@@ -27,6 +27,7 @@ frontend across 40 files, **663 automated tests**, 12 application pages,
    - [6h. Speech audiometry — SDT, SRT and WRS](#6h-speech-audiometry--sdt-srt-and-wrs-with-their-real-uncertainty)
    - [6i. Evoked potentials — ABR, MLR and LLR](#6i-evoked-potentials--abr-mlr-and-llr)
    - [6j. Behavioural observation audiometry](#6j-behavioural-observation-audiometry)
+   - [6k. Tuning forks — a side, a type, and a bracket](#6k-tuning-forks--a-side-a-type-and-a-bracket)
 7. [Machine learning](#7-machine-learning)
 8. [Snap-to-Digitize](#8-snap-to-digitize-photo--audiogram)
 9. [Functional impact: phonemes, SII, hearing age](#9-functional-impact)
@@ -897,6 +898,152 @@ says so rather than accepting the entry silently.
 
 ---
 
+## 6k. Tuning forks — a side, a type, and a bracket
+
+`tuning_fork.py`, `/api/tuning-fork/reference`, `/api/tuning-fork/analyze` ·
+frontend `components/TuningForkPanel.jsx`, on the New Test page beneath the
+threshold grid — clinically the forks come first, but the panel sits under the
+audiogram because it needs those thresholds to check itself against
+
+The oldest instruments in audiology, and still the only ones that work at a
+bedside, in a doorway, or in a camp with no power. What they give is not a
+threshold — it is a **side**, a **type**, and one quantitative fact that is easy
+to miss.
+
+### The frequency at which the Rinne reverses brackets the gap
+
+Air conduction is normally far more efficient than bone conduction, so a normal
+or purely sensorineural ear hears the fork louder at the meatus. Middle-ear
+pathology attenuates the air route only. Once the air-bone gap exceeds a
+fork-specific crossover the bone presentation wins and the Rinne *reverses* —
+and because that crossover rises steeply with frequency, three forks bracket
+the gap:
+
+| Fork | Reverses at a gap of | Role |
+|---|---|---|
+| 256 Hz | ≥ 15 dB (sources: 15–20) | most sensitive, most contaminated by vibrotactile sensation |
+| **512 Hz** | ≥ 30 dB (sources: 20–30) | **the clinical standard**; nearly all published data are at this frequency |
+| 1024 Hz | ≥ 45 dB (sources: 45–50) | least sensitive, most specific; minimal tactile risk |
+
+```
+reversed at 256 only          ->  gap roughly 15-30 dB
+reversed at 256 and 512       ->  roughly 30-45 dB
+reversed at all three         ->  about 45 dB or more
+```
+
+Those are classical teaching figures carrying **medium** confidence — empirical
+series place the 512 Hz transition below the textbook 30 dB, nearer 20–25. So
+the module reports a *band*, never a point estimate, and the confidence travels
+with it.
+
+### The forks that cannot do this
+
+**2048 and 4096 Hz have no trustworthy crossover value, so the module refuses to
+compute one** rather than extrapolating the 15/30/45 series into a fourth and
+fifth row. Those forks decay within a couple of seconds, radiate little energy,
+couple poorly to the mastoid, and are inaudible to exactly the presbycusic
+population most often tested. They stay in the interface — greyed, labelled *no
+valid value* — for crude high-frequency air-conduction screening, and an answer
+entered against them produces no gap inference at all.
+
+The same restriction applies to the Bing and the Gelle for a different reason:
+both depend on the occlusion effect, which is large at 250 Hz, small at 500, and
+**essentially absent from 1 kHz upward**. Run a Bing at 1024 Hz and "no change"
+is what a completely normal ear gives — recorded as a negative Bing, that
+manufactures a conductive diagnosis in every patient tested. So the module marks
+it *uninterpretable* rather than negative.
+
+### The false-negative Rinne
+
+The most dangerous result in the battery. A severe or profound sensorineural ear
+hears nothing at its own meatus, but bone conduction crosses the skull
+essentially unattenuated and is picked up by the **opposite** cochlea. Bone
+therefore appears louder than air, the Rinne reads negative, and an ear with no
+conductive component at all is reported as conductive.
+
+The tell is the Weber: it lateralises **away** from the ear whose Rinne is
+negative, which a genuine conductive loss cannot do. The app treats that
+combination as a contradiction to be surfaced, never as a diagnosis:
+
+> These cannot both be true. The right Rinne is negative, which says conductive,
+> but the Weber lateralises left — away from that ear, which a genuine
+> conductive loss cannot do.
+
+No type of loss is emitted, and the first recommendation is to repeat the Rinne
+with the non-test ear masked.
+
+### Precedence, and why it is explicit
+
+Rules are layered, and a lower layer always wins:
+
+| | Layer | Effect |
+|---|---|---|
+| L0 | validity gates | suppress the output entirely |
+| L1 | contradictions | flag, never diagnose |
+| L2 | warnings | retract, or attach a caveat to the result |
+| L3 | the Rinne × Weber grid | the diagnostic output |
+| L4 | annotations | added to whatever L3 produced |
+
+Over the twelve cells of {positive, negative} × {positive, negative} ×
+{right, left, midline}, the rules form a **complete and mutually exclusive
+partition** — exactly one fires on any complete input, and a test walks all
+twelve to prove it. Ten cells reach a grid verdict; the other two are the
+false-negative contradictions.
+
+Two gates are worth naming. A canal occluded by wax produces a genuine
+conductive pattern from a trivial, reversible cause, so an `obstructed` otoscopy
+suppresses every conductive conclusion rather than reporting a wax plug as
+middle-ear disease. And the Rinnes and the Weber must have been taken at the
+**same** frequency, because the crossover differs at each — mismatched
+frequencies suppress the grid instead of quietly comparing incomparable things.
+
+### When the audiogram disagrees, the audiogram wins
+
+This is where the feature earns its place in a system that already has
+thresholds. The gap the forks *imply* is drawn on a dB axis with the gap
+actually *measured* marked on the same axis — prediction and measurement in one
+picture rather than two places.
+
+The comparison runs in one direction only. A fork-derived conductive finding in
+an ear the audiogram shows to have no significant gap is **retracted**, not
+reconciled — and the retraction is per ear, so withdrawing an artefact on one
+side never buries a genuine conductive loss on the other:
+
+> False-negative Rinne confirmed against audiometry. The right Rinne reversed,
+> but the measured air-bone gap in that ear is 5 dB, which is not significant.
+
+The two are not two estimates of the same quantity — one is a calibrated
+measurement and the other is a bracket — so they are never averaged. The gaps
+are taken **per frequency**, not from the four-frequency average used for
+typing: a 512 Hz fork tests 500 Hz, and averaging it against 4 kHz would compare
+the fork against something it never sampled.
+
+Two details keep the override honest. A **"No Response" is censored, not
+measured** — it computes as 120 dB HL elsewhere, which is right for an average
+and wrong for a difference, since a bone oscillator maxes out near 70 dB and
+subtracting an NR would manufacture a *negative* gap that then satisfies the
+override and retracts a real finding. So a gap involving an NR is unknown and
+the override simply does not run. And the crossover is compared as a **band**:
+judging the 512 Hz fork against a bare 30 dB would report every ordinary 20-29
+dB otosclerosis as the signature of a dead ear.
+
+### What this module may not output
+
+No hearing level in dB, no numeric air-bone gap, and no named disease. Permitted
+outputs are a type of loss, a side, a *band* of gap size, flags and
+recommendations — asserted by test. A fork battery that names a disease is
+overreaching, and one that quotes a threshold is lying.
+
+Two further honesty constraints are built in. The Schwabach and the absolute
+bone conduction test are measured against the **examiner's own** hearing, so an
+examiner with unrecognised high-frequency loss makes them read normal with no
+internal way to detect it — an unattested examiner stamps the result
+uncalibrated. And **no sensitivity or specificity figure appears anywhere**: the
+research behind this module could not verify published accuracy numbers for any
+of these tests, so none is quoted.
+
+---
+
 ## 7. Machine learning
 
 ### Dataset
@@ -1319,7 +1466,7 @@ entry, simulation and screening keep working with no connectivity.
 
 ## 18. Testing strategy
 
-**663 tests across 27 files**, all passing.
+**947 tests across 30 files**, all passing.
 
 | Kind | What it proves |
 |---|---|
@@ -1338,6 +1485,7 @@ entry, simulation and screening keep working with no connectivity.
 | Normative-table integrity | the stored ABR means and SDs regenerate the reference's own published 2 SD / 3 SD range table exactly |
 | Masking arithmetic | both AC rules, the BC rule, the plateau, and the dilemma when the floor exceeds the ceiling |
 | Statistical honesty | the exact binomial interval brackets the score, and two word scores that are not different are not reported as different |
+| Grid completeness | all twelve Rinne x Weber cells are covered by exactly one rule, and no combination falls through |
 
 Three of the tests exist because they caught real defects while being
 written: the otoscopy field-of-view mask was excluding dark regions inside the
@@ -1353,7 +1501,56 @@ developer's environment variables.
 
 ---
 
-## 19. How to run it
+## 19. Access control
+
+The app holds patient records, so it is shut by default. This section exists
+because a walkthrough that explains every part of the project has to explain the
+part that decides who gets in.
+
+**Accounts come from the environment, never from the repository.**
+`AUDIOSENSE_USERS` is `name:hash,name:hash`, and each hash is minted by
+`scripts/make_user.py`. Passwords are PBKDF2-HMAC-SHA256 at **600,000 rounds** —
+OWASP's 2023 floor — compared with `hmac.compare_digest`. The plaintext exists
+only inside `hash_password`; nothing stores it, and nothing logs it.
+
+**Sessions are stateless and signed.** A login returns an HMAC-signed token
+carrying username, expiry and a nonce. There is no server-side session table, so
+nothing to leak and nothing to synchronise between replicas — the trade is that
+an individual token cannot be revoked, which is why the lifetime is short
+(12 hours by default, `AUDIOSENSE_SESSION_HOURS`) and why rotating
+`AUDIOSENSE_SECRET` invalidates every session everywhere.
+
+**The guard is middleware, not a per-route dependency.** There are 22 routers
+and 72 endpoints. A dependency has to be remembered on each new one, and the
+cost of forgetting is an endpoint that serves patient data to the world. As
+middleware the default is closed: a new route is protected the moment it is
+registered. The exceptions are a stated allowlist — the health probe, the login
+and status routes, the banner, and the QR/handout/verify routes a *patient*
+opens by scanning their printed report. `/docs`, `/redoc` and `/openapi.json`
+are **not** on it; they publish the whole route table.
+
+**It fails closed, and says why.** With no accounts configured the instance is
+`locked` and refuses every request with a 503 explaining the configuration — not
+an open instance, and not a silent one. `AUDIOSENSE_ALLOW_ANONYMOUS=1` is the
+explicit local-development opt-out; the frontend then shows a standing warning
+strip instead of a sign-in, so an unauthenticated instance can never be mistaken
+for a protected one.
+
+**The throttle is keyed on things the caller cannot choose.** Eight failed
+logins for one (address, account) pair impose a five-minute wait. The address
+comes from the socket, not from `X-Forwarded-For` — a bucket keyed on a
+caller-supplied header is not a control at all, in either direction: rotating it
+buys unlimited guesses, and setting it to somebody else's address locks *them*
+out. Behind a real proxy, `AUDIOSENSE_TRUSTED_PROXIES` names the ingress and
+only its rightmost forwarded entry is believed.
+
+What this is **not**: no roles, no per-user audit trail, no password reset. It
+tells strangers from staff; it does not tell two clinicians apart.
+[DEPLOYMENT.md](DEPLOYMENT.md) has the operational detail.
+
+---
+
+## 20. How to run it
 
 ```bash
 # Backend
@@ -1366,6 +1563,19 @@ python -m venv .venv
 .venv\Scripts\python -m uvicorn app.main:app --port 8000
 ```
 
+The instance ships locked, so create an account before the first run and put it
+in `backend/.env` (gitignored, read at startup):
+
+```bash
+cd backend
+.venv\Scripts\python -m scripts.make_user clinician
+```
+
+```
+AUDIOSENSE_USERS=clinician:pbkdf2_sha256$600000$...$...
+AUDIOSENSE_SECRET=<the long random value the script printed>
+```
+
 ```bash
 # Frontend
 cd frontend
@@ -1373,7 +1583,7 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173**. No API key needed.
+Open **http://localhost:5173** and sign in. No API key needed.
 
 ```bash
 cd backend
@@ -1382,7 +1592,7 @@ cd backend
 
 ---
 
-## 20. Known limits
+## 21. Known limits
 
 Stated plainly, because a medical tool that oversells is worse than one that
 admits what it cannot do:
@@ -1440,5 +1650,14 @@ admits what it cannot do:
     required and what plateau is usable; obtaining the masked threshold is still
     the audiologist's work at the audiometer, and a *masking dilemma* is a
     finding to report rather than a gap for the software to fill.
-14. **Nothing here replaces an audiologist.** Every report carries: *"AI-assisted
+14. **Tuning forks bracket a gap; they do not measure one.** The crossover
+    values are classical teaching figures of medium confidence and sources
+    disagree, most sharply at 512 Hz, so bands are reported rather than
+    point estimates. 2048 and 4096 Hz have no valid crossover and yield no
+    gap inference at all. The tests are specific but insensitive — a
+    positive Rinne does not exclude a gap below the fork's crossover — and
+    no sensitivity or specificity figure is quoted anywhere, because none
+    could be verified. The Schwabach and ABC are examiner-relative with no
+    internal way to detect an examiner's own hearing loss.
+15. **Nothing here replaces an audiologist.** Every report carries: *"AI-assisted
     interpretation; final diagnosis requires a qualified audiologist."*

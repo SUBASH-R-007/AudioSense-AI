@@ -13,8 +13,10 @@ import {
   XAxis, YAxis,
 } from 'recharts'
 import { api } from '../lib/api.js'
+import { useApp } from '../lib/store.jsx'
 
 export default function BOAPanel() {
+  const { setBoa } = useApp()
   const [reference, setReference] = useState(null)
   const [ageMonths, setAgeMonths] = useState(3)
   const [level, setLevel] = useState(70)
@@ -22,6 +24,13 @@ export default function BOAPanel() {
   const [observers, setObservers] = useState(1)
   const [presentations, setPresentations] = useState(3)
   const [result, setResult] = useState(null)
+  // Has anyone actually scored this observation? The panel sits inside a
+  // <details> on the pure-tone page, and <details> mounts its children whether
+  // or not it is open — so merely opening /new-test used to publish a
+  // three-month-old's prefilled defaults into the case store, and the
+  // dashboard then reported a behavioural observation, for a 45-year-old,
+  // that nobody had performed. Same rule the fork panel follows.
+  const [scored, setScored] = useState(false)
 
   useEffect(() => {
     api.boaReference().then(setReference).catch(() => setReference(null))
@@ -34,10 +43,28 @@ export default function BOAPanel() {
       responses, observers: Number(observers),
       presentations: Number(presentations),
     })
-      .then((r) => { if (!cancelled) setResult(r) })
+      .then((r) => {
+        if (cancelled) return
+        setResult(r)
+        // Two separate conditions, and both are required.
+        //
+        // `available` is a backend age-band check: outside the bands there is
+        // no expected response level to compare against. It says nothing about
+        // whether anyone observed this infant.
+        //
+        // `scored` is that missing half — a clinician touched a control. The
+        // preview above still renders either way; only the store write, which
+        // is what makes the dashboard call the test performed, is gated.
+        //
+        // Not writing is the whole fix. Actively clearing on the unscored path
+        // would be worse than the bug: this panel remounts unscored every time
+        // the page is revisited, and would then wipe an observation that WAS
+        // genuinely recorded earlier and restored from sessionStorage.
+        if (scored && r?.available) setBoa(r)
+      })
       .catch(() => { if (!cancelled) setResult(null) })
     return () => { cancelled = true }
-  }, [ageMonths, level, responses, observers, presentations])
+  }, [ageMonths, level, responses, observers, presentations, scored, setBoa])
 
   // The developmental curve is the point: the level falls because the baby's
   // behaviour matures, not because their hearing improves.
@@ -48,8 +75,12 @@ export default function BOAPanel() {
     speech: b.speech_db_spl,
   })), [reference])
 
-  const toggle = (key) => setResponses((prev) =>
-    prev.includes(key) ? prev.filter((r) => r !== key) : [...prev, key])
+  // Every control marks the observation as scored. Until one of them is
+  // touched the panel is a preview of prefilled defaults, not a measurement.
+  const score = (fn) => (value) => { setScored(true); fn(value) }
+
+  const toggle = score((key) => setResponses((prev) =>
+    prev.includes(key) ? prev.filter((r) => r !== key) : [...prev, key]))
 
   return (
     <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
@@ -66,18 +97,18 @@ export default function BOAPanel() {
         <label className="text-[12px]">
           <span className="mb-1 block font-medium text-slate-600">Age (months)</span>
           <input type="number" min="0" max="60" step="0.5" value={ageMonths}
-            onChange={(e) => setAgeMonths(e.target.value)}
+            onChange={(e) => score(setAgeMonths)(e.target.value)}
             className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
         </label>
         <label className="text-[12px]">
           <span className="mb-1 block font-medium text-slate-600">Level (dB SPL)</span>
           <input type="number" min="0" max="120" step="5" value={level}
-            onChange={(e) => setLevel(e.target.value)}
+            onChange={(e) => score(setLevel)(e.target.value)}
             className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
         </label>
         <label className="text-[12px]">
           <span className="mb-1 block font-medium text-slate-600">Observers</span>
-          <select value={observers} onChange={(e) => setObservers(e.target.value)}
+          <select value={observers} onChange={(e) => score(setObservers)(e.target.value)}
             className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]">
             <option value="1">1</option>
             <option value="2">2 (one blind)</option>
@@ -86,7 +117,7 @@ export default function BOAPanel() {
         <label className="text-[12px]">
           <span className="mb-1 block font-medium text-slate-600">Presentations</span>
           <input type="number" min="1" max="20" value={presentations}
-            onChange={(e) => setPresentations(e.target.value)}
+            onChange={(e) => score(setPresentations)(e.target.value)}
             className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
         </label>
       </div>

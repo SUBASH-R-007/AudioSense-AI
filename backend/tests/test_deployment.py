@@ -122,10 +122,21 @@ def test_docker_is_the_only_deployment_config():
             "is the single source of truth")
 
 
-def test_dockerignore_excludes_patient_data():
-    text = (ROOT / "backend" / ".dockerignore").read_text(encoding="utf-8")
-    for private in ("records.db", "handouts.json", "ai_config.json"):
-        assert private in text, f"{private} must never be baked into an image"
+def test_dockerignore_excludes_private_files():
+    """Patient data AND credentials. The second is the one that got missed.
+
+    This test existed to stop exactly this class of leak and listed only the
+    three data files, so backend/.env — the account hash and the session
+    signing key — sat in the build context unnoticed.
+    """
+    lines = [ln.strip() for ln in
+             (ROOT / "backend" / ".dockerignore").read_text(encoding="utf-8").splitlines()]
+    patterns = {ln for ln in lines if ln and not ln.startswith("#")}
+    for private in ("data/records.db", "data/handouts.json",
+                    "data/ai_config.json", ".env"):
+        assert private in patterns, (
+            f"{private} must be an ignore pattern, not merely mentioned — "
+            "otherwise it is baked into every image built from this tree")
 
 
 def test_vercel_config_rewrites_spa_routes():

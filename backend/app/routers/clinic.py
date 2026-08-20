@@ -68,7 +68,7 @@ def noise_dose(req: DoseRequest):
 def referral(payload: dict = Body(...)):
     """One-click ENT referral letter carrying the red flags and findings."""
     pdf_bytes = build_referral_pdf(payload)
-    name = (payload.get("patient", {}).get("name") or "patient").replace(" ", "_")
+    name = ((payload.get("patient") or {}).get("name") or "patient").replace(" ", "_")
     return Response(
         content=pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="Referral_{name}.pdf"'},

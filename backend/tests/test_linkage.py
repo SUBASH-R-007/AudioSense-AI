@@ -537,3 +537,39 @@ def test_standalone_endpoints_work_from_one_input():
         "analysis": audiogram_from(dict(DISEASE_AUDIOGRAM["nihl"]["ac"])),
         "side": "right"}).json()
     assert body["differential"][0]["key"] == "nihl"
+
+
+# ------------------------------------------------ one ear only ----
+#
+# The `len(measured) < 4` guard covers only the requested side. When the OTHER
+# ear was never tested, rules.py emits "ac_pta": None for it, and the
+# asymmetry calculation read that with a `{}` default and crashed.
+
+def _one_ear_analysis(tested):
+    other = "left" if tested == "right" else "right"
+    body = {"patient": {"name": "One Ear", "age": 40},
+            tested: {"ac": {250: 30, 500: 40, 1000: 45,
+                            2000: 50, 4000: 55, 8000: 60},
+                     "bc": {500: 15, 1000: 15, 2000: 20, 4000: 20}},
+            other: {"ac": {}, "bc": {}}}
+    r = client.post("/api/analyze", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.parametrize("side", ["right", "left"])
+def test_from_audiogram_survives_an_untested_opposite_ear(side):
+    r = client.post("/api/linkage/from-audiogram",
+                    json={"side": side, "analysis": _one_ear_analysis(side)})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["available"] is True
+    # Asymmetry needs two ears; with one it must be absent, not invented.
+    assert body.get("asymmetry_db") is None
+
+
+@pytest.mark.parametrize("side", ["right", "left"])
+def test_link_case_survives_an_untested_opposite_ear(side):
+    r = client.post("/api/linkage",
+                    json={"analysis": _one_ear_analysis(side)})
+    assert r.status_code == 200, r.text

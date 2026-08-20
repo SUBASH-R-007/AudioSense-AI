@@ -37,8 +37,10 @@ URGENCY_TEXT = {
 
 
 def build_referral_pdf(payload: dict) -> bytes:
-    patient = payload.get("patient", {})
-    analysis = payload.get("analysis", {})
+    # `or {}` rather than a `{}` default: a caller that sends the key with an
+    # explicit null gets past the default and would crash on the next .get.
+    patient = payload.get("patient") or {}
+    analysis = payload.get("analysis") or {}
     safety = analysis.get("safety") or {}
     rules = analysis.get("rules") or {}
     battery = analysis.get("battery") or {}

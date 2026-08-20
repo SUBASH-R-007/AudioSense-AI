@@ -21,8 +21,12 @@ SEVERITY_ORDER = [
 
 
 def _worse_grade(rules: dict) -> Optional[str]:
+    # `or {}` rather than a `{}` default: an ear with no PTA-frequency
+    # thresholds is emitted as an explicit "who_grade": None (rules.py:262),
+    # not as a missing key, so the default never fires and a single-ear test
+    # would crash here on None.get.
     grades = [
-        (rules.get(side) or {}).get("who_grade", {}).get("grade")
+        ((rules.get(side) or {}).get("who_grade") or {}).get("grade")
         for side in ("right", "left")
     ]
     grades = [g for g in grades if g]

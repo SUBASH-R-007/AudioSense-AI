@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, apiUrl } from '../lib/api.js'
 import { useApp } from '../lib/store.jsx'
 import LinkagePanel from '../components/LinkagePanel.jsx'
+import StepNav from '../components/StepNav.jsx'
 
 const URGENCY_STYLE = {
   urgent: 'border-rose-300 bg-rose-50 text-rose-800',
@@ -44,7 +45,7 @@ function Bar({ value, lead = false }) {
 function Atlas({ atlas, onPick }) {
   if (!atlas) return null
   return (
-    <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+    <div data-tour="otoscopy-atlas" className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-[15px] font-semibold text-slate-900">Reference atlas</h2>
         <span className="text-[12px] text-slate-500">
@@ -83,7 +84,7 @@ function Atlas({ atlas, onPick }) {
 }
 
 export default function Otoscopy() {
-  const { analysis, assessment, otoscopy, setOtoscopy, showToast } = useApp()
+  const { patient, analysis, assessment, otoscopy, setOtoscopy, showToast } = useApp()
   const fileRef = useRef(null)
   const [atlas, setAtlas] = useState(null)
   const [card, setCard] = useState(null)
@@ -146,6 +147,11 @@ export default function Otoscopy() {
 
   const validation = card?.validation
   const conc = result?.concordance
+  // One tympanic membrane looks much like another on screen, and this page will
+  // happily read an image against whatever case happens to be open. Naming the
+  // patient is the only thing that makes the mismatch visible before a finding
+  // is filed under the wrong ear.
+  const patientName = (patient?.name || '').trim()
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -158,7 +164,7 @@ export default function Otoscopy() {
       </header>
 
       {/* --- upload ------------------------------------------------------ */}
-      <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+      <div data-tour="otoscopy-upload" className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-[13px]">
             <span className="mb-1 block font-medium text-slate-600">Ear</span>
@@ -175,7 +181,11 @@ export default function Otoscopy() {
             {busy ? 'Reading…' : 'Upload otoscope image'}
           </button>
           <span className="text-[12px] text-slate-500">
-            Will cross-check against{' '}
+            Will cross-check{' '}
+            {patientName
+              ? <><span className="font-medium text-slate-700">{patientName}</span>’s image</>
+              : 'this image'}{' '}
+            against{' '}
             {[analysis && 'the audiogram', assessment && 'the symptom history']
               .filter(Boolean).join(' and ') || 'nothing yet'}
             {!analysis || !assessment ? (
@@ -197,6 +207,15 @@ export default function Otoscopy() {
             a time. Use the ranked list, not the headline.
           </p>
         )}
+
+        {/* Unconditional, unlike the measured figures above — those only render
+            once the model card loads, and this caveat has to hold whether or
+            not it does. */}
+        <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+          <span className="font-semibold text-slate-600">Note:</span> these
+          results are not yet reliable, because the training set is small. The
+          accuracy will improve in further iterations of the software.
+        </p>
       </div>
 
       {/* --- result ------------------------------------------------------ */}
@@ -241,7 +260,7 @@ export default function Otoscopy() {
             </ul>
           </div>
 
-          <div className="space-y-5">
+          <div data-tour="otoscopy-result" className="space-y-5">
             <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`rounded-lg border px-2.5 py-1 text-[12px] font-semibold ${
@@ -448,7 +467,7 @@ export default function Otoscopy() {
       <Atlas atlas={atlas} onPick={runReference} />
 
       {card?.limits && (
-        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-slate-50/60 p-5">
+        <div data-tour="otoscopy-limits" className="mt-5 rounded-2xl border border-slate-200/80 bg-slate-50/60 p-5">
           <h2 className="text-[13px] font-semibold text-slate-800">What this model cannot do</h2>
           <ul className="mt-2 space-y-1 text-[12.5px] leading-relaxed text-slate-600">
             {card.limits.map((l) => <li key={l}>· {l}</li>)}
@@ -456,6 +475,8 @@ export default function Otoscopy() {
           <p className="mt-2.5 text-[12px] leading-relaxed text-slate-500">{card.improve}</p>
         </div>
       )}
+
+      <StepNav stepKey="otoscopy" />
     </div>
   )
 }

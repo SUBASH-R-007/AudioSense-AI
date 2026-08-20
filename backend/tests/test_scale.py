@@ -133,3 +133,59 @@ def test_handout_qr_and_page_roundtrip():
 
 def test_unknown_handout_returns_404():
     assert client.get("/api/handout/nope123").status_code == 404
+
+
+def test_oversized_qr_data_is_rejected_not_a_500():
+    """/api/qr is public. A hostile string must not reach the encoder.
+
+    The route is on the auth allowlist, so anything it does costs an
+    unauthenticated caller nothing. Above ~4,000 characters qrcode raises,
+    and that used to escape as a 500 with a traceback in the log.
+    """
+    assert client.get("/api/qr", params={"data": "A" * 5000}).status_code == 422
+    assert client.get("/api/qr", params={"data": ""}).status_code == 422
+    # The only string the product itself issues is a handout URL (~100 chars).
+    assert client.get("/api/qr", params={"data": "A" * 512}).status_code == 200
+
+
+def test_one_bad_cell_does_not_abort_the_whole_batch():
+    """A camp uploads hundreds of hand-typed rows; one typo must cost one row.
+
+    An out-of-range threshold used to raise inside the row loop and return a
+    bare 500 for the entire file, naming neither the row nor the column.
+    """
+    csv = (CSV_HEAD + row("Good One", 30) + row("Bad One", 31).replace(
+        ",30,35,40,45,50,55,", ",30,35,40,45,50,900,", 1) + row("Good Two", 32))
+    r = client.post("/api/batch",
+                    files={"file": ("c.csv", io.BytesIO(csv.encode()), "text/csv")})
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["count"] == 2, "both good rows must still be analysed"
+    assert body["skipped"] == 1
+    assert [e["row"] for e in body["errors"]] == [2]
+    assert body["errors"][0]["name"] == "Bad One"
+    problem = " ".join(body["errors"][0]["problems"])
+    assert "r_ac_8000" in problem, "the offending column must be named"
+    assert "900" in problem
+    # The bad row must not be silently analysed with a bogus threshold.
+    assert all(res["name"] != "Bad One" for res in body["results"])
+
+
+def test_an_unparseable_cell_is_reported_with_its_column():
+    csv = CSV_HEAD + row("Typo", 40).replace(",30,35,", ",30,3o,", 1)
+    body = client.post(
+        "/api/batch",
+        files={"file": ("c.csv", io.BytesIO(csv.encode()), "text/csv")}).json()
+    assert body["count"] == 0 and body["skipped"] == 1
+    assert "r_ac_500" in " ".join(body["errors"][0]["problems"])
+
+
+def test_a_clean_batch_reports_no_errors():
+    """The error channel must stay empty on good input, or it is just noise."""
+    csv = CSV_HEAD + row("A", 30) + row("B", 40, normal=True)
+    body = client.post(
+        "/api/batch",
+        files={"file": ("c.csv", io.BytesIO(csv.encode()), "text/csv")}).json()
+    assert body["count"] == 2
+    assert body["errors"] == [] and body["skipped"] == 0

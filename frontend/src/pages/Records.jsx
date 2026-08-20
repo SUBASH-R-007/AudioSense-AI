@@ -280,7 +280,7 @@ export default function Records() {
       </p>
 
       <div className="mt-5 grid gap-5 lg:grid-cols-3">
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+        <div data-tour="records-list" className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
           <input value={query} onChange={(e) => setQuery(e.target.value)}
             placeholder="Search patients…"
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20" />
