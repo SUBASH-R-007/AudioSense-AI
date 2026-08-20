@@ -40,19 +40,153 @@ matplotlib, reportlab) and a 7.5 MB model to load.
 memory — at or above the ceiling of most free tiers — so building the model on
 deploy fails unpredictably. Shipping it makes every option below viable.
 
-| Platform | Free tier | Sleeps? | Verdict |
-|---|---|---|---|
-| **Hugging Face Spaces** | 2 vCPU, **16 GB RAM** | after long inactivity | **Best choice.** Most memory by far, no card required, and an ML project hosted on HF reads well to a technical jury |
-| **Koyeb** | 512 MB, 1 service | no | Good if you want it always warm |
-| **Render** | 512 MB | ~15 min idle, ~50 s cold start | Reliable; just point it at the Dockerfile |
-| **Fly.io** | small shared VM | configurable | Solid, needs a card |
-| **Google Cloud Run** | generous always-free | scales to zero | Very reliable; needs GCP billing enabled |
-| **Back4App Containers** | free container tier | varies | Straightforward Docker deploy |
-| **Oracle Cloud Always Free** | 4 ARM cores, 24 GB | no | Most powerful, but you administer a VM |
-| **Vercel Python functions** | — | — | **Not viable** — the dependency bundle far exceeds the size limit |
+| Platform | Free tier today | Verdict for a **pilot** |
+|---|---|---|
+| **Oracle Cloud Always Free** | 2 OCPU / 12 GB ARM, 200 GB block storage, 10 TB egress, region `ap-mumbai-1` | **Only option that clears all three bars.** No sleep, real persistence, India region. Needs a card for identity verification |
+| Hugging Face Spaces | Static Spaces free; **compute Spaces now require a paid plan** | **No longer viable.** Was recommended here previously — that is now wrong. Its disk also wipes on the 48-hour sleep |
+| Render | 512 MB, sleeps ~15 min idle | **No.** Cannot attach a disk at all on free, so records cannot persist, and a ~1 min cold start with a patient in the chair |
+| Koyeb / Fly.io | — | **No.** Free tiers closed to new customers |
+| Google Cloud Run | Generous always-free, scales to zero | Persistence needs Cloud SQL, which is **not** free. Cold start on a 250 MB image |
+| Vercel (backend) | — | **No.** Dependency bundle far exceeds the function size limit |
+| Clinic mini PC | ₹15,000–25,000 one-off | Best latency and PHI control. Honest cost: ~25–41 months of the cheapest cloud VM |
 
-> Free-tier terms change often. Check current limits before relying on any of
-> them for a judged demo.
+**Frontend:** Cloudflare Pages free — unlimited bandwidth, 25 MiB per file.
+Not Vercel Hobby: its licence prohibits commercial use, and a clinical pilot is
+not hobby use.
+
+> Free-tier terms change often, and silently — Oracle halved the ARM allowance
+> from 4 OCPU/24 GB to 2 OCPU/12 GB in June 2026 by editing the docs page, with
+> no announcement. Re-check before you rely on any of this.
+
+---
+
+## Pilot walkthrough — Oracle Always Free + Cloudflare Pages
+
+The demo path below (Step 1/2/3) puts the app on the internet. This section is
+what a **pilot with real patients** additionally needs: storage that survives,
+no cold start, and the data staying in India.
+
+Budget about **90 minutes**, most of it waiting on Oracle.
+
+### A. Persisting patient data — do this first
+
+Nothing else matters if the records evaporate. One variable does it:
+
+```
+AUDIOSENSE_STATE_DIR=/state
+```
+
+and run the container with a volume mounted there:
+
+```bash
+docker run -d --restart unless-stopped   -p 8000:8000 -e PORT=8000   -v /mnt/audiosense:/state   -e AUDIOSENSE_STATE_DIR=/state   -e AUDIOSENSE_USERS='clinician:pbkdf2_sha256$600000$...'   -e AUDIOSENSE_SECRET='<long random value>'   -e CORS_ORIGINS='https://your-frontend.pages.dev'   audiosense-api
+```
+
+Five files move onto the volume: `records.db`, `verify_store.json`,
+`handouts.json`, `feedback.jsonl`, `ai_config.json`. The model artifacts stay
+in the image, which is why the variable exists rather than mounting `/app/data`.
+
+Verify it before seeing a patient — save a visit, restart, and look again:
+
+```bash
+docker restart <container>
+# then open /records in the app; the visit must still be listed
+```
+
+### B. Oracle Cloud — the VM
+
+1. **cloud.oracle.com → Start for free.** Pick **India South (Hyderabad)** or
+   **India West (Mumbai)** as your home region. **This is permanent** — it
+   cannot be changed later, and it is what keeps patient data in-country.
+2. Identity verification needs a card. It is a hold, not a charge, unless you
+   later upgrade to Pay-As-You-Go.
+3. **Compute → Instances → Create.** Shape **VM.Standard.A1.Flex**, 2 OCPU /
+   12 GB, image **Ubuntu 22.04 (aarch64)**. Save the SSH key.
+   *If you get "Out of host capacity", that is chronic — retry over a few days,
+   or fall back to the mini PC below.*
+4. **Storage → Block Volumes → Create**, 50 GB, attach it to the instance, then
+   format and mount it at `/mnt/audiosense`.
+5. **Networking → Security List** → allow ingress on 80 and 443. Also open them
+   in the guest firewall: `sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT`
+   (Oracle images ship with a restrictive default).
+
+### C. Build on the VM, not locally
+
+The VM is ARM. Build the image on it — cross-building with QEMU is slow and
+occasionally produces subtly broken wheels:
+
+```bash
+sudo apt update && sudo apt install -y docker.io git
+git clone https://github.com/SUBASH-R-007/AudioSense-AI.git
+cd AudioSense-AI
+sudo docker build -t audiosense-api ./backend
+```
+
+All the Python dependencies publish `aarch64` wheels, so this is a normal build.
+
+### D. TLS
+
+The browser needs HTTPS — the simulator and the screening test use the Web Audio
+and microphone APIs, which browsers refuse on plain HTTP. Point a domain at the
+VM's public IP and let Caddy handle certificates:
+
+```bash
+sudo apt install -y caddy
+# /etc/caddy/Caddyfile
+api.your-domain.org {
+    reverse_proxy localhost:8000
+}
+```
+
+Then set `AUDIOSENSE_TRUSTED_PROXIES=127.0.0.1`, because Caddy is now the peer
+and the login throttle must read the forwarded address from it rather than
+seeing every request as coming from localhost.
+
+### E. Frontend on Cloudflare Pages
+
+1. **dash.cloudflare.com → Workers & Pages → Create → Pages → Connect to Git.**
+2. Build command `npm run build`, output directory `dist`, **root directory
+   `frontend`**.
+3. Environment variable `VITE_API_BASE_URL=https://api.your-domain.org`
+   — read at **build** time, so changing it needs a redeploy, not a restart.
+4. Back on the backend, set `CORS_ORIGINS` to the Pages URL and restart.
+
+### F. Before the first patient
+
+- [ ] Save a visit, restart the container, confirm it is still there
+- [ ] Sign in works, and signing out clears the case
+- [ ] `/api/health` returns 200 and `"model_trained": true`
+- [ ] An anatomy clip plays on the dashboard
+- [ ] A PDF report generates and its QR opens the handout on a phone
+- [ ] Take a backup: `sqlite3 /mnt/audiosense/records.db ".backup /mnt/audiosense/backup-$(date +%F).db"` — put it on a cron
+
+### What free infrastructure will not give you
+
+Say these out loud before the pilot starts, not after:
+
+- **Oracle reclaims "idle" instances.** Under 20% CPU *and* network *and* memory
+  across 7 days marks an Always Free instance idle; it is **stopped, and nothing
+  restarts it on a request**. A quiet clinic qualifies. Upgrading the tenancy to
+  Pay-As-You-Go exempts you — and makes the card genuinely billable.
+- **No SLA, no support, no BAA or DPA.** Always-Free-only tenancies are not
+  eligible for Oracle Support. There is no contractual recourse.
+- **No automatic backups.** The cron line above is the whole backup story.
+- **Under the DPDP Act 2023 the clinic is the Data Fiduciary** and carries the
+  statutory liability regardless of who hosts the server.
+- **Every signed-in user sees every patient.** There are no roles and no audit
+  trail — see §4 of [SCALING.md](SCALING.md). Fine for one clinic and a handful
+  of named accounts; not fine for two clinics sharing an instance.
+
+### Fallback: a mini PC in the clinic
+
+If Mumbai and Hyderabad have no A1 capacity, or the card is a problem: an Intel
+N100 mini PC (16 GB / 512 GB, ₹15,000–25,000) runs the existing image unmodified
+because it is x86-64. Enable BIOS auto-power-on, and use **Tailscale** for remote
+access — not Cloudflare Tunnel, which terminates TLS at the edge and sends PHI
+out of the country. Frontend still on Pages.
+
+Be honest about the economics: that is 25–41 months of the cheapest always-on
+cloud VM. Justify it on persistence, latency and PHI control, never on cost.
 
 ---
 
@@ -69,7 +203,11 @@ Open <http://localhost:8000/> — you should see
 `{"service":"AudioSense AI","status":"ok","model_trained":true}`.
 If that works, it will work anywhere.
 
-### Hugging Face Spaces (recommended)
+### Hugging Face Spaces — NO LONGER FREE FOR THIS APP
+
+Kept for reference only. Creating a Space that runs compute now
+requires a paid plan, and the disk is wiped on every sleep, so
+patient records would not survive a quiet weekend.
 
 1. **huggingface.co → New Space → SDK: Docker → Blank**, visibility **Public**
    (private Spaces sleep more aggressively).
@@ -182,9 +320,18 @@ An OpenCV system dependency. The Dockerfile installs `libgl1` and
 `libglib2.0-0`; this only appears if you deploy without the Dockerfile.
 
 **Patient records disappear after a redeploy**
-Expected — container filesystems are ephemeral, so `records.db`, handouts and
-clinician feedback reset. Mount a volume at `/app/data` for persistence; the
-demo does not need it.
+Container filesystems are ephemeral, so `records.db`, handouts, report
+verification and clinician feedback reset. Fine for a demo; **data loss for a
+pilot**, and the dashboard still says "Saved".
+
+Set `AUDIOSENSE_STATE_DIR` to a mounted volume — see *Persisting patient data*
+below.
+
+**Do NOT mount the volume at `/app/data`.** That directory also holds the
+committed model artifacts (`model_bundle.joblib`, `otoscopy_model.joblib`,
+`deep_ensemble.joblib`, `otoscope_reference/`), and mounting over it hides them
+so the app cannot start. `AUDIOSENSE_STATE_DIR` exists precisely to separate the
+writable half from the read-only half.
 
 **Tamil text missing from the PDF**
 The Linux image has no Tamil font, so the PDF prints a note instead. The Tamil
@@ -329,6 +476,7 @@ reduced to a yes/no.
 | `AUDIOSENSE_SESSION_HOURS` | no | Session lifetime, default 12. Read at call time, so it works from `backend/.env` as well as from a real environment variable |
 | `AUDIOSENSE_ALLOW_ANONYMOUS` | **never in prod** | `1` disables the login entirely. For local development only |
 | `AUDIOSENSE_TRUSTED_PROXIES` | recommended behind a proxy | Peer addresses whose `X-Forwarded-For` may be believed, comma-separated. See below |
+| **`AUDIOSENSE_STATE_DIR`** | **yes for a pilot** | **Directory for everything the app writes** — patient database, handouts, report verification, feedback, provider config. Point it at a mounted volume or records vanish on redeploy. Unset = the in-image path, which is ephemeral. Never set it to `/app/data` |
 | `PORT` | auto | Injected by the platform; the Dockerfile uses it |
 | `CORS_ORIGINS` | yes in prod | Comma-separated allowed origins |
 | `CORS_ORIGIN_REGEX` | no | Regex for preview domains |

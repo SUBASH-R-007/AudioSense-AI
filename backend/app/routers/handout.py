@@ -19,9 +19,13 @@ from pathlib import Path
 import qrcode
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
+from app.services.state_paths import state_dir
 
 router = APIRouter(prefix="/api")
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+# Writable state. Resolved through state_paths so a deployment can move it
+# onto a volume that survives a redeploy; unset, this is the original path.
+DATA_DIR = state_dir()
 HANDOUT_STORE = DATA_DIR / "handouts.json"
 
 

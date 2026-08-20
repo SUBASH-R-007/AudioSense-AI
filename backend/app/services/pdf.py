@@ -32,7 +32,11 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+from app.services.state_paths import state_dir
+
+# Writable state. Resolved through state_paths so a deployment can move it
+# onto a volume that survives a redeploy; unset, this is the original path.
+DATA_DIR = state_dir()
 VERIFY_STORE = DATA_DIR / "verify_store.json"
 
 TEAL = colors.HexColor("#0d9488")

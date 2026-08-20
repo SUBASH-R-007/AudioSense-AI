@@ -16,7 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+from app.services.state_paths import state_dir
+
+# Writable state. Resolved through state_paths so a deployment can move it
+# onto a volume that survives a redeploy; unset, this is the original path.
+DATA_DIR = state_dir()
 DB_PATH = DATA_DIR / "records.db"
 
 SCHEMA = """
@@ -50,6 +54,12 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Write-ahead logging: a reader no longer blocks a writer, which matters
+    # once this is a real file on a volume with a clinician saving a visit
+    # while the records list is open. The timeout replaces an instant
+    # "database is locked" error with a short wait.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.executescript(SCHEMA)
     return conn
 

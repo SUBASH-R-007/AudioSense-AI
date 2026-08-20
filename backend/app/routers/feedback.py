@@ -16,9 +16,13 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.ml.classifier import PATTERN_LABELS
+from app.services.state_paths import state_dir
 
 router = APIRouter(prefix="/api")
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+# Writable state. Resolved through state_paths so a deployment can move it
+# onto a volume that survives a redeploy; unset, this is the original path.
+DATA_DIR = state_dir()
 FEEDBACK_PATH = DATA_DIR / "feedback.jsonl"
 
 
