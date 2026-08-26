@@ -351,7 +351,7 @@ const EarRow = ({ side, color, children }) => (
 )
 
 export default function Dashboard() {
-  const { analysis, otoscopy, showToast } = useApp()
+  const { analysis, otoscopy, babbleScreen, showToast } = useApp()
   const [bundle, setBundle] = useState(null)
   const [loadingReport, setLoadingReport] = useState(false)
   const [tab, setTab] = useState('report')
@@ -826,43 +826,39 @@ export default function Dashboard() {
             </Card>
           )}
 
-          {analysis.norms && (
-            <div data-tour="norms">
-              <Card title="Compared with peers"
-                badge={<span className="text-[10px] font-medium text-slate-400">ISO 7029</span>}>
-                {analysis.norms.hearing_age != null && (
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-3xl font-bold text-slate-900">
-                      {analysis.norms.hearing_age}
-                    </span>
-                    <span className="text-[12.5px] text-slate-500">
-                      hearing age · actual {patient.age}
-                    </span>
-                    {analysis.norms.age_gap > 3 && (
-                      <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
-                        +{analysis.norms.age_gap} yrs
-                      </span>
-                    )}
-                  </div>
-                )}
-                {['right', 'left'].map((side) => {
-                  const n = analysis.norms[side]
-                  if (!n) return null
-                  return (
-                    <p key={side} className="mt-2 text-[12.5px] leading-snug text-slate-600">
-                      <b className={side === 'right' ? 'text-red-600' : 'text-blue-600'}>
-                        {side.charAt(0).toUpperCase()}:
-                      </b>{' '}{n.summary}
-                    </p>
-                  )
-                })}
-                <p className="mt-2 text-[10.5px] leading-snug text-slate-400">
-                  {analysis.norms.right?.caveat || analysis.norms.left?.caveat}
+          {babbleScreen?.result && (
+            <Card title="Speech-in-babble screening"
+              badge={<span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                babbleScreen.result.band === 'normal' ? 'bg-emerald-100 text-emerald-700'
+                  : babbleScreen.result.band === 'insufficient' ? 'bg-amber-100 text-amber-800'
+                  : 'bg-rose-100 text-rose-700'}`}>{babbleScreen.result.band}</span>}>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-slate-900">
+                  {babbleScreen.result.srt_db_snr}
+                </span>
+                <span className="text-[12px] text-slate-500">dB SNR against multi-talker babble</span>
+              </div>
+              <p className="mt-1.5 text-[12px] leading-snug text-slate-600">
+                {babbleScreen.result.interpretation}
+              </p>
+              {babbleScreen.versus_audiogram?.hidden_hearing_loss && (
+                <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11.5px] leading-snug text-amber-900">
+                  Normal tones but poor speech-in-babble — the dissociation
+                  sometimes called hidden hearing loss. Counsel on this result,
+                  not the audiogram alone.
                 </p>
-              </Card>
-            </div>
+              )}
+              <p className="mt-2 text-[10.5px] leading-snug text-slate-400">
+                {babbleScreen.result.normative}. Bands are provisional pending
+                clinical calibration.
+              </p>
+            </Card>
           )}
 
+          {/* The "Compared with peers" (ISO 7029 hearing-age) card lived here
+              until it was removed at NIEPMD's request. The backend still
+              computes analysis.norms — the verdict banner's "Hearing age"
+              number reads it — so only the card came out, not the feature. */}
           <Card title="Cochlear damage map" tour="cochlea"
             badge={
               <div className="flex rounded-lg bg-slate-100 p-0.5">

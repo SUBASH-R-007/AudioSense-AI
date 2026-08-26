@@ -6,7 +6,7 @@ import ScreeningRunner from '../components/ScreeningRunner.jsx'
 
 export default function Screening() {
   const navigate = useNavigate()
-  const { setAnalysis, showToast, patient: recorded, setPatient: setRecorded } = useApp()
+  const { analysis, setAnalysis, setBabbleScreen, setRecord, showToast, patient: recorded, setPatient: setRecorded } = useApp()
   // Screening is a tool, not a step of the consultation — a judge tries it on
   // themselves, a camp screens a queue of walk-ins. So it keeps its own subject
   // rather than editing the recorded patient. But when a patient IS on file it
@@ -32,7 +32,28 @@ export default function Screening() {
   // The runner measures; this page decides what the measurement means for the
   // record. Bone conduction is left empty because a screening never establishes
   // it, and the analysis must not be able to infer an air-bone gap from silence.
-  const analyze = async ({ right, left }) => {
+  const analyze = async (run) => {
+    // A babble run measures a speech reception threshold, not tone
+    // thresholds, so there is nothing for /api/analyze to grade. It is scored
+    // against the (provisional) bands server-side and stored as its own
+    // instrument result, which the dashboard shows beside the audiogram.
+    if (run.procedure === 'babble') {
+      try {
+        const scored = await api.speechBabble(
+          run.babble.reversals,
+          analysis?.thresholds?.right?.ac || {},
+          analysis?.thresholds?.left?.ac || {})
+        setBabbleScreen({ ...scored, trials: run.babble.trials,
+                          reversals: run.babble.reversals,
+                          when: new Date().toISOString() })
+        showToast(`Speech-in-babble SRT ${scored.result.srt_db_snr} dB SNR — ${scored.result.band}`)
+        navigate('/dashboard')
+      } catch (e) {
+        showToast(`Scoring failed: ${e.message}`, 'error')
+      }
+      return
+    }
+    const { right, left } = run
     try {
       const subject = { ...patient, name: patient.name || 'Screening subject' }
       const record = {
@@ -41,6 +62,7 @@ export default function Screening() {
         left: { ac: left, bc: {} },
       }
       setAnalysis(await api.analyze(record))
+      setRecord(record)
       // The dashboard reads the patient from the analysis, but every other
       // screen reads it from the store. Publishing it here keeps them agreeing
       // about whose result is on screen.

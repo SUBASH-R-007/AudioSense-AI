@@ -60,6 +60,89 @@ not hobby use.
 
 ---
 
+## Railway + Vercel — the quickest path
+
+Chosen for the first pilot. Railway is **not free** — a one-time $5 trial credit
+lasting 30 days, then Hobby at $5/month — and Vercel's Hobby plan is licensed
+for non-commercial use, so a clinic running on it should be on a paid plan.
+Both are deliberate trade-offs for speed of setup; the Oracle walkthrough below
+is the free alternative.
+
+Railway does have the one thing that matters most here: **real persistent
+volumes**. Configure that and the rest is ordinary.
+
+### 1. Backend on Railway
+
+1. **New Project → Deploy from GitHub repo** → pick the repo.
+2. **Settings → Root Directory: `backend`** ← required. Railway then finds
+   `backend/Dockerfile` and uses it; there is no `railway.json` or Procfile in
+   this repo on purpose, because the Dockerfile is the single deploy path.
+3. **Settings → Networking → Generate Domain.** Note the
+   `*.up.railway.app` URL — the frontend needs it.
+
+### 2. The volume — do this before the first patient
+
+**Settings → Volumes → New Volume**, mount path `/state`.
+
+Then set the variables (**Variables** tab):
+
+| Variable | Value |
+|---|---|
+| `AUDIOSENSE_STATE_DIR` | `/state` |
+| `AUDIOSENSE_USERS` | `clinician:pbkdf2_sha256$600000$...` from `scripts/make_user.py` |
+| `AUDIOSENSE_SECRET` | a long random value |
+| `CORS_ORIGINS` | your Vercel URL, no trailing slash |
+| `AUDIOSENSE_TRUSTED_PROXIES` | Railway's ingress address — see below |
+
+Without `AUDIOSENSE_STATE_DIR` the volume is mounted and ignored, and records
+still vanish on redeploy. **Do not** set the mount path to `/app/data`: that
+directory holds the committed model artifacts, and mounting over it stops the
+container booting.
+
+`$PORT` is injected by Railway and the Dockerfile already reads it. Nothing to
+configure.
+
+### 3. Frontend on Vercel
+
+1. **Add New → Project** → import the repo.
+2. **Root Directory: `frontend`** ← required. The Vite preset and build
+   settings come from `frontend/vercel.json`.
+3. **Environment Variables** → `VITE_API_BASE_URL` = the Railway URL.
+   Read at **build** time, so changing it needs a redeploy, not a restart.
+4. Deploy, then set `CORS_ORIGINS` on Railway to the resulting Vercel URL.
+
+The 11 anatomy clips (22 MB) ship in `dist/` as ordinary static assets — no
+extra configuration, and the SPA rewrite in `vercel.json` does not shadow them
+because Vercel serves real files before applying rewrites.
+
+### 4. The throttle behind Railway's proxy
+
+Every request reaches the app from Railway's ingress, so the socket address is
+the same for everyone and the login throttle would put the whole clinic in one
+bucket. Set `AUDIOSENSE_TRUSTED_PROXIES` to the peer address the app actually
+sees. Find it once, from the logs of a failed login, or leave it unset and
+accept that eight failed attempts across all users triggers a shared five-minute
+wait.
+
+### 5. Verify before the first patient
+
+- [ ] Save a visit → **Deployments → Redeploy** → the visit is still in
+      `/records`. This is the one that proves the volume is working.
+- [ ] `/api/health` returns `"model_trained": true`
+- [ ] Sign-in works; an unauthenticated request to `/api/records/patients` is refused
+- [ ] An anatomy clip plays on the dashboard
+- [ ] Back up the volume on a schedule — Railway does not do it for you
+
+### What to watch
+
+- **The trial credit expires after 30 days.** When it does the service stops,
+  and the volume is retained only while the project is active. Move to Hobby
+  before the pilot starts, or plan the migration.
+- **Redeploys restart the container.** With the volume configured that is
+  harmless; without it, it is silent data loss.
+
+---
+
 ## Pilot walkthrough — Oracle Always Free + Cloudflare Pages
 
 The demo path below (Step 1/2/3) puts the app on the internet. This section is
@@ -79,7 +162,14 @@ AUDIOSENSE_STATE_DIR=/state
 and run the container with a volume mounted there:
 
 ```bash
-docker run -d --restart unless-stopped   -p 8000:8000 -e PORT=8000   -v /mnt/audiosense:/state   -e AUDIOSENSE_STATE_DIR=/state   -e AUDIOSENSE_USERS='clinician:pbkdf2_sha256$600000$...'   -e AUDIOSENSE_SECRET='<long random value>'   -e CORS_ORIGINS='https://your-frontend.pages.dev'   audiosense-api
+docker run -d --restart unless-stopped \
+  -p 8000:8000 -e PORT=8000 \
+  -v /mnt/audiosense:/state \
+  -e AUDIOSENSE_STATE_DIR=/state \
+  -e AUDIOSENSE_USERS='clinician:pbkdf2_sha256$600000$...' \
+  -e AUDIOSENSE_SECRET='<long random value>' \
+  -e CORS_ORIGINS='https://your-frontend.pages.dev' \
+  audiosense-api
 ```
 
 Five files move onto the volume: `records.db`, `verify_store.json`,

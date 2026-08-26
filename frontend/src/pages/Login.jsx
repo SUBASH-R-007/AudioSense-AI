@@ -82,6 +82,16 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState(null)
+  const [showPassword, setShowPassword] = useState(false)
+  // Field-level messages appear on blur or on submit, never on first
+  // keystroke — being told "required" while the field still has focus and one
+  // character typed reads as nagging, not help.
+  const [touched, setTouched] = useState({ username: false, password: false })
+
+  const usernameError = touched.username && !username.trim()
+    ? 'Enter your username.' : null
+  const passwordError = touched.password && !password
+    ? 'Enter your password.' : null
 
   // The instance already told us at boot that it has no accounts, so say so
   // before anyone types a password that was never going to work.
@@ -94,6 +104,10 @@ export default function Login() {
   const submit = async (event) => {
     event.preventDefault()
     if (busy) return
+    // Submitting counts as having visited every field, so an untouched empty
+    // form shows both messages rather than silently doing nothing.
+    setTouched({ username: true, password: true })
+    if (!username.trim() || !password) return
     setBusy(true)
     setFailure(null)
     try {
@@ -102,8 +116,10 @@ export default function Login() {
       setFailure(describeFailure(err))
       // Clear the attempt rather than leave it sitting in a form field for the
       // next person at the machine to reveal. The username stays, because
-      // retyping it is friction with no benefit.
+      // retyping it is friction with no benefit. Re-hide it too — "show" was
+      // a decision about the value that no longer exists.
       setPassword('')
+      setShowPassword(false)
     } finally {
       setBusy(false)
     }
@@ -118,7 +134,10 @@ export default function Login() {
       <div className="w-full max-w-sm">
         <Logo />
 
-        <form onSubmit={submit}
+        {/* noValidate: the fields keep `required` for assistive tech, but the
+            browser's own bubble must not pre-empt the submit handler — the
+            inline messages below are the validation UI. */}
+        <form onSubmit={submit} noValidate
           className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
           <h1 className="text-[15px] font-semibold text-slate-900">Sign in</h1>
           <p className="mt-1 text-[12px] leading-relaxed text-slate-500">
@@ -135,38 +154,71 @@ export default function Login() {
             </div>
           )}
 
-          <label className="mt-4 block">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          <div className="mt-4">
+            <label htmlFor="login-username"
+              className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               Username
-            </span>
+            </label>
             <input
+              id="login-username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              onBlur={() => setTouched((t) => ({ ...t, username: true }))}
               autoFocus
               autoComplete="username"
               autoCapitalize="none"
               spellCheck="false"
               required
               disabled={busy}
-              className={field}
+              aria-invalid={usernameError ? 'true' : undefined}
+              aria-describedby={usernameError ? 'login-username-error' : undefined}
+              className={`${field} ${usernameError ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-100' : ''}`}
             />
-          </label>
+            {usernameError && (
+              <p id="login-username-error" className="mt-1 text-[11.5px] text-rose-700">
+                {usernameError}
+              </p>
+            )}
+          </div>
 
-          <label className="mt-3 block">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          <div className="mt-3">
+            <label htmlFor="login-password"
+              className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               Password
-            </span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-              disabled={busy}
-              className={field}
-            />
-          </label>
+            </label>
+            <div className="relative">
+              <input
+                id="login-password"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onBlur={() => setTouched((t) => ({ ...t, password: true }))}
+                autoComplete="current-password"
+                required
+                disabled={busy}
+                aria-invalid={passwordError ? 'true' : undefined}
+                aria-describedby={passwordError ? 'login-password-error' : undefined}
+                className={`${field} pr-16 ${passwordError ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-100' : ''}`}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                disabled={busy}
+                aria-pressed={showPassword}
+                aria-controls="login-password"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                className="absolute inset-y-0 right-0 mt-1 flex items-center rounded-r-xl px-3 text-[11.5px] font-semibold text-slate-500 transition hover:text-teal-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+              >
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
+            </div>
+            {passwordError && (
+              <p id="login-password-error" className="mt-1 text-[11.5px] text-rose-700">
+                {passwordError}
+              </p>
+            )}
+          </div>
 
           {failure && (
             <div role="alert"
@@ -187,6 +239,17 @@ export default function Login() {
           >
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
+
+          {/* Deliberately words, not links. Accounts are issued per clinic by
+              an administrator (scripts/make_user.py + environment config);
+              there is no self-service reset or signup endpoint, and a link
+              that dead-ends in "coming soon" would be worse than the truth. */}
+          <p className="mt-4 text-[11.5px] leading-relaxed text-slate-500">
+            <span className="font-semibold text-slate-600">Forgot your password?</span>{' '}
+            Contact your clinic administrator — they can reissue your account.
+            New accounts are also issued by the administrator; there is no
+            self-service sign-up on an instance holding patient records.
+          </p>
         </form>
 
         <p className="mt-4 px-1 text-[10px] leading-relaxed text-slate-400">

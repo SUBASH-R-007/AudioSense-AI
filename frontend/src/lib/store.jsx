@@ -32,6 +32,14 @@ export function AppProvider({ children }) {
   const [aep, setAepRaw] = useState(() => load('as_aep', null))
   const [tuningFork, setTuningForkRaw] = useState(() => load('as_tuning_fork', null))
   const [boa, setBoaRaw] = useState(() => load('as_boa', null))
+  // The exact request last sent to /api/analyze. Kept so a test performed
+  // AFTER the audiogram — a tympanogram on the immittance page, emissions —
+  // can be merged in and the analysis re-run over everything collected,
+  // instead of silently interpreting on a subset.
+  const [record, setRecordRaw] = useState(() => load('as_record', null))
+  // Speech-in-babble screening — an instrument result like the fork battery,
+  // stored so the dashboard can show it beside the audiogram it complements.
+  const [babbleScreen, setBabbleScreenRaw] = useState(() => load('as_babble', null))
   // The patient, captured once at the start of the consultation.
   //
   // This used to live inside the pure-tone form's local state, which put it
@@ -82,6 +90,10 @@ export function AppProvider({ children }) {
     (v) => persist('as_tuning_fork', v, setTuningForkRaw), [persist])
   const setBoa = useCallback(
     (v) => persist('as_boa', v, setBoaRaw), [persist])
+  const setBabbleScreen = useCallback(
+    (v) => persist('as_babble', v, setBabbleScreenRaw), [persist])
+  const setRecord = useCallback(
+    (v) => persist('as_record', v, setRecordRaw), [persist])
   const setPatient = useCallback(
     (p) => persist('as_patient', p, setPatientRaw), [persist])
 
@@ -107,11 +119,11 @@ export function AppProvider({ children }) {
   // reports findings that belong to somebody else.
   const resetCase = useCallback(() => {
     for (const k of ['as_analysis', 'as_assessment', 'as_otoscopy', 'as_aep',
-                     'as_tuning_fork', 'as_boa', 'as_patient', 'as_skipped']) {
+                     'as_tuning_fork', 'as_boa', 'as_babble', 'as_record', 'as_patient', 'as_skipped']) {
       try { sessionStorage.removeItem(k) } catch { /* ignore */ }
     }
     setAnalysisRaw(null); setAssessmentRaw(null); setOtoscopyRaw(null)
-    setAepRaw(null); setTuningForkRaw(null); setBoaRaw(null)
+    setAepRaw(null); setTuningForkRaw(null); setBoaRaw(null); setBabbleScreenRaw(null); setRecordRaw(null)
     setPatientRaw(null); setSkippedRaw({})
   }, [])
 
@@ -248,7 +260,7 @@ export function AppProvider({ children }) {
       value={{
         analysis, setAnalysis, history,
         assessment, setAssessment, otoscopy, setOtoscopy,
-        aep, setAep, tuningFork, setTuningFork, boa, setBoa,
+        aep, setAep, tuningFork, setTuningFork, boa, setBoa, babbleScreen, setBabbleScreen, record, setRecord,
         patient, setPatient, skipped, skipStep, unskipStep, resetCase,
         aiStatus, refreshAiStatus, toast, showToast,
         session, authRequired, authMode, booting, signIn, signOut,

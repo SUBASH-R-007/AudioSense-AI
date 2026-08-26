@@ -16,6 +16,21 @@ import { useApp } from '../lib/store.jsx'
 import LinkagePanel from '../components/LinkagePanel.jsx'
 import StepNav from '../components/StepNav.jsx'
 
+//: What the upload accepts, by MIME type. Videos are DISPLAYED, never
+//: analysed — the classifier reads still images only.
+const MEDIA_TYPES = {
+  'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image',
+  'video/mp4': 'video', 'video/webm': 'video',
+}
+//: The image cap mirrors the backend's own limit (otoscopy_router MAX_BYTES),
+//: so a file this page accepts is never bounced server-side for size. Video
+//: stays client-side, so its cap is only about browser memory.
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024
+
+const fmtBytes = (n) => (n >= 1024 * 1024
+  ? `${(n / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
+
 const URGENCY_STYLE = {
   urgent: 'border-rose-300 bg-rose-50 text-rose-800',
   refer: 'border-amber-300 bg-amber-50 text-amber-800',
@@ -89,7 +104,11 @@ export default function Otoscopy() {
   const [atlas, setAtlas] = useState(null)
   const [card, setCard] = useState(null)
   const [side, setSide] = useState('right')
-  const [preview, setPreview] = useState(null)
+  // What was uploaded, whatever happened to it afterwards. The preview used to
+  // exist only inside the result panel, so a failed analysis showed nothing at
+  // all — the clinician could not even see which file had failed.
+  const [media, setMedia] = useState(null) // { url, name, size, kind }
+  const [mediaError, setMediaError] = useState(null)
   // Shared, so the symptom page and the dashboard can cross-check against it.
   const result = otoscopy
   const setResult = setOtoscopy
@@ -112,11 +131,14 @@ export default function Otoscopy() {
     return () => { cancelled = true }
   }, [result])
 
-  async function run(file) {
-    if (!file) return
+  // Revoke the PREVIOUS object URL whenever the media changes, and the last
+  // one on unmount — the cleanup closure holds the old value. These URLs used
+  // to leak on every upload.
+  useEffect(() => () => { if (media?.url) URL.revokeObjectURL(media.url) }, [media])
+
+  async function analyse(file) {
     setBusy(true)
     setResult(null)
-    setPreview(URL.createObjectURL(file))
     try {
       // The current analysis rides along so the cross-check against the
       // audiogram and tympanogram happens in the same round trip.
@@ -128,14 +150,54 @@ export default function Otoscopy() {
     }
   }
 
+  function chooseFile(file) {
+    if (!file) return
+    setMediaError(null)
+
+    const kind = MEDIA_TYPES[file.type]
+    if (!kind) {
+      setMediaError(`"${file.name}" is ${file.type || 'an unrecognised type'} — `
+        + 'use a JPG, PNG or WebP image, or an MP4 or WebM video.')
+      return
+    }
+    const cap = kind === 'video' ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES
+    if (file.size > cap) {
+      setMediaError(`"${file.name}" is ${fmtBytes(file.size)} — the limit is `
+        + `${fmtBytes(cap)} for ${kind === 'video' ? 'video' : 'images'}.`)
+      return
+    }
+
+    setMedia({ url: URL.createObjectURL(file), name: file.name,
+               size: file.size, kind })
+    if (kind === 'image') {
+      analyse(file)
+    } else {
+      // The classifier reads still images; a video is shown for viewing only,
+      // so a stale differential from a previous image must not sit next to it.
+      // TODO(frame-grab): capture a chosen frame from the video client-side
+      // and send that still through /api/otoscopy/analyze.
+      setResult(null)
+    }
+  }
+
+  function removeMedia() {
+    setMedia(null)
+    setMediaError(null)
+    setResult(null)
+    // Selecting the same file again must re-fire the change event.
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
   // Atlas thumbnails double as test images — the fastest way to demonstrate
   // the pipeline without a patient in the chair.
   async function runReference(src) {
     setBusy(true)
     setResult(null)
+    setMediaError(null)
     try {
       const blob = await fetch(apiUrl(src)).then((r) => r.blob())
-      setPreview(URL.createObjectURL(blob))
+      setMedia({ url: URL.createObjectURL(blob), name: 'Reference view',
+                 size: blob.size, kind: 'image' })
       setResult(await api.otoscopy(new File([blob], 'reference.png', { type: 'image/png' }),
         side, analysis))
     } catch (e) {
@@ -174,11 +236,12 @@ export default function Otoscopy() {
               <option value="left">Left</option>
             </select>
           </label>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden"
-            onChange={(e) => run(e.target.files?.[0])} />
+          <input ref={fileRef} type="file"
+            accept="image/jpeg,image/png,image/webp,video/mp4,video/webm"
+            className="hidden" onChange={(e) => chooseFile(e.target.files?.[0])} />
           <button type="button" onClick={() => fileRef.current?.click()} disabled={busy}
             className="rounded-lg bg-teal-600 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50">
-            {busy ? 'Reading…' : 'Upload otoscope image'}
+            {busy ? 'Reading…' : media ? 'Replace image or video' : 'Upload image or video'}
           </button>
           <span className="text-[12px] text-slate-500">
             Will cross-check{' '}
@@ -216,16 +279,88 @@ export default function Otoscopy() {
           results are not yet reliable, because the training set is small. The
           accuracy will improve in further iterations of the software.
         </p>
+
+        {mediaError && (
+          <p role="alert"
+            className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12.5px] text-rose-800">
+            {mediaError}
+          </p>
+        )}
       </div>
+
+      {/* --- what was uploaded ------------------------------------------- */}
+      {/* Videos always render here (they never produce a result panel); an
+          image shows here only until its analysis succeeds, at which point the
+          result panel below takes over the same object URL. */}
+      {media && (media.kind === 'video' || !result) && (
+        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
+            {media.kind === 'video' ? (
+              <video src={media.url} controls playsInline preload="metadata"
+                className="mx-auto max-h-80 w-full object-contain"
+                aria-label={`Uploaded otoscope video: ${media.name}`} />
+            ) : (
+              <img src={media.url} alt={`Uploaded otoscope view: ${media.name}`}
+                className="mx-auto max-h-72 object-contain" />
+            )}
+          </div>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-[12px] text-slate-600">
+              <span className="font-medium text-slate-800">{media.name}</span>
+              {' '}· {fmtBytes(media.size)} · {media.kind}
+            </span>
+            <button type="button" onClick={() => fileRef.current?.click()}
+              className="rounded-lg border border-slate-200 px-2.5 py-1 text-[12px] font-medium text-slate-600 transition hover:border-slate-300">
+              Replace
+            </button>
+            <button type="button" onClick={removeMedia}
+              className="rounded-lg border border-slate-200 px-2.5 py-1 text-[12px] font-medium text-slate-600 transition hover:border-rose-300 hover:text-rose-700">
+              Remove
+            </button>
+          </div>
+          {media.kind === 'video' && (
+            <p className="mt-2.5 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-[12px] leading-relaxed text-sky-900">
+              Video is shown for viewing and documentation only — the AI reads
+              still images. Pause on the clearest view of the drum and upload a
+              screenshot of that frame to run the analysis.
+            </p>
+          )}
+          {media.kind === 'image' && busy && (
+            <p className="mt-2.5 text-[12px] text-slate-400">Analysing…</p>
+          )}
+          {media.kind === 'image' && !busy && !result && (
+            <p className="mt-2.5 text-[12px] text-slate-500">
+              The analysis did not complete — the image is kept here so you can
+              see what was sent. Replace it or try again.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* --- result ------------------------------------------------------ */}
       {result && (
         <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_1.15fr]">
           <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
-              {preview && <img src={preview} alt="Uploaded otoscope view"
+              {media?.url && <img src={media.url} alt="Uploaded otoscope view"
                 className="mx-auto max-h-72 object-contain" />}
             </div>
+            {media && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-[12px] text-slate-600">
+                  <span className="font-medium text-slate-800">{media.name}</span>
+                  {' '}· {fmtBytes(media.size)}
+                </span>
+                <button type="button" onClick={() => fileRef.current?.click()}
+                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-[12px] font-medium text-slate-600 transition hover:border-slate-300">
+                  Replace
+                </button>
+                <button type="button" onClick={removeMedia}
+                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-[12px] font-medium text-slate-600 transition hover:border-rose-300 hover:text-rose-700">
+                  Remove
+                </button>
+              </div>
+            )}
 
             {!result.quality.usable && (
               <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12.5px] text-rose-800">

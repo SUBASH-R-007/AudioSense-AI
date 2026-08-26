@@ -33,6 +33,68 @@ const CATEGORY_STYLE = {
   guide: 'bg-slate-100 text-slate-600',
 }
 
+// One hue per symptom group, so "three amber chips lit" reads as a discharge
+// story at a glance. Keys match the group names the catalog endpoint emits;
+// anything it grows later falls back to the app's own teal. Selection is
+// never colour alone: a selected chip changes fill, border AND weight, and
+// carries aria-pressed. Full literal class strings throughout — Tailwind's
+// scanner cannot see classes assembled at runtime.
+//
+// Fills are the 700 shades: every one keeps white 12px text above the WCAG AA
+// 4.5:1 line, which the lighter 500/600s of amber and cyan do not.
+const GROUP_STYLES = {
+  'Discharge': {
+    dot: 'bg-amber-500',
+    selected: 'border-amber-700 bg-amber-700 font-medium text-white',
+    unselected: 'border-amber-200 bg-white text-slate-600 hover:border-amber-400',
+  },
+  'Pain': {
+    dot: 'bg-rose-500',
+    selected: 'border-rose-700 bg-rose-700 font-medium text-white',
+    unselected: 'border-rose-200 bg-white text-slate-600 hover:border-rose-400',
+  },
+  'Hearing': {
+    dot: 'bg-sky-500',
+    selected: 'border-sky-700 bg-sky-700 font-medium text-white',
+    unselected: 'border-sky-200 bg-white text-slate-600 hover:border-sky-400',
+  },
+  'Ear noise': {
+    dot: 'bg-violet-500',
+    selected: 'border-violet-700 bg-violet-700 font-medium text-white',
+    unselected: 'border-violet-200 bg-white text-slate-600 hover:border-violet-400',
+  },
+  'Balance': {
+    dot: 'bg-emerald-500',
+    selected: 'border-emerald-700 bg-emerald-700 font-medium text-white',
+    unselected: 'border-emerald-200 bg-white text-slate-600 hover:border-emerald-400',
+  },
+  'Pressure': {
+    dot: 'bg-cyan-500',
+    selected: 'border-cyan-700 bg-cyan-700 font-medium text-white',
+    unselected: 'border-cyan-200 bg-white text-slate-600 hover:border-cyan-400',
+  },
+  'Systemic': {
+    dot: 'bg-orange-500',
+    selected: 'border-orange-700 bg-orange-700 font-medium text-white',
+    unselected: 'border-orange-200 bg-white text-slate-600 hover:border-orange-400',
+  },
+  'Children': {
+    dot: 'bg-fuchsia-500',
+    selected: 'border-fuchsia-700 bg-fuchsia-700 font-medium text-white',
+    unselected: 'border-fuchsia-200 bg-white text-slate-600 hover:border-fuchsia-400',
+  },
+  'History and exposure': {
+    dot: 'bg-indigo-500',
+    selected: 'border-indigo-700 bg-indigo-700 font-medium text-white',
+    unselected: 'border-indigo-200 bg-white text-slate-600 hover:border-indigo-400',
+  },
+  default: {
+    dot: 'bg-teal-500',
+    selected: 'border-teal-700 bg-teal-700 font-medium text-white',
+    unselected: 'border-teal-200 bg-white text-slate-600 hover:border-teal-400',
+  },
+}
+
 // Each correlation line opens with the ear it describes. Colouring that first
 // word red for right and blue for left is the convention the audiogram itself
 // uses, and it is what lets a clinician see at a glance whether the ear that
@@ -260,26 +322,29 @@ export default function Symptoms() {
           </label>
 
           <div className="mt-4 max-h-[26rem] space-y-4 overflow-y-auto pr-1">
-            {catalog?.symptom_groups.map((group) => (
-              <fieldset key={group.group}>
-                <legend className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  {group.group}
-                </legend>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {group.symptoms.map((s) => (
-                    <button key={s.key} type="button" onClick={() => toggle(s.key)}
-                      aria-pressed={picked.has(s.key)}
-                      className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
-                        picked.has(s.key)
-                          ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
-                          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
-                      }`}>
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              </fieldset>
-            ))}
+            {catalog?.symptom_groups.map((group) => {
+              const c = GROUP_STYLES[group.group] || GROUP_STYLES.default
+              return (
+                <fieldset key={group.group}>
+                  <legend className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    <span aria-hidden="true"
+                      className={`inline-block h-2 w-2 rounded-full ${c.dot}`} />
+                    {group.group}
+                  </legend>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {group.symptoms.map((s) => (
+                      <button key={s.key} type="button" onClick={() => toggle(s.key)}
+                        aria-pressed={picked.has(s.key)}
+                        className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
+                          picked.has(s.key) ? c.selected : c.unselected
+                        }`}>
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+              )
+            })}
           </div>
 
           <div className="mt-4 flex items-center gap-2">

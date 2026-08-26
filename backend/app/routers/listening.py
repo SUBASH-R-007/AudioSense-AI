@@ -12,6 +12,7 @@ from app.clinical.listening_lab import (
     predict_localization,
     score_digits_in_noise,
     score_localization,
+    score_speech_babble,
 )
 
 router = APIRouter(prefix="/api")
@@ -59,6 +60,19 @@ class DigitsRequest(BaseModel):
 @router.post("/listening/digits-in-noise")
 def digits_in_noise(req: DigitsRequest):
     scored = score_digits_in_noise(req.reversals)
+    if not scored:
+        raise HTTPException(400, "no reversals supplied")
+    return {
+        "result": scored,
+        "versus_audiogram": compare_srtn_with_audiogram(
+            scored, req.right_ac, req.left_ac),
+    }
+
+
+@router.post("/listening/speech-babble")
+def speech_babble(req: DigitsRequest):
+    """Same request shape as digits-in-noise — only the masker differs."""
+    scored = score_speech_babble(req.reversals)
     if not scored:
         raise HTTPException(400, "no reversals supplied")
     return {

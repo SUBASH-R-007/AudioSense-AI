@@ -267,13 +267,6 @@ const STEPS = [
         + 'left in blue.',
   },
   {
-    chapter: 'The answer', at: '/dashboard', on: '[data-tour="norms"]',
-    title: 'Hearing age',
-    body: '"These ears are performing like a typical 55-year-old’s — 29 years older '
-        + 'than the patient." One line that does more counselling work than a '
-        + 'page of decibels.',
-  },
-  {
     chapter: 'The answer', at: '/dashboard', on: '[data-tour="anatomy-video"]',
     title: 'Showing the patient their own ear',
     body: 'The tympanogram already named the mechanism, so this picks the one '

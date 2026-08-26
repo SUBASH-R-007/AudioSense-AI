@@ -266,6 +266,12 @@ export const api = {
       body: JSON.stringify({ right_ac, left_ac }),
     }).then(json),
 
+  speechBabble: (reversals, right_ac = {}, left_ac = {}) =>
+    http('/api/listening/speech-babble', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reversals, right_ac, left_ac }),
+    }).then(json),
   digitsInNoise: (reversals, right_ac, left_ac) =>
     http('/api/listening/digits-in-noise', {
       method: 'POST',
