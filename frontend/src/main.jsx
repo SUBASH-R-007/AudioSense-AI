@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import '@fontsource-variable/inter'
 import './index.css'
+import './i18n/index.js' // registers UI languages before any component renders
 import App from './App.jsx'
 import { AppProvider } from './lib/store.jsx'
 

@@ -1,0 +1,115 @@
+{
+  "lang": {
+    "label": "Language"
+  },
+  "header": {
+    "title": "Hearing Loss Simulator",
+    "subtitle": "Hear the world through this patient's ears — the audiogram becomes a live audio filter.",
+    "demoBanner": "No analysis loaded — using a demo presbycusis profile.",
+    "runTest": "Run a test"
+  },
+  "modes": {
+    "groupLabel": "Listening mode",
+    "normal": { "title": "Normal Hearing", "sub": "unfiltered reference" },
+    "patient": { "title": "This Patient", "sub": "audiogram applied" },
+    "aided": { "title": "With Hearing Aid", "sub": "NAL-R fitting" }
+  },
+  "viz": {
+    "simulatingPatient": "● simulating patient hearing",
+    "aided": "● patient hearing + NAL-R hearing aid",
+    "normalRef": "● normal reference",
+    "stopped": "stopped",
+    "avgAtten": "avg attenuation {{db}} dB",
+    "reaches": "What reaches the patient",
+    "struck": "struck",
+    "struckMeans": "= likely misheard",
+    "dotted": "dotted",
+    "dottedMeans": "= degraded cues",
+    "aidRestores": "amplification restores audibility of these words",
+    "inaudible": "inaudible:"
+  },
+  "sources": {
+    "sample": "🔊 Speech",
+    "file": "📁 Upload",
+    "mic": "🎙 Live mic"
+  },
+  "ears": {
+    "right": "right ear",
+    "left": "left ear",
+    "rightWord": "right",
+    "leftWord": "left",
+    "both": "both (stereo)",
+    "bothTitle": "Process each ear with its own audiogram, in stereo",
+    "headShadow": "head shadow"
+  },
+  "distortion": {
+    "label": "SNHL distortion",
+    "auto": "(auto — severe loss)"
+  },
+  "conversation": {
+    "title": "Live conversation mode",
+    "subtitle": "Speak, and watch your own sentence arrive the way this patient receives it — struck-through words are the ones lost.",
+    "stop": "■ Stop listening",
+    "start": "🎤 Start talking",
+    "unsupported": "This browser has no speech recognition — Chrome or Edge is needed for conversation mode. Everything else on this page works regardless.",
+    "listening": "Listening — start speaking…",
+    "pressStart": "Press “Start talking” and say a sentence.",
+    "missed": "{{n}} missed",
+    "degraded": "{{n}} degraded",
+    "clear": "{{n}} clear",
+    "missedPct": "{{pct}}% of your words would be misheard"
+  },
+  "noise": {
+    "title": "Background noise",
+    "on": "Restaurant ON",
+    "off": "Quiet room",
+    "subtitle": "\"I hear you, I just can't understand you in a crowd\" is the most common complaint in hearing loss. Add babble and hear why.",
+    "snr": "Signal-to-noise ratio",
+    "pub": "noisy pub",
+    "cafe": "café",
+    "quiet": "quiet room",
+    "cues": "Speech cues audible",
+    "inNoise": "in noise",
+    "inQuiet": "in quiet",
+    "lostPoints": "−{{n}} points",
+    "lostToNoise": "lost to noise"
+  },
+  "aid": {
+    "title": "Which hearing aid?",
+    "subtitle1": "A roadside amplifier makes everything louder. A fitted aid amplifies only where hearing is lost. Switch to",
+    "subtitleBold": "With Hearing Aid",
+    "subtitle2": "and compare.",
+    "nal": { "title": "Prescription (NAL-R)", "sub": "shaped to the audiogram" },
+    "flat": { "title": "Cheap amplifier", "sub": "same gain at every pitch" },
+    "switchHint1": "Switch the big toggle to",
+    "switchHintBold": "With Hearing Aid",
+    "switchHint2": "to hear the difference."
+  },
+  "scapes": {
+    "title": "Everyday sounds — what else disappears",
+    "subtitle": "Speech is not the only thing at stake. Play each sound and flip between normal and patient hearing.",
+    "items": {
+      "alarm": { "label": "Smoke alarm", "why": "Life-safety signal — sits exactly where noise damage bites." },
+      "bird": { "label": "Birdsong", "why": "Usually the first everyday sound patients notice is gone." },
+      "truck": { "label": "Reversing vehicle", "why": "Workplace safety alarm — matters on a factory floor." },
+      "phone": { "label": "Telephone ring", "why": "Low-frequency: often still audible even with high-frequency loss." },
+      "doorbell": { "label": "Doorbell", "why": "Low-frequency chime — a useful contrast with the alarm." }
+    }
+  },
+  "filter": {
+    "title": "Filter bank — attenuation from {{ear}} ear thresholds",
+    "prescription": "Hearing-aid prescription — {{method}}",
+    "active": "active in “With Hearing Aid” mode, with output compression",
+    "formula": "Each band is attenuated by (threshold − 20 dB), the patient's loss relative to normal hearing. 🎧 Use headphones — especially with the live microphone."
+  },
+  "toasts": {
+    "speakNormally": "Speak normally — your words will appear as this patient hears them",
+    "sampleMissing": "Bundled sample missing — using synthesized speech-like audio",
+    "hindiSampleMissing": "Hindi speech sample not installed yet — playing the English sample.",
+    "audioFailed": "Audio failed: {{msg}}",
+    "loadedFile": "Loaded {{name}}",
+    "badAudio": "Could not decode that audio file",
+    "micLive": "Microphone live — use headphones to avoid feedback",
+    "micDenied": "Microphone permission denied"
+  }
+}
