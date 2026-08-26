@@ -826,43 +826,10 @@ export default function Dashboard() {
             </Card>
           )}
 
-          {analysis.norms && (
-            <div data-tour="norms">
-              <Card title="Compared with peers"
-                badge={<span className="text-[10px] font-medium text-slate-400">ISO 7029</span>}>
-                {analysis.norms.hearing_age != null && (
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-3xl font-bold text-slate-900">
-                      {analysis.norms.hearing_age}
-                    </span>
-                    <span className="text-[12.5px] text-slate-500">
-                      hearing age · actual {patient.age}
-                    </span>
-                    {analysis.norms.age_gap > 3 && (
-                      <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
-                        +{analysis.norms.age_gap} yrs
-                      </span>
-                    )}
-                  </div>
-                )}
-                {['right', 'left'].map((side) => {
-                  const n = analysis.norms[side]
-                  if (!n) return null
-                  return (
-                    <p key={side} className="mt-2 text-[12.5px] leading-snug text-slate-600">
-                      <b className={side === 'right' ? 'text-red-600' : 'text-blue-600'}>
-                        {side.charAt(0).toUpperCase()}:
-                      </b>{' '}{n.summary}
-                    </p>
-                  )
-                })}
-                <p className="mt-2 text-[10.5px] leading-snug text-slate-400">
-                  {analysis.norms.right?.caveat || analysis.norms.left?.caveat}
-                </p>
-              </Card>
-            </div>
-          )}
-
+          {/* The "Compared with peers" (ISO 7029 hearing-age) card lived here
+              until it was removed at NIEPMD's request. The backend still
+              computes analysis.norms — the verdict banner's "Hearing age"
+              number reads it — so only the card came out, not the feature. */}
           <Card title="Cochlear damage map" tour="cochlea"
             badge={
               <div className="flex rounded-lg bg-slate-100 p-0.5">
