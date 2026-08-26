@@ -87,8 +87,13 @@ export default function DiseaseAudiogram({ analysis, side = 'right' }) {
 
       <div className="mt-4 grid gap-4 lg:grid-cols-[1.05fr_1fr]">
         <div>
-          <div className="h-64 w-full">
-            <ResponsiveContainer>
+          {/* Square, like the clinical audiogram on the dashboard: an octave
+              spans the same distance as 20 dB, so slopes here are read at the
+              same visual pitch as there. Width-capped so 1:1 does not push the
+              differential list below the fold on desktop; on a phone it is a
+              full-width square. */}
+          <div className="mx-auto w-full max-w-[420px]">
+            <ResponsiveContainer width="100%" aspect={1}>
               <LineChart data={chartData} margin={{ top: 8, right: 10, bottom: 18, left: -8 }}>
                 <CartesianGrid stroke="#e2e8f0" />
                 <ReferenceArea y1={-10} y2={20} fill="#10b981" fillOpacity={0.07} />
