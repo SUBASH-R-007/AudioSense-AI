@@ -25,6 +25,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { FREQ_LABELS } from '../lib/api.js'
 import { SCREEN_FREQS, Staircase, ToneAudiometer } from '../audio/toneAudiometer.js'
 import { BayesianThreshold, ReliabilityMonitor } from '../audio/bayesianThreshold.js'
+import { BabbleScreenTest } from '../audio/babbleScreen.js'
 
 const EARS = ['right', 'left']
 const STEPS = EARS.flatMap((ear) => SCREEN_FREQS.map((freq) => ({ ear, freq })))
@@ -223,7 +224,8 @@ export default function ScreeningRunner({
             <span className="text-[12px] font-medium text-slate-600">Procedure</span>
             <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
               {[['bayesian', 'Bayesian adaptive', 'Posterior over threshold — a confidence interval on every result, and fewer tones'],
-                ['staircase', 'Hughson-Westlake', 'The classic clinical staircase: down 10 dB, up 5 dB']].map(([k, title, sub]) => (
+                ['staircase', 'Hughson-Westlake', 'The classic clinical staircase: down 10 dB, up 5 dB'],
+                ['babble', 'Speech Babble Method', 'Digit triplets against competing talkers — measures the restaurant problem, needs no calibration']].map(([k, title, sub]) => (
                 <button key={k} onClick={() => setMethod(k)}
                   className={`rounded-xl border px-3 py-2.5 text-left transition ${
                     method === k ? 'border-teal-500 bg-teal-50/60 ring-1 ring-teal-500'
@@ -248,9 +250,15 @@ export default function ScreeningRunner({
             </p>
           </div>
           <div className="mt-5 flex gap-2">
-            <button onClick={() => { setStage('calibrate'); tone().setAnchorGain(volume); tone().startCalibrationTone() }}
+            <button onClick={() => {
+              // Babble needs no anchor: only the speech-to-noise RATIO matters,
+              // which is the whole reason speech-in-noise screening survives
+              // uncalibrated equipment. The tone methods calibrate first.
+              if (method === 'babble') { setStage('babble'); return }
+              setStage('calibrate'); tone().setAnchorGain(volume); tone().startCalibrationTone()
+            }}
               className="rounded-xl bg-teal-600 px-6 py-3 text-[14px] font-semibold text-white shadow-md shadow-teal-600/25 hover:bg-teal-700">
-              Start calibration →
+              {method === 'babble' ? 'Start speech-in-babble →' : 'Start calibration →'}
             </button>
             {onCancel && (
               <button onClick={onCancel}
@@ -260,6 +268,25 @@ export default function ScreeningRunner({
             )}
           </div>
         </div>
+      )}
+
+      {/* --------------------------------------------------------- babble -- */}
+      {stage === 'babble' && (
+        <BabbleRun
+          submitting={submitting}
+          acceptLabel={acceptLabel}
+          busyLabel={busyLabel}
+          onAccept={async (payload) => {
+            if (submitting) return
+            setSubmitting(true)
+            try {
+              await onComplete?.(payload)
+            } finally {
+              setSubmitting(false)
+            }
+          }}
+          onBack={() => setStage('intro')}
+        />
       )}
 
       {/* ------------------------------------------------------ calibrate -- */}
@@ -461,5 +488,218 @@ export default function ScreeningRunner({
         </div>
       )}
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Speech Babble Method — digit triplets against multi-talker babble.
+//
+// A different instrument from the tone staircases, deliberately housed in its
+// own component: it has no per-frequency steps, no calibration anchor (only
+// the speech-to-noise ratio matters) and no silent catch trials (an adaptive
+// speech track self-checks — random guessing cannot hold a 50% score). It
+// still follows the same contract as the tone methods: instruct, run, show
+// what was measured, and hand the raw track to the host on accept. Scoring
+// against normative bands is the host's call to the backend, where the bands
+// live.
+function BabbleRun({ onAccept, onBack, submitting, acceptLabel, busyLabel }) {
+  const testRef = useRef(null)
+  const [phase, setPhase] = useState('ready') // ready | run | done
+  const [triplet, setTriplet] = useState(null)
+  const [entry, setEntry] = useState('')
+  const [speaking, setSpeaking] = useState(false)
+  const [trials, setTrials] = useState(0)
+  const [reversals, setReversals] = useState(0)
+  const [ttsMissing, setTtsMissing] = useState(false)
+  const [history, setHistory] = useState([]) // { heard, said, correct }
+
+  const test = () => {
+    if (!testRef.current) testRef.current = new BabbleScreenTest()
+    return testRef.current
+  }
+  useEffect(() => () => testRef.current?.dispose(), [])
+
+  const playNext = async () => {
+    const trip = test().nextTriplet()
+    setTriplet(trip)
+    setEntry('')
+    setSpeaking(true)
+    const ok = await test().speak(trip)
+    if (!ok) setTtsMissing(true)
+    setSpeaking(false)
+  }
+
+  const begin = async () => {
+    test().startNoise()
+    setPhase('run')
+    setHistory([])
+    await playNext()
+  }
+
+  const answer = async (heardNothing = false) => {
+    if (speaking || !triplet) return
+    const said = entry.replace(/\D/g, '')
+    const correct = !heardNothing && said === triplet.join('')
+    // What the patient reported, kept verbatim: the point of response capture
+    // is that a wrong answer is data, not a mistake to discard.
+    setHistory((h) => [...h, { heard: triplet.join(' '), said: said || '—', correct }])
+    const state = test().record(correct)
+    setTrials(state.trial)
+    setReversals(state.reversals)
+    if (test().done) {
+      test().stopNoise()
+      setPhase('done')
+    } else {
+      await playNext()
+    }
+  }
+
+  // The client shows only the raw track average as a preview; the banded
+  // verdict comes from the backend after accept, where the cutoffs live.
+  const previewSrt = () => {
+    const r = test().reversals
+    if (!r.length) return null
+    const used = r.length > 4 ? r.slice(2) : r
+    return (used.reduce((a, b) => a + b, 0) / used.length).toFixed(1)
+  }
+
+  return (
+    <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
+      {phase === 'ready' && (
+        <>
+          <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+            Speech Babble Method
+          </h2>
+          <ol className="mt-3 space-y-2 text-[13.5px] text-slate-700">
+            <li><b>1.</b> Keep the headphones on — this test plays to both ears.</li>
+            <li><b>2.</b> You will hear a crowd of talkers, and inside it a voice saying <b>three digits</b>.</li>
+            <li><b>3.</b> Type the three digits you heard and press Enter. Guessing is fine; the test adapts either way.</li>
+          </ol>
+          <p className="mt-3 text-[11.5px] leading-relaxed text-slate-400">
+            The babble gets louder relative to the voice each time you are right, and
+            quieter each time you are wrong, homing in on the ratio where you catch
+            half the triplets — the speech reception threshold. No volume calibration
+            is needed: only the ratio between voice and babble matters.
+          </p>
+          {ttsMissing && (
+            <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+              This browser cannot speak the digits — Chrome or Edge is needed.
+            </p>
+          )}
+          <div className="mt-4 flex gap-2">
+            <button onClick={begin}
+              className="rounded-xl bg-teal-600 px-6 py-3 text-[14px] font-semibold text-white shadow-md shadow-teal-600/25 hover:bg-teal-700">
+              Begin →
+            </button>
+            <button onClick={onBack}
+              className="rounded-xl px-4 py-3 text-[14px] font-medium text-slate-500 hover:bg-slate-100">
+              Back
+            </button>
+          </div>
+        </>
+      )}
+
+      {phase === 'run' && (
+        <>
+          <div className="flex items-center justify-between">
+            <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+              Listening…
+            </h2>
+            <span className="text-[12px] text-slate-500">
+              trial {trials + 1} · {reversals} reversals
+            </span>
+          </div>
+          <p className="mt-2 text-[13px] text-slate-600">
+            Type the <b>three digits</b> you heard.
+          </p>
+          <form className="mt-3 flex flex-wrap items-center gap-2"
+            onSubmit={(e) => { e.preventDefault(); answer(false) }}>
+            <input value={entry}
+              onChange={(e) => setEntry(e.target.value.replace(/\D/g, '').slice(0, 3))}
+              inputMode="numeric" autoFocus placeholder="• • •"
+              aria-label="The three digits you heard"
+              className="w-32 rounded-xl border border-slate-300 px-3 py-2.5 text-center font-mono text-[20px] tracking-[0.4em] outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-100" />
+            <button type="submit" disabled={speaking || entry.length < 3}
+              className="rounded-xl bg-teal-600 px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-teal-700 disabled:opacity-40">
+              Submit
+            </button>
+            <button type="button" onClick={() => answer(true)} disabled={speaking}
+              className="rounded-xl border border-slate-200 px-3 py-2.5 text-[13px] font-medium text-slate-600 transition hover:border-slate-300 disabled:opacity-40">
+              Couldn&rsquo;t hear it
+            </button>
+            <button type="button" disabled={speaking}
+              onClick={async () => { setSpeaking(true); await test().speak(triplet); setSpeaking(false) }}
+              className="rounded-xl border border-slate-200 px-3 py-2.5 text-[13px] font-medium text-slate-600 transition hover:border-slate-300 disabled:opacity-40">
+              Repeat
+            </button>
+          </form>
+          <p className="mt-3 text-[11px] text-slate-400">
+            No running score is shown during the test — knowing how you are doing
+            changes how you guess.
+          </p>
+        </>
+      )}
+
+      {phase === 'done' && !reversals && (
+        <>
+          <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+            The track never converged
+          </h2>
+          <p className="mt-2 text-[12.5px] leading-relaxed text-slate-600">
+            Every response went the same way, so there is no reversal to average
+            and no threshold to report. That usually means the digits were never
+            audible at all — check the headphones and the system volume, or that
+            this browser can speak (Chrome or Edge is needed).
+          </p>
+          <button onClick={() => { setPhase('ready'); setTrials(0); setReversals(0); testRef.current?.dispose(); testRef.current = null }}
+            className="mt-4 rounded-xl bg-teal-600 px-6 py-3 text-[14px] font-semibold text-white shadow-md shadow-teal-600/25 hover:bg-teal-700">
+            Run again
+          </button>
+        </>
+      )}
+
+      {phase === 'done' && reversals > 0 && (
+        <>
+          <h2 className="text-[13px] font-semibold uppercase tracking-wider text-slate-400">
+            Speech-in-babble track complete
+          </h2>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-3xl font-bold text-slate-900">{previewSrt()}</span>
+            <span className="text-[13px] text-slate-500">dB SNR · unbanded track average</span>
+          </div>
+          <p className="mt-1.5 text-[12px] leading-relaxed text-slate-500">
+            {trials} trials, {reversals} reversals. The banded interpretation —
+            normal / insufficient / poor, against provisional cutoffs — is applied
+            when the run is accepted.
+          </p>
+          <details className="mt-3 text-[12px] text-slate-600">
+            <summary className="cursor-pointer font-medium text-teal-700">
+              Every trial — heard vs reported
+            </summary>
+            <ul className="mt-1.5 max-h-40 space-y-0.5 overflow-y-auto font-mono text-[11.5px]">
+              {history.map((h, i) => (
+                <li key={i} className={h.correct ? 'text-emerald-700' : 'text-rose-700'}>
+                  {h.correct ? '✓' : '✗'} said “{h.said}” for “{h.heard}”
+                </li>
+              ))}
+            </ul>
+          </details>
+          <div className="mt-4 flex gap-2">
+            <button disabled={submitting}
+              onClick={() => onAccept({
+                procedure: 'babble',
+                babble: { reversals: test().reversals, trials },
+              })}
+              className="rounded-xl bg-teal-600 px-6 py-3 text-[14px] font-semibold text-white shadow-md shadow-teal-600/25 hover:bg-teal-700 disabled:opacity-50">
+              {submitting ? busyLabel : acceptLabel}
+            </button>
+            <button onClick={() => { setPhase('ready'); setTrials(0); setReversals(0); testRef.current?.dispose(); testRef.current = null }}
+              className="rounded-xl px-4 py-3 text-[14px] font-medium text-slate-500 hover:bg-slate-100">
+              Run again
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }

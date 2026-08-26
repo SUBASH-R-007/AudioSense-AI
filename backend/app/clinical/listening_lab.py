@@ -178,6 +178,57 @@ def score_digits_in_noise(reversals: List[float]) -> Optional[dict]:
     }
 
 
+#: Babble bands are PROVISIONAL: they reuse the steady-noise cutoffs until a
+#: clinical calibration study supplies babble-specific ones. Multi-talker
+#: babble adds informational masking on top of energetic masking, so real
+#: babble SRTs run a few dB worse than steady-noise SRTs at the same hearing —
+#: reusing the steady-noise bands therefore errs toward OVER-referral, which
+#: is the safe direction for a screen.
+BABBLE_BANDS_PROVISIONAL = True
+
+
+def score_speech_babble(reversals: List[float]) -> Optional[dict]:
+    """SRT against multi-talker babble, from the adaptive track's reversals.
+
+    Same estimator as the digit-triplet test — discard the first two
+    reversals when enough exist, average the rest — because the adaptive rule
+    is identical; only the masker differs.
+    """
+    if not reversals:
+        return None
+    used = reversals[2:] if len(reversals) > 4 else reversals
+    srt = sum(used) / len(used)
+
+    if srt <= SRTN_NORMAL_MAX:
+        band, meaning = "normal", (
+            "Speech reception against competing talkers is within the normal "
+            "range.")
+    elif srt <= SRTN_INSUFFICIENT_MAX:
+        band, meaning = "insufficient", (
+            "Speech reception against competing talkers is below normal — "
+            "exactly the situation of a family meal or a busy clinic, and "
+            "harder than steady noise because the babble also competes for "
+            "attention.")
+    else:
+        band, meaning = "poor", (
+            "Speech reception against competing talkers is poor. Babble is "
+            "the everyday worst case — several voices at once — and this "
+            "result predicts real difficulty in any group conversation.")
+
+    return {
+        "srt_db_snr": round(srt, 1),
+        "reversals_used": len(used),
+        "band": band,
+        "interpretation": meaning,
+        "normative": (f"Provisional: steady-noise cutoffs reused — normal "
+                      f"≤ {SRTN_NORMAL_MAX:g} dB SNR, insufficient to "
+                      f"{SRTN_INSUFFICIENT_MAX:g}, poor above that"),
+        "provisional_bands": BABBLE_BANDS_PROVISIONAL,
+        "method": ("Adaptive digit-triplet test against multi-talker babble, "
+                   "1-up/1-down, SRT at 50% correct"),
+    }
+
+
 def compare_srtn_with_audiogram(srtn: Optional[dict], right_ac, left_ac) -> Optional[dict]:
     """Flag the mismatch that matters: normal tones, poor speech in noise."""
     if not srtn:

@@ -235,3 +235,55 @@ def test_absurd_input_raises_ensemble_disagreement():
         pytest.skip("deep ensemble not trained")
     b = client.post("/api/model/deep-predict", json=nonsense)
     assert b.json()["entropy"] >= a.json()["entropy"]
+
+
+# ------------------------------------------------- speech-in-babble ----
+#
+# Same adaptive estimator as digits-in-noise; only the masker differs. The
+# bands are PROVISIONAL — steady-noise cutoffs reused until a calibration
+# study supplies babble-specific ones — and the payload must say so, because
+# a screen that hides the provisional status of its own cutoffs invites
+# over-confident referral letters.
+
+
+def test_babble_srt_averages_the_late_reversals():
+    r = client.post("/api/listening/speech-babble",
+                    json={"reversals": [-2, -6, -4, -8, -6, -9]})
+    assert r.status_code == 200
+    body = r.json()["result"]
+    # First two reversals discarded, the rest averaged: (-4-8-6-9)/4.
+    assert body["srt_db_snr"] == -6.8
+    assert body["reversals_used"] == 4
+
+
+def test_babble_bands_match_the_documented_cutoffs():
+    for revs, band in ([[-9, -8, -9, -8], "normal"],
+                       [[-6, -5, -6, -5], "insufficient"],
+                       [[0, 2, 1, 3], "poor"]):
+        body = client.post("/api/listening/speech-babble",
+                           json={"reversals": revs}).json()["result"]
+        assert body["band"] == band, (revs, body["band"])
+
+
+def test_babble_declares_its_bands_provisional():
+    body = client.post("/api/listening/speech-babble",
+                       json={"reversals": [-5, -5, -5, -5]}).json()["result"]
+    assert body["provisional_bands"] is True
+    assert "Provisional" in body["normative"]
+    assert "babble" in body["method"]
+
+
+def test_babble_with_no_reversals_is_a_400_not_a_crash():
+    assert client.post("/api/listening/speech-babble",
+                       json={"reversals": []}).status_code == 400
+
+
+def test_babble_flags_hidden_hearing_loss_like_digits_in_noise():
+    """Normal tones + poor babble SRT is the dissociation worth flagging."""
+    normal_ac = {250: 10, 500: 10, 1000: 10, 2000: 10, 4000: 15, 8000: 15}
+    body = client.post("/api/listening/speech-babble",
+                       json={"reversals": [0, 1, 0, 2],
+                             "right_ac": normal_ac,
+                             "left_ac": normal_ac}).json()
+    assert body["versus_audiogram"]["hidden_hearing_loss"] is True
+

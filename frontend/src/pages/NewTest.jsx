@@ -74,7 +74,7 @@ export default function NewTest() {
   // used to be typed into this form, halfway through the battery, so the
   // screens before it could not see the age — and the age is what selects the
   // normative bands every other test is judged against.
-  const { patient, setPatient, setAnalysis, showToast } = useApp()
+  const { patient, setPatient, setAnalysis, setBabbleScreen, showToast } = useApp()
   const [thresholds, setThresholds] = useState(EMPTY())
   const [speech, setSpeech] = useState({
     right: { sdt: '', srt: '', wrs: '', wrsLevel: '', nWords: '25' },
@@ -178,7 +178,26 @@ export default function NewTest() {
   // BC row left over from a demo case or an earlier photo, sitting under freshly
   // screened AC values, would read as an air-bone gap that nobody tested for.
   // The analysis then reports the type as provisional, which is the truth.
-  const onScreeningComplete = ({ right, left, reliability, procedure }) => {
+  const onScreeningComplete = async (run) => {
+    // The babble method yields an SRT, not thresholds — nothing to write into
+    // the grid. Score it, store it as its own instrument result, and leave
+    // the form exactly as it was.
+    if (run.procedure === 'babble') {
+      try {
+        const scored = await api.speechBabble(
+          run.babble.reversals,
+          thresholds?.right?.ac || {}, thresholds?.left?.ac || {})
+        setBabbleScreen({ ...scored, trials: run.babble.trials,
+                          reversals: run.babble.reversals,
+                          when: new Date().toISOString() })
+        showToast(`Speech-in-babble SRT ${scored.result.srt_db_snr} dB SNR — ${scored.result.band}. Shown on the dashboard.`)
+      } catch (e) {
+        showToast(`Scoring failed: ${e.message}`, 'error')
+      }
+      setScreeningOpen(false)
+      return
+    }
+    const { right, left, reliability, procedure } = run
     setThresholds({
       right: { ac: { ...right }, bc: {} },
       left: { ac: { ...left }, bc: {} },
