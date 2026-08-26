@@ -6,7 +6,7 @@ import ScreeningRunner from '../components/ScreeningRunner.jsx'
 
 export default function Screening() {
   const navigate = useNavigate()
-  const { analysis, setAnalysis, setBabbleScreen, showToast, patient: recorded, setPatient: setRecorded } = useApp()
+  const { analysis, setAnalysis, setBabbleScreen, setRecord, showToast, patient: recorded, setPatient: setRecorded } = useApp()
   // Screening is a tool, not a step of the consultation — a judge tries it on
   // themselves, a camp screens a queue of walk-ins. So it keeps its own subject
   // rather than editing the recorded patient. But when a patient IS on file it
@@ -62,6 +62,7 @@ export default function Screening() {
         left: { ac: left, bc: {} },
       }
       setAnalysis(await api.analyze(record))
+      setRecord(record)
       // The dashboard reads the patient from the analysis, but every other
       // screen reads it from the store. Publishing it here keeps them agreeing
       // about whose result is on screen.

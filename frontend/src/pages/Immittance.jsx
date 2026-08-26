@@ -123,6 +123,74 @@ function Measure({ label, value, unit, ok }) {
   )
 }
 
+
+// ------------------------------------------- attach to this patient ----
+//
+// The instrument panels on this page used to be a sealed playground: a
+// clinician following the consultation order — audiogram first, then here —
+// typed a real tympanogram into a page that silently discarded it, and the
+// results were interpreted on a subset of what had been collected. This
+// merges a measurement into the stored analyze request and re-runs the whole
+// interpretation over it.
+//
+// Attaching is EXPLICIT, and the exact values travel on the button. The
+// panels are preset-driven, so most of what they show at any moment is an
+// example, not this patient — the same trap the BOA panel had, where merely
+// opening a page published fabricated findings. Nothing here reaches the
+// analysis until the clinician has read the payload and clicked.
+function AttachToAnalysis({ ear, summary, patch }) {
+  const { analysis, record, setAnalysis, setRecord, showToast } = useApp()
+  const [busy, setBusy] = useState(false)
+
+  if (!record) {
+    return (
+      <p className="mt-3 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-[11.5px] leading-relaxed text-slate-400">
+        Run the pure-tone audiogram first — these measurements can then be
+        attached to that patient&rsquo;s analysis and the interpretation re-run
+        over everything collected.
+      </p>
+    )
+  }
+  if (!patch) return null
+
+  const attach = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const merged = { ...record, [ear]: { ...(record[ear] || {}), ...patch } }
+      const updated = await api.analyze(merged)
+      setAnalysis(updated)
+      setRecord(merged)
+      showToast(`Attached to the ${ear} ear — the analysis now includes this measurement.`)
+    } catch (e) {
+      showToast(`Could not re-run the analysis: ${e.message}`, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-teal-200 bg-teal-50/50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-teal-800">
+            Attach to {analysis?.patient?.name ? `${analysis.patient.name}’s` : 'the patient’s'} {ear} ear
+          </div>
+          <div className="mt-0.5 text-[11.5px] leading-snug text-teal-900">{summary}</div>
+        </div>
+        <button type="button" onClick={attach} disabled={busy}
+          className="rounded-lg bg-teal-600 px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition hover:bg-teal-700 disabled:opacity-50">
+          {busy ? 'Re-running analysis…' : 'Attach & re-analyse'}
+        </button>
+      </div>
+      <p className="mt-1.5 text-[10.5px] leading-snug text-teal-700/80">
+        Exactly the values above are recorded — attach only what was actually
+        measured on this patient, not an example preset.
+      </p>
+    </div>
+  )
+}
+
 // -------------------------------------------------------- tympanometry ----
 function Tympanometry({ reference, onType }) {
   const { patient, showToast } = useApp()
@@ -151,6 +219,10 @@ function Tympanometry({ reference, onType }) {
   const [manual, setManual] = useState({ ecv: '1.0', pp: '-20', sc: '0.85', grad: '0.55' })
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
+
+  // Off by default: the prefilled reflex fields are instrument examples, and
+  // an example must never reach a patient record unasked.
+  const [includeReflexes, setIncludeReflexes] = useState(false)
 
   const trace = useMemo(() => buildTrace(preset), [preset])
 
@@ -364,6 +436,40 @@ function Tympanometry({ reference, onType }) {
           )}
         </>
       )}
+      {result?.measurements && (
+        <AttachToAnalysis
+          ear={ear}
+          summary={
+            `PP ${result.measurements.peak_pressure} daPa · ` +
+            `SC ${result.measurements.static_compliance} mmho · ` +
+            `ECV ${result.measurements.ecv} ml` +
+            (jerger ? ` — Type ${jerger.type}` : '') +
+            (includeReflexes
+              ? ` · reflexes ipsi ${ipsi === 'absent' ? 'absent' : `${ipsi} dB`}, contra ${contra === 'absent' ? 'absent' : `${contra} dB`}`
+              : ' · reflexes not attached')
+          }
+          patch={{
+            tymp_pressure: result.measurements.peak_pressure,
+            tymp_compliance: result.measurements.static_compliance,
+            tymp_ecv: result.measurements.ecv,
+            ...(includeReflexes ? {
+              reflexes: {
+                ipsi: ipsi === 'absent' ? null : ipsi === '' ? null : Number(ipsi),
+                contra: contra === 'absent' ? null : contra === '' ? null : Number(contra),
+              },
+            } : {}),
+          }}
+        />
+      )}
+      {result?.measurements && (
+        <label className="mt-1.5 flex cursor-pointer items-center gap-1.5 text-[11.5px] text-slate-500">
+          <input type="checkbox" checked={includeReflexes}
+            onChange={(e) => setIncludeReflexes(e.target.checked)}
+            className="h-3.5 w-3.5 accent-teal-600" />
+          include the reflex thresholds above — off by default, because the
+          prefilled values are examples until they are yours
+        </label>
+      )}
       {busy && !result && <p className="mt-2 text-[12px] text-slate-400">Analysing…</p>}
     </Panel>
   )
@@ -535,6 +641,14 @@ function Emissions({ reference }) {
               thresholds that would explain them.
             </p>
           )}
+
+          <AttachToAnalysis
+            ear={ear}
+            summary={`${points.length} DP-gram points (${preset.label}) — ${
+              result.outcome ? `outcome ${result.outcome}` : 'per-frequency verdicts as shown'}`}
+            patch={{ oae: points.map(({ freq, amplitude, noise_floor }) =>
+              ({ freq, amplitude, noise_floor })) }}
+          />
         </>
       )}
     </Panel>

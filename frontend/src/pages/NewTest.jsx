@@ -6,6 +6,7 @@ import BOAPanel from '../components/BOAPanel.jsx'
 import TuningForkPanel from '../components/TuningForkPanel.jsx'
 import ThresholdGrid from '../components/ThresholdGrid.jsx'
 import ScreeningRunner from '../components/ScreeningRunner.jsx'
+import { nextStep } from '../lib/flow.js'
 import StepNav from '../components/StepNav.jsx'
 
 const EMPTY = () => ({ right: { ac: {}, bc: {} }, left: { ac: {}, bc: {} } })
@@ -74,7 +75,8 @@ export default function NewTest() {
   // used to be typed into this form, halfway through the battery, so the
   // screens before it could not see the age — and the age is what selects the
   // normative bands every other test is judged against.
-  const { patient, setPatient, setAnalysis, setBabbleScreen, showToast } = useApp()
+  const { patient, setPatient, setAnalysis, setBabbleScreen, setRecord,
+    assessment, otoscopy, aep, skipped, showToast } = useApp()
   const [thresholds, setThresholds] = useState(EMPTY())
   const [speech, setSpeech] = useState({
     right: { sdt: '', srt: '', wrs: '', wrsLevel: '', nWords: '25' },
@@ -261,9 +263,22 @@ export default function NewTest() {
         onset: patient.onset || 'unknown',
         symptoms: patient.symptoms || [],
       }
-      const result = await api.analyze({ patient: patientInfo, transducer, ...built })
+      const fullRecord = { patient: patientInfo, transducer, ...built }
+      const result = await api.analyze(fullRecord)
       setAnalysis(result)
-      navigate('/dashboard')
+      // Kept so the immittance and AEP screens can merge their measurements in
+      // and re-run the interpretation over everything collected.
+      setRecord(fullRecord)
+      // Follow the consultation order instead of jumping to the verdict. The
+      // next step is whatever the flow says is still ready — a step the
+      // clinician skipped or already completed is passed over, but the
+      // decision to skip stays theirs, made in the step footer, never here.
+      const next = nextStep('pure_tone',
+        { patient, assessment, otoscopy, analysis: result, aep, skipped })
+      if (next && next.key !== 'results') {
+        showToast(`Analysis ready — next: ${next.label}. Skip it from the footer if it is not being done.`)
+      }
+      navigate(next?.to || '/dashboard')
     } catch (e) {
       showToast(`Analysis failed: ${e.message}`, 'error')
     }
