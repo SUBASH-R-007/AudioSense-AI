@@ -233,6 +233,24 @@ export const api = {
       body: JSON.stringify(analysis),
     }).then(json),
 
+  // The records database as one downloadable file, and its counterpart.
+  // These exist because free hosting disks are ephemeral: download before a
+  // redeploy, restore after. The blob keeps the auth header http() adds.
+  recordsBackup: () => http('/api/records/backup').then(async (res) => {
+    if (!res.ok) {
+      let detail = ''
+      try { detail = (await res.json()).detail || '' } catch { /* ignore */ }
+      const err = new Error(detail || `${res.status} ${res.statusText}`)
+      err.status = res.status
+      throw err
+    }
+    return res.blob()
+  }),
+  recordsRestore: (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return http('/api/records/restore', { method: 'POST', body: form }).then(json)
+  },
   patients: (q = '') =>
     http(`/api/records/patients?q=${encodeURIComponent(q)}`).then(json),
   patientHistory: (id) => http(`/api/records/patients/${id}`).then(json),

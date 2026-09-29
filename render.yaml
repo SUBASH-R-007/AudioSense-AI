@@ -1,0 +1,60 @@
+# Render blueprint — deploy the backend with "New +" → "Blueprint" → this repo.
+#
+# Why Render for the pilot: its free tier does not expire (Railway's is a
+# one-time trial credit), and 750 instance-hours/month covers one service
+# running 24/7. The measured footprint after full model load is ~270 MB,
+# inside the free instance's 512 MB.
+#
+# The two free-tier costs, and what this repo does about them:
+#
+#   1. THE DISK IS EPHEMERAL. Every deploy or restart wipes the filesystem,
+#      and with it records.db — every saved visit. The Patient Records page
+#      has "Download backup" / "Restore" for exactly this: download before a
+#      redeploy, restore after. Treat the downloaded file as the durable copy.
+#      (Paid escape hatch: the Starter instance can mount a persistent disk —
+#      see the commented block below.)
+#
+#   2. FREE INSTANCES SLEEP after ~15 minutes idle, and the first request
+#      then waits ~1 minute while it wakes. For clinic hours, point a free
+#      pinger (e.g. cron-job.org) at /api/health every 10 minutes; a service
+#      kept awake also cannot lose its disk to a sleep/wake cycle.
+#
+# After the service is live: set VITE_API_BASE_URL on Vercel to this
+# service's https://….onrender.com URL and redeploy the frontend, and set
+# CORS_ORIGINS here to the frontend's URL.
+
+services:
+  - type: web
+    name: audiosense-api
+    runtime: docker
+    rootDir: backend
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Session tokens are HMAC-signed with this; generated once per service
+      # so tokens survive deploys but never live in the repo.
+      - key: AUDIOSENSE_SECRET
+        generateValue: true
+      # Clinician accounts, produced by scripts/make_user.py. Set in the
+      # dashboard — never committed. Leaving it unset locks every route,
+      # which is the safe failure.
+      - key: AUDIOSENSE_USERS
+        sync: false
+      # The frontend's origin, e.g. https://audio-sense-ai.vercel.app
+      - key: CORS_ORIGINS
+        sync: false
+
+    # ---- Paid upgrade path (Starter instance required for disks) ----
+    # Uncomment to give records.db a disk that survives deploys, and the
+    # backup buttons become belt-and-braces instead of the persistence model.
+    # Do NOT mount at /app/data — that shadows the committed model artifacts.
+    #
+    # plan: starter
+    # disk:
+    #   name: audiosense-state
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    # (then also add under envVars:)
+    #   - key: AUDIOSENSE_STATE_DIR
+    #     value: /var/data

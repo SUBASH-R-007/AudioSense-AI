@@ -5,7 +5,9 @@ import io
 from typing import List, Optional
 
 import numpy as np
-from fastapi import APIRouter, Body, HTTPException
+from datetime import date
+
+from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -22,6 +24,47 @@ router = APIRouter(prefix="/api")
 @router.post("/records/visit")
 def save_visit(analysis: dict = Body(...)):
     return records.save_visit(analysis)
+
+
+#: Generous for a clinic-scale SQLite file; a pilot's year is a few MB.
+MAX_RESTORE_BYTES = 50 * 1024 * 1024
+
+
+@router.get("/records/backup")
+def download_backup():
+    """The whole records database as one file — the USB-stick workflow.
+
+    This exists because free hosting tiers have ephemeral disks: a redeploy
+    or restart wipes the filesystem, and with it every visit saved since the
+    last one. Download before redeploying, restore after.
+    """
+    try:
+        data = records.backup_bytes()
+    except FileNotFoundError:
+        raise HTTPException(404, "no records have been saved yet")
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition":
+                 f'attachment; filename="audiosense-records-{date.today().isoformat()}.db"'},
+    )
+
+
+@router.post("/records/restore")
+async def restore_backup(file: UploadFile = File(...)):
+    """Replace the records database with an uploaded backup.
+
+    The upload is validated as a records database before anything is
+    touched; a bad file changes nothing and says why.
+    """
+    data = await file.read()
+    if len(data) > MAX_RESTORE_BYTES:
+        raise HTTPException(413, "backup larger than 50 MB — not a records file")
+    try:
+        counts = records.restore_bytes(data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"restored": True, **counts}
 
 
 @router.get("/records/patients")

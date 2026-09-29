@@ -114,12 +114,31 @@ def test_dockerfile_binds_the_platform_port():
 
 
 def test_docker_is_the_only_deployment_config():
-    """One build path. Buildpack configs would drift out of sync unnoticed."""
+    """One BUILD path. Buildpack configs would drift out of sync unnoticed.
+
+    render.yaml is allowed to exist, but only as orchestration (plan, health
+    check, env vars) around the Dockerfile — the moment it grows its own
+    build or start command it has become the second build path this test
+    exists to prevent.
+    """
     for stale in ("backend/railway.json", "backend/Procfile",
-                  "backend/runtime.txt", "render.yaml"):
+                  "backend/runtime.txt"):
         assert not (ROOT / stale).exists(), (
             f"{stale} reintroduces a second deployment path — the Dockerfile "
             "is the single source of truth")
+
+    blueprint = ROOT / "render.yaml"
+    if blueprint.exists():
+        text = blueprint.read_text(encoding="utf-8")
+        active = "\n".join(ln for ln in text.splitlines()
+                           if not ln.lstrip().startswith("#"))
+        assert "runtime: docker" in active, (
+            "render.yaml must build via the Dockerfile (runtime: docker), "
+            "not a buildpack")
+        for cmd in ("buildCommand", "startCommand", "dockerCommand"):
+            assert cmd not in active, (
+                f"render.yaml defines {cmd} — build and start live in the "
+                "Dockerfile alone, or the two drift apart unnoticed")
 
 
 def test_dockerignore_excludes_private_files():

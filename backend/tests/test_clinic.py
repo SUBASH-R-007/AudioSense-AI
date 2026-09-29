@@ -227,3 +227,72 @@ def test_the_delete_route_erases_and_then_reports_gone(temp_db):
     assert r.status_code == 200
     assert r.json()["deleted"] is True
     assert client.get(f"/api/records/patients/{pid}").status_code == 404
+
+
+# -------------------------------------------------------------- backup ----
+#
+# The endpoints exist because free hosting disks are ephemeral: a redeploy
+# wipes records.db. The contract that matters is the roundtrip — what was
+# backed up comes back whole — and that a bad upload changes nothing.
+
+
+def test_backup_restore_roundtrip_survives_a_wipe(temp_db):
+    case = next(c for c in DEMO_CASES if c["id"] == "noise_notch")
+    analysis = client.post("/api/analyze", json=case["record"]).json()
+    saved = temp_db.save_visit(analysis)
+
+    blob = client.get("/api/records/backup")
+    assert blob.status_code == 200
+    assert blob.headers["content-disposition"].startswith("attachment")
+    assert blob.content.startswith(b"SQLite format 3\x00")
+
+    # The wipe: the patient is deleted, as a redeploy would delete everyone.
+    temp_db.delete_patient(saved["patient_id"])
+    assert temp_db.list_patients() == []
+
+    restored = client.post("/api/records/restore",
+                           files={"file": ("backup.db", blob.content)})
+    assert restored.status_code == 200
+    body = restored.json()
+    assert body == {"restored": True, "patients": 1, "visits": 1}
+    assert temp_db.list_patients()[0]["name"] == "Murugan Selvam"
+
+
+def test_backup_before_any_save_is_a_404(temp_db):
+    r = client.get("/api/records/backup")
+    assert r.status_code == 404
+
+
+def test_restore_rejects_a_file_that_is_not_sqlite(temp_db):
+    r = client.post("/api/records/restore",
+                    files={"file": ("evil.db", b"#!/bin/sh -- not a database")})
+    assert r.status_code == 400
+    assert "not a SQLite database" in r.json()["detail"]
+
+
+def test_restore_rejects_sqlite_without_the_records_tables(temp_db):
+    import sqlite3, tempfile, os
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE other (id INTEGER)")
+        conn.commit()
+        conn.close()
+        data = open(path, "rb").read()
+    finally:
+        os.unlink(path)
+    r = client.post("/api/records/restore", files={"file": ("x.db", data)})
+    assert r.status_code == 400
+    assert "not an AudioSense records backup" in r.json()["detail"]
+
+
+def test_failed_restore_leaves_the_live_records_untouched(temp_db):
+    case = next(c for c in DEMO_CASES if c["id"] == "noise_notch")
+    analysis = client.post("/api/analyze", json=case["record"]).json()
+    temp_db.save_visit(analysis)
+
+    r = client.post("/api/records/restore", files={"file": ("junk.db", b"garbage")})
+    assert r.status_code == 400
+    assert temp_db.list_patients()[0]["name"] == "Murugan Selvam"
+
