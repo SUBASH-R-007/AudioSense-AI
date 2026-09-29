@@ -193,6 +193,18 @@ def delete_patient(patient_id: int) -> bool:
 # snapshot complete and consistent even while a visit is being saved.
 
 
+def _unlink_with_sidecars(path: Path) -> None:
+    """Remove a temp database AND its -wal/-shm sidecars.
+
+    The snapshot inherits journal_mode=WAL from the live database (the mode
+    is stored in the file header), so merely opening it spawns sidecar
+    files. Unlinking only the .db leaves a -wal/-shm pair behind on every
+    backup and restore — litter that accumulates for the life of a server.
+    """
+    for p in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        p.unlink(missing_ok=True)
+
+
 def backup_bytes() -> bytes:
     """A consistent snapshot of the whole database, safe under WAL."""
     if not DB_PATH.exists():
@@ -210,7 +222,7 @@ def backup_bytes() -> bytes:
                 dest.close()
             return tmp_path.read_bytes()
         finally:
-            tmp_path.unlink(missing_ok=True)
+            _unlink_with_sidecars(tmp_path)
     finally:
         src.close()
 
@@ -264,5 +276,5 @@ def restore_bytes(data: bytes) -> dict:
             src.close()
         return {"patients": patients, "visits": visits}
     finally:
-        tmp_path.unlink(missing_ok=True)
+        _unlink_with_sidecars(tmp_path)
 

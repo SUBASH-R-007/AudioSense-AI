@@ -296,3 +296,22 @@ def test_failed_restore_leaves_the_live_records_untouched(temp_db):
     assert r.status_code == 400
     assert temp_db.list_patients()[0]["name"] == "Murugan Selvam"
 
+
+def test_backup_and_restore_leave_no_temp_litter(temp_db, tmp_path):
+    """The snapshot inherits WAL mode, so its sidecars must be cleaned too.
+
+    Before this was pinned, every backup/restore left a tmp*.db-wal/-shm
+    pair in the data directory — invisible in a test run, unbounded on a
+    server that backs up daily.
+    """
+    case = next(c for c in DEMO_CASES if c["id"] == "noise_notch")
+    analysis = client.post("/api/analyze", json=case["record"]).json()
+    temp_db.save_visit(analysis)
+
+    blob = client.get("/api/records/backup")
+    client.post("/api/records/restore", files={"file": ("b.db", blob.content)})
+
+    leftovers = [f.name for f in tmp_path.iterdir()
+                 if f.name.startswith("tmp")]
+    assert leftovers == [], f"temp litter left behind: {leftovers}"
+
