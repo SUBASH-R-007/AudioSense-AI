@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   CartesianGrid, Legend, Line, LineChart, ResponsiveContainer,
   Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis,
@@ -260,6 +260,52 @@ export default function Records() {
   const [patients, setPatients] = useState([])
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(null)
+  const [restoring, setRestoring] = useState(false)
+  const restoreRef = useRef(null)
+
+  // The database's design brief is "a single file a clinic can copy onto a
+  // USB stick". On a free hosting tier that is not a convenience but the
+  // persistence model: the server disk is wiped on every redeploy, so the
+  // backup in someone's hands IS the durable copy.
+  const downloadBackup = async () => {
+    try {
+      const blob = await api.recordsBackup()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `audiosense-records-${new Date().toISOString().slice(0, 10)}.db`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      showToast(e.status === 404
+        ? 'Nothing to back up yet — no visits have been saved.'
+        : `Backup failed: ${e.message}`, e.status === 404 ? 'info' : 'error')
+    }
+  }
+
+  const restoreBackup = async (file) => {
+    if (!file) return
+    // Restoring replaces everything on the server: a visit saved after this
+    // backup was taken is gone once it lands. Worth one explicit question.
+    if (!window.confirm(
+      'Replace ALL server records with this backup?\n\n'
+      + 'Visits saved after the backup was taken will be lost.')) {
+      if (restoreRef.current) restoreRef.current.value = ''
+      return
+    }
+    setRestoring(true)
+    try {
+      const res = await api.recordsRestore(file)
+      showToast(`Restored ${res.patients} patient${res.patients === 1 ? '' : 's'}, ${res.visits} visit${res.visits === 1 ? '' : 's'}.`)
+      setSelected(null)
+      load(query)
+    } catch (e) {
+      showToast(`Restore failed: ${e.message}`, 'error')
+    } finally {
+      setRestoring(false)
+      if (restoreRef.current) restoreRef.current.value = ''
+    }
+  }
 
   const load = useCallback(async (q) => {
     try {
@@ -273,11 +319,27 @@ export default function Records() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <h1 className="text-xl font-semibold tracking-tight">Patient Records</h1>
-      <p className="mt-1 text-[13.5px] text-slate-500">
-        Every saved visit, so hearing conservation becomes longitudinal rather
-        than a pair of tests.
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Patient Records</h1>
+          <p className="mt-1 text-[13.5px] text-slate-500">
+            Every saved visit, so hearing conservation becomes longitudinal rather
+            than a pair of tests.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={downloadBackup}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-slate-700 transition hover:border-teal-400 hover:text-teal-700">
+            ⬇ Download backup
+          </button>
+          <button onClick={() => restoreRef.current?.click()} disabled={restoring}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-slate-700 transition hover:border-teal-400 hover:text-teal-700 disabled:opacity-50">
+            {restoring ? 'Restoring…' : '⬆ Restore'}
+          </button>
+          <input ref={restoreRef} type="file" accept=".db,application/octet-stream"
+            className="hidden" onChange={(e) => restoreBackup(e.target.files?.[0])} />
+        </div>
+      </div>
 
       <div className="mt-5 grid gap-5 lg:grid-cols-3">
         <div data-tour="records-list" className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">

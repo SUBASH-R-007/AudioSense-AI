@@ -44,7 +44,7 @@ deploy fails unpredictably. Shipping it makes every option below viable.
 |---|---|---|
 | **Oracle Cloud Always Free** | 2 OCPU / 12 GB ARM, 200 GB block storage, 10 TB egress, region `ap-mumbai-1` | **Only option that clears all three bars.** No sleep, real persistence, India region. Needs a card for identity verification |
 | Hugging Face Spaces | Static Spaces free; **compute Spaces now require a paid plan** | **No longer viable.** Was recommended here previously — that is now wrong. Its disk also wipes on the 48-hour sleep |
-| Render | 512 MB, sleeps ~15 min idle | **No.** Cannot attach a disk at all on free, so records cannot persist, and a ~1 min cold start with a patient in the chair |
+| Render | 512 MB, sleeps ~15 min idle, **free tier does not expire** | **Yes, with discipline.** Railway's free tier is a one-time trial credit; Render's renews monthly, so it outlives Railway for a long pilot. Its disk is still ephemeral on free — use the Records page's backup/restore around every redeploy — and a pinger prevents both the sleep and the ~1 min cold start. See the Render section below |
 | Koyeb / Fly.io | — | **No.** Free tiers closed to new customers |
 | Google Cloud Run | Generous always-free, scales to zero | Persistence needs Cloud SQL, which is **not** free. Cold start on a 250 MB image |
 | Vercel (backend) | — | **No.** Dependency bundle far exceeds the function size limit |
@@ -140,6 +140,81 @@ wait.
   before the pilot starts, or plan the migration.
 - **Redeploys restart the container.** With the volume configured that is
   harmless; without it, it is silent data loss.
+
+---
+
+## Railway → Render — when the trial credit runs out
+
+Railway's free tier is a **one-time $5 credit**; when it is spent, the backend
+stops. Render's free tier renews every month — 750 instance-hours, which
+covers one service running 24/7 — so it is the natural landing spot for a
+pilot that has outlived the credit. Measured after full model load the backend
+sits at **~270 MB**, inside the free instance's 512 MB.
+
+Two properties of Render's free tier shape everything below:
+
+1. **The disk is ephemeral.** Every deploy and every restart wipes the
+   filesystem, and with it `records.db` — the exact "the UI said Saved but the
+   records are gone" failure this document warns about on other hosts. There
+   is **no disk on the free plan**, so `AUDIOSENSE_STATE_DIR` has nothing to
+   point at. The mitigation is operational: the Patient Records page has
+   **Download backup** and **Restore** buttons (`/api/records/backup`,
+   `/api/records/restore`). Download before every redeploy and at the end of
+   every clinic day; the downloaded `.db` file in your hands is the durable
+   copy — the same single-file, USB-stick model the records store was designed
+   around.
+2. **Free services sleep after ~15 minutes idle** and take about a minute to
+   wake. Point a free pinger (cron-job.org, UptimeRobot) at
+   `https://<service>.onrender.com/api/health` every 10 minutes during clinic
+   hours. A service kept awake also cannot lose its disk to a sleep/wake
+   replacement — the wipe risk narrows to actual deploys and platform
+   maintenance.
+
+### The move, step by step
+
+1. **Back up Railway first.** Open the app → Patient Records → **Download
+   backup**. Do this before touching anything.
+2. **Render → New + → Blueprint** → connect the GitHub repo. `render.yaml`
+   at the repo root defines the service: Docker runtime, root directory
+   `backend`, health check `/api/health`, `AUDIOSENSE_SECRET` auto-generated.
+3. In the service's **Environment** tab set the two values the blueprint
+   deliberately leaves unset:
+   - `AUDIOSENSE_USERS` — the same value as on Railway (from
+     `scripts/make_user.py`). Unset, every route is locked: safe, but nobody
+     can sign in.
+   - `CORS_ORIGINS` — `https://audio-sense-ai.vercel.app` (plus any custom
+     domain, comma-separated).
+4. Wait for the first deploy, then check
+   `https://<service>.onrender.com/api/health`.
+5. **Vercel** → the frontend project → Settings → Environment Variables →
+   change `VITE_API_BASE_URL` to the Render URL → **Redeploy** (build-time
+   variable: a redeploy is required, not optional).
+6. Sign in to the app and **Restore** the backup from step 1. The records are
+   now on Render.
+7. Set up the pinger (step 2 above), then delete the Railway service so the
+   remaining credit stops draining.
+
+### The redeploy ritual — every time, until there is a disk
+
+```text
+Download backup  →  push / redeploy  →  Restore
+```
+
+Skipping the first step after real visits have been saved loses them. If the
+ritual grates, that is the signal to pay: Render Starter + a 1 GB disk
+(`render.yaml` has the commented block — mount `/var/data`, set
+`AUDIOSENSE_STATE_DIR=/var/data`, **never** `/app/data`, which shadows the
+committed model artifacts), or move to Oracle below and stop thinking about
+disks entirely.
+
+### What Render free will not give you
+
+The same list as every free tier, sharpened: no persistence guarantee (backup
+discipline is load-bearing), a cold start whenever the pinger lapses, 512 MB
+with ~240 MB of headroom, and a shared-CPU instance where the ~670 ms
+interpretation takes a noticeably slower first run while models load. For a
+funded pilot the Oracle walkthrough below remains the recommendation; Render
+free is the best of the zero-rupee options once Railway's credit is gone.
 
 ---
 
@@ -337,7 +412,7 @@ Your API lands at `https://<username>-audiosense-api.hf.space`.
 All of them accept the Dockerfile directly:
 
 - **Koyeb** — Create Service → GitHub → Dockerfile, work directory `backend`
-- **Render** — New Web Service → Runtime **Docker**, root directory `backend`
+- **Render** — use the blueprint: dedicated section above (`render.yaml` is committed)
 - **Fly.io** — `cd backend && fly launch` (it detects the Dockerfile)
 - **Cloud Run** — `gcloud run deploy --source backend --allow-unauthenticated`
 - **Back4App** — New Container App → repo → Dockerfile path `backend/Dockerfile`

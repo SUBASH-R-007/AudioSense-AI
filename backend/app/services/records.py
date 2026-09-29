@@ -11,7 +11,9 @@ database is a single file that a clinic can copy onto a USB stick.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -178,3 +180,101 @@ def delete_patient(patient_id: int) -> bool:
         conn.execute("DELETE FROM visits WHERE patient_id = ?", (patient_id,))
         cur = conn.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
         return cur.rowcount > 0
+
+
+# ------------------------------------------------------------ backup ----
+#
+# The database's whole design brief is "a single file a clinic can copy onto
+# a USB stick" — these two functions are that brief made into endpoints, for
+# hosts whose disk does not survive a redeploy (every free tier now). WAL
+# journaling makes a naive file copy unsafe: recent writes live in the -wal
+# sidecar, so a copy of records.db alone can be missing the last visits.
+# The sqlite3 backup API checkpoints into the destination, which makes the
+# snapshot complete and consistent even while a visit is being saved.
+
+
+def _unlink_with_sidecars(path: Path) -> None:
+    """Remove a temp database AND its -wal/-shm sidecars.
+
+    The snapshot inherits journal_mode=WAL from the live database (the mode
+    is stored in the file header), so merely opening it spawns sidecar
+    files. Unlinking only the .db leaves a -wal/-shm pair behind on every
+    backup and restore — litter that accumulates for the life of a server.
+    """
+    for p in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        p.unlink(missing_ok=True)
+
+
+def backup_bytes() -> bytes:
+    """A consistent snapshot of the whole database, safe under WAL."""
+    if not DB_PATH.exists():
+        raise FileNotFoundError("no records database yet")
+    src = _connect()
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".db", dir=DATA_DIR)
+        os.close(fd)
+        tmp_path = Path(tmp)
+        try:
+            dest = sqlite3.connect(tmp)
+            try:
+                src.backup(dest)
+            finally:
+                dest.close()
+            return tmp_path.read_bytes()
+        finally:
+            _unlink_with_sidecars(tmp_path)
+    finally:
+        src.close()
+
+
+def restore_bytes(data: bytes) -> dict:
+    """Validate an uploaded backup and copy it over the live database.
+
+    The file is proven to be a SQLite database holding the expected tables
+    BEFORE anything is replaced — a failed restore must leave the live
+    records exactly as they were.
+
+    The copy goes through SQLite's backup API rather than os.replace: on
+    Windows a file cannot be swapped while any connection still holds it
+    open, so a file-level replace works exactly until a second request has
+    touched the database, then fails with EACCES. The backup API rewrites
+    the destination page by page through its own connection, which takes
+    the locks it needs and leaves WAL state consistent on every platform.
+    """
+    if not data.startswith(b"SQLite format 3\x00"):
+        raise ValueError("that file is not a SQLite database")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".db", dir=DATA_DIR)
+    os.close(fd)
+    tmp_path = Path(tmp)
+    try:
+        tmp_path.write_bytes(data)
+        try:
+            check = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+            try:
+                tables = {r[0] for r in check.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                if not {"patients", "visits"} <= tables:
+                    raise ValueError(
+                        "that database is not an AudioSense records backup "
+                        "(missing the patients/visits tables)")
+                patients = check.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+                visits = check.execute("SELECT COUNT(*) FROM visits").fetchone()[0]
+            finally:
+                check.close()
+        except sqlite3.DatabaseError as e:
+            raise ValueError(f"that file could not be read as a database: {e}")
+
+        src = sqlite3.connect(tmp)
+        try:
+            dest = _connect()
+            try:
+                src.backup(dest)
+            finally:
+                dest.close()
+        finally:
+            src.close()
+        return {"patients": patients, "visits": visits}
+    finally:
+        _unlink_with_sidecars(tmp_path)
+
