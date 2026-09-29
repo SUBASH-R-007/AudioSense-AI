@@ -27,7 +27,13 @@ services:
   - type: web
     name: audiosense-api
     runtime: docker
+    # rootDir only filters which file changes trigger a build. The two Docker
+    # paths below are resolved against the REPO ROOT, not rootDir — omit them
+    # and Render looks for ./Dockerfile at the root and ships the whole repo
+    # as build context, failing with "open Dockerfile: no such file".
     rootDir: backend
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
     plan: free
     healthCheckPath: /api/health
     autoDeploy: true
