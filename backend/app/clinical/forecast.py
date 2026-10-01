@@ -15,7 +15,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Dict, List, Optional
 
-from app.clinical.rules import PTA_FREQS, rpwd_disability, who_grade
+from app.clinical.rules import (PTA_FREQS, rpwd_disability_from_thresholds,
+                                who_grade)
 from app.models.schemas import AC_FREQS, ThresholdValue, ear_to_numeric
 
 #: Age-related (presbycusis-only) annual threshold change, dB/year,
@@ -143,6 +144,40 @@ def _years_until(pta_series: List[dict], slopes: Dict[int, float], target: float
     return round((target - start) / pta_slope, 1)
 
 
+def _projected_thresholds(current_ac: Dict, projection: dict) -> Dict[int, ThresholdValue]:
+    """The horizon-year projected thresholds at the PTA frequencies.
+
+    A frequency with no response now stays a no-response in the projection,
+    so the Gazette's 95 dB substitution applies to it as it does today;
+    the projected value of 120 (the audiometer maximum) would overstate the
+    disability.
+    """
+    raw = {int(f): v for f, v in (current_ac or {}).items()}
+    end = projection["exposed"][-1]
+    out: Dict[int, ThresholdValue] = {}
+    for f in PTA_FREQS:
+        if raw.get(f) == "NR":
+            out[f] = "NR"
+        elif str(f) in end:
+            out[f] = end[str(f)]
+    return out
+
+
+def _projected_disability(current: dict, right: dict, left: dict) -> Optional[dict]:
+    """RPwD percentage of the projected thresholds; never certifiable."""
+    result = rpwd_disability_from_thresholds(
+        _projected_thresholds(current["right"], right),
+        _projected_thresholds(current["left"], left))
+    if result is None:
+        return None
+    result["certifiable"] = False
+    result["certification_note"] = (
+        "Projection, not a measurement: an RPwD percentage is certified only "
+        "from measured thresholds (S.O. 76(E) para 20.2.2). Computed by the same "
+        "method on the projected thresholds, with a no-response kept at 95 dB.")
+    return result
+
+
 def forecast(
     baseline: dict,
     current: dict,
@@ -164,17 +199,15 @@ def forecast(
     if right is None and left is None:
         return {"available": False, "reason": "insufficient paired thresholds"}
 
-    projected = {}
-    for side, f in (("right", right), ("left", left)):
-        if f:
-            projected[side] = f["exposed_pta"][-1]["pta"]
     disability_now = None
     disability_future = None
     if right and left:
-        disability_now = rpwd_disability(
-            right["exposed_pta"][0]["pta"], left["exposed_pta"][0]["pta"]
-        )
-        disability_future = rpwd_disability(projected["right"], projected["left"])
+        # The current figure is the dashboard's, computed from the current
+        # thresholds by the Gazette method (NR = 95 dB, S.O. 76(E) para
+        # 20.2.2) — never from this module's PTA, which counts NR as 120.
+        disability_now = rpwd_disability_from_thresholds(current["right"],
+                                                         current["left"])
+        disability_future = _projected_disability(current, right, left)
 
     return {
         "available": True,

@@ -19,7 +19,9 @@ LANGUAGES = {
     "malayalam": {"label": "Malayalam", "native": "മലയാളം", "tts": "ml-IN"},
 }
 
-#: Degree of loss, in plain language, per WHO grade.
+#: Degree of loss, in plain language, per WHO grade. Every grade the rules
+#: engine can emit (rules.WHO_GRADES) has an entry in every language,
+#: including WHO 2021's "Complete or total" (95 dB HL or more).
 GRADE_SIMPLE = {
     "english": {
         "Normal hearing": "normal",
@@ -28,6 +30,7 @@ GRADE_SIMPLE = {
         "Moderately severe hearing loss": "quite reduced",
         "Severe hearing loss": "severely reduced",
         "Profound hearing loss": "very severely reduced",
+        "Complete or total hearing loss": "almost completely lost",
     },
     "tamil": {
         "Normal hearing": "இயல்பாக உள்ளது",
@@ -36,6 +39,7 @@ GRADE_SIMPLE = {
         "Moderately severe hearing loss": "கணிசமாகக் குறைந்துள்ளது",
         "Severe hearing loss": "கடுமையாகக் குறைந்துள்ளது",
         "Profound hearing loss": "மிகக் கடுமையாகக் குறைந்துள்ளது",
+        "Complete or total hearing loss": "கிட்டத்தட்ட முழுமையாக இழக்கப்பட்டுள்ளது",
     },
     "hindi": {
         "Normal hearing": "सामान्य है",
@@ -44,6 +48,7 @@ GRADE_SIMPLE = {
         "Moderately severe hearing loss": "काफी कम है",
         "Severe hearing loss": "बहुत कम है",
         "Profound hearing loss": "अत्यधिक कम है",
+        "Complete or total hearing loss": "लगभग पूरी तरह खत्म हो चुकी है",
     },
     "telugu": {
         "Normal hearing": "సాధారణంగా ఉంది",
@@ -52,6 +57,7 @@ GRADE_SIMPLE = {
         "Moderately severe hearing loss": "గణనీయంగా తగ్గింది",
         "Severe hearing loss": "తీవ్రంగా తగ్గింది",
         "Profound hearing loss": "చాలా తీవ్రంగా తగ్గింది",
+        "Complete or total hearing loss": "దాదాపు పూర్తిగా పోయింది",
     },
     "kannada": {
         "Normal hearing": "ಸಾಮಾನ್ಯವಾಗಿದೆ",
@@ -60,6 +66,7 @@ GRADE_SIMPLE = {
         "Moderately severe hearing loss": "ಗಣನೀಯವಾಗಿ ಕಡಿಮೆಯಾಗಿದೆ",
         "Severe hearing loss": "ತೀವ್ರವಾಗಿ ಕಡಿಮೆಯಾಗಿದೆ",
         "Profound hearing loss": "ಅತಿ ತೀವ್ರವಾಗಿ ಕಡಿಮೆಯಾಗಿದೆ",
+        "Complete or total hearing loss": "ಬಹುತೇಕ ಸಂಪೂರ್ಣವಾಗಿ ನಷ್ಟವಾಗಿದೆ",
     },
     "malayalam": {
         "Normal hearing": "സാധാരണമാണ്",
@@ -68,6 +75,7 @@ GRADE_SIMPLE = {
         "Moderately severe hearing loss": "ഗണ്യമായി കുറഞ്ഞിട്ടുണ്ട്",
         "Severe hearing loss": "ഗുരുതരമായി കുറഞ്ഞിട്ടുണ്ട്",
         "Profound hearing loss": "വളരെ ഗുരുതരമായി കുറഞ്ഞിട്ടുണ്ട്",
+        "Complete or total hearing loss": "ഏതാണ്ട് പൂർണ്ണമായും നഷ്ടപ്പെട്ടിട്ടുണ്ട്",
     },
 }
 
@@ -105,18 +113,21 @@ HEARING_AID = {
                  "ദയവായി ഒരു ഓഡിയോളജിസ്റ്റിനെ കാണുക.",
 }
 
+#: The RPwD benchmark is 40% OR MORE, and exactly 40% is common: on the
+#: Gazette ready reckoner every better ear at 60 dB gives it. The sentence
+#: therefore says "40% or more", never "above 40%".
 BENCHMARK = {
-    "english": "Your hearing disability is {pct}%, which is above 40%. You may be "
+    "english": "Your hearing disability is {pct}%, which is 40% or more. You may be "
                "eligible for a government disability certificate and benefits.",
-    "tamil": "உங்கள் செவித்திறன் குறைபாடு {pct}% — இது 40%-க்கு மேல் இருப்பதால், அரசு "
+    "tamil": "உங்கள் செவித்திறன் குறைபாடு {pct}% — இது 40% அல்லது அதற்கு மேல் இருப்பதால், அரசு "
              "மாற்றுத்திறனாளர் சான்றிதழ் மற்றும் நலத்திட்ட உதவிகளுக்கு நீங்கள் தகுதி பெறலாம்.",
-    "hindi": "आपकी श्रवण दिव्यांगता {pct}% है, जो 40% से अधिक है। आप सरकारी दिव्यांगता "
+    "hindi": "आपकी श्रवण दिव्यांगता {pct}% है, जो 40% या उससे अधिक है। आप सरकारी दिव्यांगता "
              "प्रमाण पत्र और लाभों के पात्र हो सकते हैं।",
-    "telugu": "మీ వినికిడి వైకల్యం {pct}% — ఇది 40% కంటే ఎక్కువ. మీరు ప్రభుత్వ వైకల్య "
+    "telugu": "మీ వినికిడి వైకల్యం {pct}% — ఇది 40% లేదా అంతకంటే ఎక్కువ. మీరు ప్రభుత్వ వైకల్య "
               "ధ్రువీకరణ పత్రం మరియు ప్రయోజనాలకు అర్హులు కావచ్చు.",
-    "kannada": "ನಿಮ್ಮ ಶ್ರವಣ ವಿಕಲತೆ {pct}% — ಇದು 40%ಕ್ಕಿಂತ ಹೆಚ್ಚು. ನೀವು ಸರ್ಕಾರಿ ವಿಕಲಚೇತನ "
+    "kannada": "ನಿಮ್ಮ ಶ್ರವಣ ವಿಕಲತೆ {pct}% — ಇದು 40% ಅಥವಾ ಅದಕ್ಕಿಂತ ಹೆಚ್ಚು. ನೀವು ಸರ್ಕಾರಿ ವಿಕಲಚೇತನ "
                "ಪ್ರಮಾಣಪತ್ರ ಮತ್ತು ಸೌಲಭ್ಯಗಳಿಗೆ ಅರ್ಹರಾಗಬಹುದು.",
-    "malayalam": "നിങ്ങളുടെ കേൾവി വൈകല്യം {pct}% ആണ് — ഇത് 40%-ൽ കൂടുതലാണ്. സർക്കാർ "
+    "malayalam": "നിങ്ങളുടെ കേൾവി വൈകല്യം {pct}% ആണ് — ഇത് 40% അല്ലെങ്കിൽ അതിൽ കൂടുതലാണ്. സർക്കാർ "
                  "ഭിന്നശേഷി സർട്ടിഫിക്കറ്റിനും ആനുകൂല്യങ്ങൾക്കും നിങ്ങൾ അർഹരാകാം.",
 }
 

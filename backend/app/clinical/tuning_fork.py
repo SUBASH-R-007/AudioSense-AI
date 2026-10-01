@@ -32,7 +32,7 @@ presbycusic population most often tested. They remain available for crude
 high-frequency air-conduction screening, labelled as such.
 
 THE MOST DANGEROUS RESULT IN THE WHOLE BATTERY is the FALSE-NEGATIVE RINNE. A
-severe or profound sensorineural ear hears nothing at its own meatus, but bone
+severe, profound or total sensorineural ear hears nothing at its own meatus, but bone
 conduction crosses the skull essentially unattenuated and is picked up by the
 opposite cochlea. Bone therefore appears louder than air, the Rinne reads
 negative, and an ear with no conductive component at all is reported as
@@ -817,7 +817,7 @@ def combined_grid(right: Optional[dict], left: Optional[dict],
 
     if r_sign == "uninterpretable" and l_sign == "uninterpretable" and lat == "none":
         return {"available": True, "level": "grid", "rule": "D10",
-                "headline": "Profound bilateral loss, or a technical failure.",
+                "headline": "Profound or total bilateral loss, or a technical failure.",
                 "loss_type": None, "side": None,
                 "flags": flags + ["uninterpretable"], "notes": notes,
                 "recommendations": [
@@ -831,8 +831,8 @@ def combined_grid(right: Optional[dict], left: Optional[dict],
         if sign[ear] == "negative" and sign[other] == "positive" and lat == other:
             rule = "C1"
             extra = (
-                f"The likeliest explanation is a FALSE-NEGATIVE RINNE: a severe "
-                f"or profound sensorineural loss in the {ear} ear, with the "
+                f"The likeliest explanation is a FALSE-NEGATIVE RINNE: a severe, "
+                f"profound or total sensorineural loss in the {ear} ear, with the "
                 f"bone-conducted tone crossing the skull unattenuated and being "
                 f"heard by the {other} cochlea. A mixed loss in the {ear} ear "
                 f"with a dominant sensorineural component does the same.")
@@ -840,7 +840,7 @@ def combined_grid(right: Optional[dict], left: Optional[dict],
                 rule = "C4"
                 extra = (
                     f"Reduced bone-conduction reserve on the {ear} settles it: "
-                    f"this is a profound sensorineural loss in the {ear} ear "
+                    f"this is a profound or total sensorineural loss in the {ear} ear "
                     f"with crossover, not a conductive loss. Escalate.")
             return {"available": True, "level": "contradiction", "rule": rule,
                     "headline": (

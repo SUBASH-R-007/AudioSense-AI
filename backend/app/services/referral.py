@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -122,7 +123,12 @@ def build_referral_pdf(payload: dict) -> bytes:
         abg = ear.get("abg")
         if abg:
             line += f"; air-bone gap {abg['value']:g} dB"
-        story.append(Paragraph(line + ".", body))
+        line += "."
+        # Hearing within normal limits is typed Normal even with a gap; the
+        # receiving clinician still needs to see that the gap is a finding.
+        if ear.get("air_bone_gap_note"):
+            line += f" {escape(ear['air_bone_gap_note'])}"
+        story.append(Paragraph(line, body))
 
     if battery.get("headline"):
         story.append(Paragraph("Test battery", h2))
@@ -140,7 +146,19 @@ def build_referral_pdf(payload: dict) -> bytes:
         story.append(Paragraph("Disability assessment", h2))
         story.append(Paragraph(
             f"Binaural hearing disability {disability['binaural_pct']:g}% "
-            f"(RPwD Act 2016). {disability['binaural_formula']}", body))
+            f"(RPwD Act 2016). {escape(disability['binaural_formula'])}", body))
+        # The Gazette PTA needs all four of 500/1000/2000/4000 Hz in both ears.
+        # A letter is read as a record, so a percentage computed without them
+        # carries its caveat beside the number, not elsewhere. A payload
+        # without the key predates the field and is read as certifiable.
+        if disability.get("certifiable", True) is False:
+            note = (disability.get("certification_note")
+                    or "Not certifiable as computed.")
+            story.append(Paragraph(f"<b>{escape(note)}</b>", body))
+        elif disability.get("guideline_note"):
+            # The method is the 2018 Gazette's, superseded in 2024 and not
+            # re-verified against the new text: said beside the figure.
+            story.append(Paragraph(escape(disability["guideline_note"]), body))
 
     story += [
         Spacer(1, 10),
