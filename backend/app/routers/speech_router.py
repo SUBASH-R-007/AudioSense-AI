@@ -9,10 +9,11 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from app.clinical import rules
 from app.clinical import speech_audiometry as S
-from app.models.schemas import SpeechPoint, ThresholdValue
+from app.models.schemas import AC_FREQS, EarData, SpeechPoint, ThresholdValue
 
 router = APIRouter(prefix="/api/speech")
 
@@ -28,6 +29,18 @@ class SpeechRequest(BaseModel):
     speech_masked: bool = False
     wrs: List[SpeechPoint] = Field(default_factory=list)
 
+    # The same threshold rules as a full record (EarData), so this endpoint
+    # cannot accept an audiogram the full analysis would reject.
+    @field_validator("ac", "opposite_ac")
+    @classmethod
+    def _validate_thresholds(cls, v: Dict[int, Optional[ThresholdValue]]):
+        for freq, val in v.items():
+            if freq not in AC_FREQS:
+                raise ValueError(f"unsupported frequency {freq} Hz")
+            if isinstance(val, int) and not (-10 <= val <= 120):
+                raise ValueError(f"threshold {val} dB at {freq} Hz outside -10..120")
+        return v
+
 
 class CompareRequest(BaseModel):
     right_score: float = Field(ge=0, le=100)
@@ -40,8 +53,12 @@ def reference():
     """The criteria, so the interface can show what it is measuring against."""
     return {
         "srt_agreement_db": S.SRT_AGREEMENT_DB,
+        "srt_comparator_freqs": list(S.SRT_PTA_FREQS),
+        "srt_rule": S.SRT_CRITERION,
+        "steep_step_db": S.STEEP_STEP_DB,
         "sdt_srt_expected_db": list(S.SDT_SRT_EXPECTED_DB),
         "rollover_threshold": S.ROLLOVER_THRESHOLD,
+        "rollover_rule": f"index > {S.ROLLOVER_THRESHOLD}",
         "suprathreshold_sl_db": S.SUPRATHRESHOLD_SL_DB,
         "speech_interaural_attenuation_db": S.SPEECH_INTERAURAL_ATTENUATION_DB,
         "wrs_bands": [{"low": lo, "high": hi, "label": label}
@@ -59,8 +76,10 @@ def reference():
              "measures": "The lowest level at which half a spondee list is "
                          "repeated correctly.",
              "use": "The internal-consistency check on pure-tone thresholds.",
-             "expects": f"Agrees with the pure-tone average within "
-                        f"{S.SRT_AGREEMENT_DB} dB."},
+             "expects": f"Agrees within {S.SRT_AGREEMENT_DB} dB with the "
+                        "500/1000/2000 Hz average or with Fletcher's average "
+                        "of the best two; better than both by more than "
+                        f"{S.SRT_AGREEMENT_DB} dB suggests exaggerated tones."},
             {"key": "wrs", "name": "Word Recognition Score",
              "measures": "Percentage of monosyllabic words repeated correctly "
                          "at a suprathreshold level.",
@@ -71,8 +90,12 @@ def reference():
         ],
         "citations": [
             "Chaiklin (1959); ASHA (1988) — threshold level for speech",
+            "Fletcher (1929, 1950) — three-frequency and best-two averages",
+            "Guthrie & Mackersie (2009); Schoepflin (2012) — steep configurations",
             "Thornton & Raffin (1978) — binomial variability of word scores",
-            "Jerger & Jerger (1971) — rollover and site of lesion",
+            "Goetzinger (1978) — word-recognition categories",
+            "Jerger & Jerger (1971); Dirks et al. (1977) — rollover and site of lesion",
+            "Meyer & Mishler (1985) — rollover criterion for NU-6 lists",
         ],
         "note": ("A word score is a sample, not a measurement. Every score here "
                  "carries its exact binomial confidence interval, and comparisons "
@@ -82,35 +105,32 @@ def reference():
 
 @router.post("/analyze")
 def analyze(req: SpeechRequest):
-    """SDT, SRT and WRS for one ear, with the cross-checks between them."""
-    numeric = [v for v in req.ac.values() if isinstance(v, int)]
-    pta = round(sum(numeric) / len(numeric), 1) if numeric else None
+    """SDT, SRT and WRS for one ear, with the cross-checks between them.
 
-    srt = S.srt_agreement(req.ac, req.srt, masked=req.speech_masked,
-                          opposite_ac=req.opposite_ac or None)
-    sdt = S.sdt_analysis(req.ac, req.sdt, req.srt)
-    wrs = S.wrs_analysis([p.model_dump() for p in req.wrs], pta, req.srt)
+    Runs the same bundle as the full analysis (``analyze_speech``) with the
+    same PTA — the WHO four-frequency average from the rules engine, "NR" as
+    120 dB HL — so one ear cannot be called disproportionate here and not
+    there.
+    """
+    ac_pta = rules.pta(req.ac)
+    pta = ac_pta["value"] if ac_pta else None
 
-    flags: List[str] = []
-    if srt and srt["non_organic_suspected"]:
-        flags.append("non_organic")
-    if srt and srt["masking_note"]:
-        flags.append("speech_masking_required")
-    if sdt:
-        flags.extend(sdt["flags"])
-    if wrs and wrs["rollover"]:
-        flags.append("rollover")
-    if wrs and wrs["adequate_level"] is False:
-        flags.append("wrs_level_too_low")
+    ear = EarData(ac=req.ac, sdt=req.sdt, srt=req.srt,
+                  speech_masked=req.speech_masked, wrs=req.wrs)
+    opposite = EarData(ac=req.opposite_ac) if req.opposite_ac else None
+    result = S.analyze_speech(ear, pta, opposite) or {
+        "sdt": None, "srt": None, "wrs": None, "flags": [],
+        "retrocochlear_suspicion": False,
+    }
+    sdt, srt, wrs = result["sdt"], result["srt"], result["wrs"]
 
     return {
         "ear": req.ear,
         "sdt": sdt,
         "srt": srt,
         "wrs": wrs,
-        "flags": flags,
-        "retrocochlear_suspicion": bool(
-            wrs and (wrs["rollover"] or wrs["disproportionate"])),
+        "flags": result["flags"],
+        "retrocochlear_suspicion": result["retrocochlear_suspicion"],
         "available": bool(sdt or srt or wrs),
     }
 

@@ -15,10 +15,13 @@ the patient's BEST pure-tone threshold rather than the average, and normally
 sits 5-10 dB better than the SRT (Chaiklin 1959; ASHA 1988).
 
 **SRT — speech reception threshold.** The lowest level at which half of a
-spondee list is repeated correctly. It should agree with the pure-tone average
-within about 10 dB. An SRT substantially BETTER than the PTA means the tones
-are exaggerated — the classic non-organic picture, and the one that matters
-most in compensation and disability certification.
+spondee list is repeated correctly. It should agree within about 10 dB with
+the 500/1000/2000 Hz average — or, in a sloping or rising loss, with
+Fletcher's average of the best two (ASHA 1988; Fletcher 1950). An SRT
+substantially BETTER than both means the tones are exaggerated — the classic
+non-organic picture, and the one that matters most in compensation and
+disability certification. Holding an honest sloping or reverse-slope loss to
+the three-frequency mean alone makes it look non-organic.
 
 **WRS — word recognition score.** Percentage of monosyllabic words repeated
 correctly at a suprathreshold level. Two things are routinely got wrong here
@@ -39,19 +42,67 @@ retrocochlear indicator.
 """
 from __future__ import annotations
 
-from math import comb
+from math import comb, isclose
 from typing import Dict, List, Optional
 
 from app.models.schemas import PTA_FREQS, ThresholdValue, ear_to_numeric
 
-#: Acceptable |PTA − SRT| agreement, dB.
+#: Acceptable SRT–pure-tone agreement, dB.
 SRT_AGREEMENT_DB = 10
-#: Rollover index above this suggests a retrocochlear site of lesion.
+#: The frequencies the SRT is compared against. ASHA (1988) recognises two
+#: averages of them: the three-frequency PTA (Fletcher 1929), with which "for
+#: most clinical cases there will be good agreement", and the average of the
+#: best two (Fletcher 1950), with which agreement "may be better" in a
+#: sloping loss. The SRT agrees when it is within SRT_AGREEMENT_DB of EITHER;
+#: the best-two average can never exceed the three-frequency one, so an SRT is
+#: called better than the tones only when it beats both. 4000 Hz carries
+#: little of what a spondee needs.
+SRT_PTA_FREQS = (500, 1000, 2000)
+#: An adjacent-octave step (500→1000 or 1000→2000 Hz) larger than this marks
+#: a steep configuration: Guthrie & Mackersie (2009, J Am Acad Audiol
+#: 20(6):381) note that the best-two average "is often used in lieu of the
+#: pure-tone average when there is a greater than 20 dB difference between
+#: two adjacent frequencies". In a "really precipitous" configuration the SRT
+#: can follow the single best threshold (Schoepflin 2012, AudiologyOnline,
+#: "Back to Basics: Speech Audiometry"). No published cut-off for precipitous
+#: could be confirmed, so above this step an SRT that beats both averages but
+#: sits within SRT_AGREEMENT_DB of the best single threshold is reported as
+#: indeterminate — neither agreement nor non-organic loss.
+STEEP_STEP_DB = 20
+#: The SRT rule as reported with every result and by the reference endpoint.
+SRT_CRITERION = (
+    f"SRT within {SRT_AGREEMENT_DB} dB of the 500/1000/2000 Hz average or of "
+    f"Fletcher's best-two average; more than {SRT_AGREEMENT_DB} dB better than "
+    "both suggests exaggerated tones, unless an adjacent-octave step exceeds "
+    f"{STEEP_STEP_DB} dB and the SRT is within {SRT_AGREEMENT_DB} dB of the "
+    "best single threshold (indeterminate). ASHA 1988; Fletcher 1929, 1950; "
+    "Schoepflin 2012"
+)
+#: Rollover is called when the index EXCEEDS this value. 0.45 separated
+#: cochlear from eighth-nerve ears on PAL PB-50 lists in Jerger & Jerger
+#: (1971) and again in Dirks et al. (1977); the criterion is applied as
+#: "ratios > 0.45" (Qian et al. 2023, Ear Hear 44(6):1540). Schlauch & Carney
+#: (2018, JSLHR 61:936) quote Dirks' PB-50 pass/fail value as 0.46 — the same
+#: rule for an index given to two decimals. On the exact ratio an index
+#: strictly between the two (40/88 = 0.4545) is called rollover, the referral
+#: direction, with a borderline note. The criterion is list-specific: Meyer &
+#: Mishler (1985) found > 0.35 the separating value for Auditec NU-6 lists, so
+#: an index between 0.35 and 0.45 is reported as a caveat.
 ROLLOVER_THRESHOLD = 0.45
+#: Dirks et al.'s PB-50 criterion as quoted by Schlauch & Carney (2018); an
+#: index above ROLLOVER_THRESHOLD but below this is flagged with a note.
+ROLLOVER_THRESHOLD_DIRKS = 0.46
+#: Rollover criterion reported for NU-6 word lists (Meyer & Mishler 1985,
+#: J Speech Hear Disord 50:356) — used only to caveat, never to flag, because
+#: the word list is not recorded.
+ROLLOVER_THRESHOLD_NU6 = 0.35
 #: SDT normally sits this far BELOW the SRT (detection is easier than
 #: recognition). Chaiklin (1959); ASHA (1988) guidelines for determining
-#: threshold level for speech.
+#: threshold level for speech, which give the mean gap as 8-9 dB.
 SDT_SRT_EXPECTED_DB = (5, 10)
+#: Clinical thresholds move in 5 dB steps, so a gap one step outside the
+#: expected range is reported as atypical rather than flagged.
+THRESHOLD_STEP_DB = 5
 #: Interaural attenuation for speech through supra-aural earphones, dB. Below
 #: this the opposite cochlea may be responding, so masking is required.
 SPEECH_INTERAURAL_ATTENUATION_DB = 45
@@ -61,12 +112,20 @@ SUPRATHRESHOLD_SL_DB = 30
 #: Frequencies that carry speech energy, used for the SDT comparison.
 SPEECH_FREQS = [250, 500, 1000, 2000, 4000]
 
+#: Word-recognition categories after Goetzinger (1978), "Word discrimination
+#: testing", in Katz (ed.) Handbook of Clinical Audiology, 2nd ed.:
+#: 90-100% excellent / within normal limits, 78-88% good / slight difficulty,
+#: 66-76% fair / moderate difficulty, 54-64% poor / great difficulty, below
+#: 52% very poor. The published bands are written in the 2% steps of a
+#: 50-word list and leave gaps between them (e.g. 52%, or 77% on a 30-word
+#: list); a score in a gap takes the POORER category, so a band never
+#: overstates recognition. Each band is (low inclusive, high exclusive).
 WRS_BANDS = [
-    (90, 100, "Excellent — normal word recognition"),
-    (76, 90, "Good — slight difficulty with speech"),
-    (60, 76, "Fair — moderate difficulty following conversation"),
-    (40, 60, "Poor — marked difficulty; limited benefit from amplification alone"),
-    (0, 40, "Very poor — amplification alone unlikely to restore understanding"),
+    (90, 100, "Excellent — within normal limits"),
+    (78, 90, "Good — slight difficulty"),
+    (66, 78, "Fair — moderate difficulty"),
+    (54, 66, "Poor — great difficulty"),
+    (0, 54, "Very poor"),
 ]
 
 
@@ -138,11 +197,24 @@ def scores_differ(score_a: float, score_b: float, n: int,
 # --------------------------------------------------------------------------
 # pure-tone comparators
 # --------------------------------------------------------------------------
-def pta_two_frequency(ac: Dict[int, Optional[ThresholdValue]]) -> Optional[float]:
-    """Two-frequency PTA (500/1000 Hz) — the classic SRT comparator.
+def pta_three_frequency(ac: Dict[int, Optional[ThresholdValue]]) -> Optional[float]:
+    """Three-frequency PTA (500/1000/2000 Hz) — the conventional SRT comparator.
 
-    For steeply sloping losses the 500/1000 Hz average predicts the SRT
-    better than the four-frequency PTA does.
+    Fletcher (1929); ASHA (1988) guidelines for determining threshold level
+    for speech. Averages whichever of the three were tested; the caller
+    decides whether an incomplete average is good enough.
+    """
+    numeric = ear_to_numeric(ac)
+    vals = [numeric[f] for f in SRT_PTA_FREQS if numeric.get(f) is not None]
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
+def pta_two_frequency(ac: Dict[int, Optional[ThresholdValue]]) -> Optional[float]:
+    """Two-frequency PTA (500/1000 Hz).
+
+    Reported for reference only. For a high-frequency slope it approximates
+    Fletcher's average; for a rising loss it is the two WORST of the speech
+    frequencies, so it is never used as the comparator on its own.
     """
     numeric = ear_to_numeric(ac)
     vals = [numeric[f] for f in (500, 1000) if numeric.get(f) is not None]
@@ -163,6 +235,48 @@ def pta_fletcher(ac: Dict[int, Optional[ThresholdValue]]) -> Optional[float]:
         return None
     best = vals[:2] if len(vals) >= 2 else vals
     return round(sum(best) / len(best), 1)
+
+
+def best_comparator_threshold(ac: Dict[int, Optional[ThresholdValue]]
+                              ) -> Optional[tuple]:
+    """The best single threshold of 500/1000/2000 Hz, as (dB, Hz).
+
+    The SRT comparator of last resort in a precipitous configuration
+    (Schoepflin 2012: "the best frequency in the PTA"). The lower frequency
+    wins a tie.
+    """
+    numeric = ear_to_numeric(ac)
+    vals = [(v, f) for f in SRT_PTA_FREQS if (v := numeric.get(f)) is not None]
+    return min(vals) if vals else None
+
+
+def speech_configuration(ac: Dict[int, Optional[ThresholdValue]]) -> dict:
+    """Shape of the 500-2000 Hz audiogram, as far as the SRT check cares.
+
+    ``gradual`` (flat, or sloping/rising by no more than ``STEEP_STEP_DB`` per
+    octave) unless an adjacent-octave step (500→1000 or 1000→2000 Hz) exceeds
+    ``STEEP_STEP_DB``. A large step is ``sloping`` when the thresholds worsen
+    with frequency, ``rising`` (reverse slope) when they improve, and
+    ``irregular`` when both happen. ``incomplete`` when any of the three
+    frequencies is untested, because the shape cannot be judged.
+    """
+    numeric = ear_to_numeric(ac)
+    vals = {f: numeric.get(f) for f in SRT_PTA_FREQS}
+    missing = [f for f, v in vals.items() if v is None]
+    if missing:
+        return {"shape": "incomplete", "missing": missing, "steps": [],
+                "steep": None}
+    steps = [vals[1000] - vals[500], vals[2000] - vals[1000]]
+    large = [s for s in steps if abs(s) > STEEP_STEP_DB]
+    if not large:
+        shape = "gradual"
+    elif all(s > 0 for s in large):
+        shape = "sloping"
+    elif all(s < 0 for s in large):
+        shape = "rising"
+    else:
+        shape = "irregular"
+    return {"shape": shape, "missing": [], "steps": steps, "steep": bool(large)}
 
 
 def best_speech_threshold(ac: Dict[int, Optional[ThresholdValue]]) -> Optional[float]:
@@ -210,13 +324,30 @@ def sdt_analysis(ac: Dict[int, Optional[ThresholdValue]],
                 "speech cannot be harder than recognising it — one of the two "
                 "measurements is wrong."
             )
-        elif srt_difference > hi + 5:
+        elif srt_difference > hi + THRESHOLD_STEP_DB:
             flags.append("sdt_srt_gap_wide")
             notes.append(
                 f"SDT is {srt_difference:g} dB better than the SRT, against an "
                 f"expected {lo}-{hi} dB. A wide gap is typical of a steeply "
                 "sloping loss, where low frequencies allow detection but not "
                 "recognition — or of an unreliable SRT."
+            )
+        elif srt_difference > hi:
+            notes.append(
+                f"SDT is {srt_difference:g} dB better than the SRT — wider than "
+                f"the expected {lo}-{hi} dB, but within one "
+                f"{THRESHOLD_STEP_DB} dB step of it. A sloping loss widens the "
+                "gap; not by itself an inconsistency."
+            )
+        elif srt_difference < lo:
+            gap = ("SDT equals the SRT" if srt_difference == 0 else
+                   f"SDT is only {srt_difference:g} dB better than the SRT")
+            notes.append(
+                f"{gap} — narrower than the expected {lo}-{hi} dB. Detection "
+                "normally needs less level than recognition, so either the SDT "
+                "was set too high or the SRT was scored leniently. Within one "
+                f"{THRESHOLD_STEP_DB} dB step of the expected gap, so re-check "
+                "rather than reject either."
             )
         else:
             notes.append(
@@ -253,21 +384,83 @@ def srt_agreement(ac: Dict[int, Optional[ThresholdValue]],
                   masked: bool = False,
                   opposite_ac: Optional[Dict[int, Optional[ThresholdValue]]] = None,
                   ) -> Optional[dict]:
-    """Compare SRT with the pure-tone average and flag disagreement."""
+    """Compare the SRT with the conventional pure-tone averages.
+
+    The SRT is checked against both averages ASHA (1988) recognises — the
+    500/1000/2000 Hz mean (Fletcher 1929) and the best two of those
+    frequencies (Fletcher 1950) — and agrees when it is within
+    ``SRT_AGREEMENT_DB`` of either. Speech reception follows the frequencies
+    the patient still hears, so in a sloping OR rising loss the
+    three-frequency mean is dragged towards the frequency that contributes
+    least, and an honest SRT looks "too good" against it alone.
+
+    Non-organic loss is suspected only when the SRT is better than BOTH
+    averages by more than the tolerance. In a steep configuration (an
+    adjacent-octave step over ``STEEP_STEP_DB``) the SRT can follow the best
+    single threshold, so an SRT within tolerance of that threshold leaves the
+    check indeterminate rather than calling the tones exaggerated. With any
+    of 500/1000/2000 Hz untested the configuration — and so the right average
+    — cannot be established, and the check is indeterminate as well.
+
+    ``comparator`` is the average the verdict rests on: the one nearest the
+    SRT (a tie goes to the three-frequency average), the tested frequencies
+    when incomplete, or the best single threshold when indeterminate in a
+    steep configuration. ``difference`` is comparator − SRT; positive means
+    the SRT is better than the tones.
+    """
     if srt is None:
         return None
+    tol = SRT_AGREEMENT_DB
     numeric = ear_to_numeric(ac)
     pta_vals = [numeric[f] for f in PTA_FREQS if numeric.get(f) is not None]
-    if not pta_vals:
-        return None
-    pta = round(sum(pta_vals) / len(pta_vals), 1)
+    pta = round(sum(pta_vals) / len(pta_vals), 1) if pta_vals else None
     pta2 = pta_two_frequency(ac)
+    pta3 = pta_three_frequency(ac)
     fletcher = pta_fletcher(ac)
-    comparator = pta2 if pta2 is not None else pta
-    diff = round(comparator - srt, 1)  # positive = SRT better than pure tones
+    best = best_comparator_threshold(ac)
+    config = speech_configuration(ac)
+    shape, missing = config["shape"], config["missing"]
 
-    agrees = abs(diff) <= SRT_AGREEMENT_DB
-    non_organic = diff > SRT_AGREEMENT_DB  # tones look worse than speech
+    labels = {
+        "three_frequency": "three-frequency average (500/1000/2000 Hz)",
+        "fletcher": "Fletcher average (best two of 500/1000/2000 Hz)",
+    }
+    agrees: Optional[bool] = None
+    non_organic = False
+    indeterminate: Optional[str] = None
+    comparator = basis = None
+    d3 = df = None  # average − SRT; positive = SRT better than the tones
+
+    if pta3 is None:
+        indeterminate = "no_speech_frequencies"
+    elif missing:
+        # The configuration decides which average applies, and one of the
+        # frequencies that defines it is missing.
+        indeterminate = "incomplete"
+        tested = [str(f) for f in SRT_PTA_FREQS if f not in missing]
+        comparator, basis = pta3, "tested_frequencies"
+        labels[basis] = (f"average of {'/'.join(tested)} Hz" if len(tested) > 1
+                         else f"threshold at {tested[0]} Hz")
+    else:
+        d3, df = round(pta3 - srt, 1), round(fletcher - srt, 1)
+        if abs(d3) <= abs(df):
+            comparator, basis = pta3, "three_frequency"
+        else:
+            comparator, basis = fletcher, "fletcher"
+        if abs(d3) <= tol or abs(df) <= tol:
+            agrees = True
+        elif df > tol:
+            best_db, best_hz = best
+            if config["steep"] and best_db - srt <= tol:
+                indeterminate = "steep_configuration"
+                comparator, basis = best_db, "best_threshold"
+                labels[basis] = f"best single threshold ({best_hz} Hz)"
+            else:
+                agrees, non_organic = False, True
+        else:
+            agrees = False
+    label = labels.get(basis)
+    diff = None if comparator is None else round(comparator - srt, 1)
 
     # Speech crosses the skull like a tone does. Without masking, a good SRT
     # may belong to the other ear entirely.
@@ -282,30 +475,116 @@ def srt_agreement(ac: Dict[int, Optional[ThresholdValue]],
                 "not recorded. This may be a shadow response from the better ear."
             )
 
+    # Every message names the averages it used, because the non-organic call
+    # can reach a disability certificate.
+    if indeterminate == "no_speech_frequencies":
+        message = (
+            f"SRT ({srt} dB) cannot be checked against the pure tones: none of "
+            "500/1000/2000 Hz was tested. Obtain those thresholds before using "
+            "the SRT as a validity check."
+        )
+    elif indeterminate == "incomplete":
+        relation = ("equals" if diff == 0 else
+                    f"is {abs(diff):g} dB {'better' if diff > 0 else 'poorer'} than")
+        message = (
+            f"SRT ({srt} dB) {relation} the {label}, {comparator:g} dB, but "
+            f"{'/'.join(str(f) for f in missing)} Hz was not tested. Which "
+            "average the SRT should match depends on the configuration across "
+            "500/1000/2000 Hz, so agreement cannot be judged — complete those "
+            "thresholds before using the SRT as a validity check or certifying "
+            "disability."
+        )
+    elif indeterminate == "steep_configuration":
+        near_best = (f"within {abs(diff):g} dB of" if abs(diff) <= tol else
+                     "between that average and")
+        message = (
+            f"SRT ({srt} dB) is {df:g} dB better than Fletcher's best-two "
+            f"average ({fletcher:g} dB) and {d3:g} dB better than the "
+            f"three-frequency average ({pta3:g} dB), but {near_best} the best "
+            f"single threshold ({comparator:g} dB at "
+            f"{best[1]} Hz). In a precipitous configuration the SRT can follow "
+            f"the best single threshold, and this {shape} configuration has an "
+            f"adjacent-octave step over {STEEP_STEP_DB} dB — so the SRT can "
+            "neither confirm nor refute the pure tones. Confirm the thresholds "
+            "with an objective measure (e.g. ABR or ASSR) before any disability "
+            "certification."
+        )
+    elif non_organic:
+        if fletcher == pta3:
+            against = (f"{d3:g} dB better than the three-frequency average "
+                       f"(500/1000/2000 Hz), {pta3:g} dB, which here equals "
+                       "Fletcher's best-two average")
+        else:
+            against = (f"better than both conventional averages — {df:g} dB "
+                       f"better than Fletcher's best-two average ({fletcher:g} dB) "
+                       f"and {d3:g} dB better than the three-frequency average "
+                       f"({pta3:g} dB)")
+        message = (
+            f"SRT ({srt} dB) is {against}. Pure-tone thresholds are likely "
+            "exaggerated — consider non-organic (functional) hearing loss and "
+            "repeat with re-instruction before any disability certification."
+        )
+        if config["steep"]:
+            message += (
+                f" It is also {best[0] - srt:g} dB better than the best single "
+                f"threshold ({best[0]:g} dB at {best[1]} Hz), so even a "
+                "precipitous configuration does not explain it."
+            )
+    elif agrees:
+        closeness = "exactly" if diff == 0 else f"within {abs(diff):g} dB"
+        message = (
+            f"SRT ({srt} dB) agrees with the {label}, {comparator:g} dB, "
+            f"{closeness} — test is internally consistent."
+        )
+        if abs(d3) > tol:
+            message += (
+                f" Against the three-frequency average ({pta3:g} dB) alone it "
+                f"would look {d3:g} dB too good: in a sloping or rising loss the "
+                "SRT follows the frequencies the patient hears best (ASHA 1988; "
+                "Fletcher 1950)."
+            )
+    elif d3 < -tol:
+        message = (
+            f"SRT ({srt} dB) is {abs(d3):g} dB poorer than the three-frequency "
+            f"average (500/1000/2000 Hz), {pta3:g} dB"
+            + (f", and {abs(df):g} dB poorer than Fletcher's best-two average "
+               f"({fletcher:g} dB)" if fletcher != pta3 else "")
+            + " — unusual; check test reliability, speech material and "
+            "language familiarity."
+        )
+    else:
+        # Only possible when the poorest frequency sits far above the other
+        # two (a gap of more than 2 x tolerance between the averages).
+        message = (
+            f"SRT ({srt} dB) lies between Fletcher's best-two average "
+            f"({fletcher:g} dB) and the three-frequency average ({pta3:g} dB), "
+            f"within {tol} dB of neither — {abs(df):g} dB poorer than the "
+            "frequencies the patient hears best. Not the pattern of exaggerated "
+            "tones, but unusual; check test reliability, speech material and "
+            "language familiarity."
+        )
+
     return {
         "srt": srt,
+        # Four-frequency PTA (500-4000 Hz), for reference — not a comparator.
         "pta": pta,
         "pta_500_1000": pta2,
+        "pta_500_1000_2000": pta3,
         "pta_fletcher": fletcher,
+        "best_threshold": None if best is None else best[0],
+        "best_threshold_freq": None if best is None else best[1],
+        "configuration": shape,
         "comparator": comparator,
+        "comparator_basis": basis,
+        "comparator_label": label,
         "difference": diff,
         "agrees": agrees,
+        "indeterminate_reason": indeterminate,
         "masked": masked,
         "masking_note": masking_note,
         "non_organic_suspected": non_organic,
-        "criterion": f"|PTA − SRT| ≤ {SRT_AGREEMENT_DB} dB",
-        "message": (
-            f"SRT ({srt} dB) is {diff:g} dB better than the pure-tone average "
-            f"({comparator:g} dB). Pure-tone thresholds are likely exaggerated — "
-            "consider non-organic (functional) hearing loss and repeat with "
-            "re-instruction before any disability certification."
-        ) if non_organic else (
-            f"SRT ({srt} dB) is {abs(diff):g} dB poorer than the pure-tone average — "
-            "unusual; check test reliability, speech material and language familiarity."
-        ) if not agrees else (
-            f"SRT agrees with the pure-tone average within {abs(diff):g} dB — "
-            "test is internally consistent."
-        ),
+        "criterion": SRT_CRITERION,
+        "message": message,
     }
 
 
@@ -316,8 +595,10 @@ def wrs_analysis(wrs: List[dict], pta: Optional[float] = None,
                  srt: Optional[int] = None) -> Optional[dict]:
     """Interpret word-recognition scores with their statistical uncertainty.
 
-    Rollover index = (PB max − PB min above the max) / PB max. A value above
-    0.45 is the classic retrocochlear indicator.
+    Rollover index = (PB max − PB min above the max) / PB max (Jerger &
+    Jerger 1971). An index EXCEEDING 0.45 is the classic retrocochlear
+    indicator; an index of exactly 0.45 meets but does not exceed it and is
+    reported as borderline, not as rollover.
     """
     points = []
     for p in wrs:
@@ -345,9 +626,14 @@ def wrs_analysis(wrs: List[dict], pta: Optional[float] = None,
     rollover_index = None
     rollover = False
     rollover_significant = None
+    rollover_ratio = None
     if pb_min is not None and pb_max > 0:
-        rollover_index = round((pb_max - pb_min) / pb_max, 3)
-        rollover = rollover_index > ROLLOVER_THRESHOLD
+        # The criterion is applied to the exact ratio; the rounded index is
+        # for display only.
+        rollover_ratio = (pb_max - pb_min) / pb_max
+        rollover_index = round(rollover_ratio, 3)
+        rollover = (rollover_ratio > ROLLOVER_THRESHOLD
+                    and not isclose(rollover_ratio, ROLLOVER_THRESHOLD))
         # A drop the word list cannot resolve is not a drop.
         rollover_significant = scores_differ(pb_max, pb_min, best["n_words"])
 
@@ -368,11 +654,38 @@ def wrs_analysis(wrs: List[dict], pta: Optional[float] = None,
             "recognition worsens at higher levels, which suggests a retrocochlear "
             "site of lesion. Refer for ENT/neuro-otology assessment."
         )
+        if rollover_ratio < ROLLOVER_THRESHOLD_DIRKS and not isclose(
+                rollover_ratio, ROLLOVER_THRESHOLD_DIRKS):
+            notes.append(
+                f"The index exceeds {ROLLOVER_THRESHOLD} but not "
+                f"{ROLLOVER_THRESHOLD_DIRKS}, the form in which Dirks et al.'s "
+                "PB-50 criterion is also quoted (Schlauch & Carney 2018). "
+                "Borderline — repeat the performance-intensity function with "
+                "full lists; the referral stands until it is repeated."
+            )
         if rollover_significant is False:
             notes.append(
                 f"That drop is within the range a {best['n_words']}-word list "
                 "cannot resolve. Repeat with a full list before acting on it."
             )
+    elif rollover_ratio is not None and isclose(rollover_ratio, ROLLOVER_THRESHOLD):
+        notes.append(
+            f"Rollover index {rollover_index} meets but does not exceed the "
+            f"criterion (index > {ROLLOVER_THRESHOLD}). Borderline — repeat the "
+            "performance-intensity function with full lists before ruling "
+            "rollover in or out."
+        )
+    elif (rollover_ratio is not None
+          and rollover_ratio > ROLLOVER_THRESHOLD_NU6
+          and not isclose(rollover_ratio, ROLLOVER_THRESHOLD_NU6)):
+        notes.append(
+            f"Rollover index {rollover_index} is below the {ROLLOVER_THRESHOLD} "
+            "criterion derived on PAL PB-50 lists, but above the "
+            f"{ROLLOVER_THRESHOLD_NU6} reported for NU-6 lists (Meyer & Mishler "
+            "1985). The criterion depends on the word list; if this list has no "
+            f"validated {ROLLOVER_THRESHOLD} criterion, rollover cannot be "
+            "excluded — repeat the performance-intensity function."
+        )
     if disproportionate:
         notes.append(
             f"Word recognition ({pb_max:g}%) is disproportionately poor for a "
@@ -410,6 +723,8 @@ def wrs_analysis(wrs: List[dict], pta: Optional[float] = None,
         "pb_min_after_max": pb_min,
         "rollover_index": rollover_index,
         "rollover": rollover,
+        "rollover_criterion": (f"index > {ROLLOVER_THRESHOLD} (PAL PB-50; Jerger "
+                               "& Jerger 1971, Dirks et al. 1977)"),
         "rollover_significant": rollover_significant,
         "interpretation": band,
         "disproportionate": disproportionate,
@@ -437,6 +752,10 @@ def analyze_speech(ear, pta: Optional[float] = None,
     flags = []
     if srt and srt["non_organic_suspected"]:
         flags.append("non_organic")
+    if srt and srt["agrees"] is None:
+        # The SRT could not be used as a validity check (see its message):
+        # not evidence for the tones, and not evidence against them.
+        flags.append("srt_indeterminate")
     if srt and srt["masking_note"]:
         flags.append("speech_masking_required")
     if sdt:

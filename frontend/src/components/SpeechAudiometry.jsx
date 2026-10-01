@@ -193,8 +193,12 @@ export default function SpeechAudiometry() {
 
       <div className="mt-4 grid gap-2 sm:grid-cols-4">
         <Row label="SDT" value={sdt?.sdt} unit="dB HL" />
+        {/* agrees === null: the SRT cannot be judged against the pure tones
+            (steep configuration or 500/1000/2000 Hz incomplete) — amber, not
+            the rose of a real disagreement. */}
         <Row label="SRT" value={srt?.srt} unit="dB HL"
-          tone={srt && !srt.agrees ? 'text-rose-700' : undefined} />
+          tone={srt && srt.agrees === false ? 'text-rose-700'
+            : srt && srt.agrees == null ? 'text-amber-700' : undefined} />
         <Row label="PB max" value={wrs?.pb_max} unit="%"
           tone={wrs?.adequate_level === false ? 'text-amber-700' : undefined} />
         <Row label="Rollover index" value={wrs?.rollover_index}
@@ -271,16 +275,27 @@ export default function SpeechAudiometry() {
               <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
                 srt.non_organic_suspected ? 'bg-rose-100 text-rose-700'
                   : srt.agrees ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-amber-100 text-amber-700'}`}>
+                    : srt.agrees == null ? 'bg-slate-100 text-slate-600'
+                      : 'bg-amber-100 text-amber-700'}`}>
                 {srt.non_organic_suspected ? 'non-organic?'
-                  : srt.agrees ? 'agrees' : 'disagrees'}
+                  : srt.agrees ? 'agrees'
+                    : srt.agrees == null ? 'cannot judge' : 'disagrees'}
               </span>
             </div>
             <div className="mt-1.5 grid grid-cols-3 gap-1.5 text-[11px]">
               <Row label="4-frequency PTA" value={srt.pta} unit="dB" />
               <Row label="Fletcher (best 2)" value={srt.pta_fletcher} unit="dB" />
-              <Row label="PTA − SRT" value={srt.difference} unit="dB" />
+              {/* The comparator is whichever average the SRT is judged against
+                  (three-frequency, Fletcher's best two, the best single
+                  threshold, or the tested frequencies), not the 4-frequency PTA. */}
+              <Row label="Comparator − SRT" value={srt.difference} unit="dB" />
             </div>
+            {srt.comparator_label && (
+              <p className="mt-1 text-[11px] text-slate-500">
+                Comparator: {srt.comparator_label}
+                {srt.configuration ? ` · ${srt.configuration} configuration` : ''}
+              </p>
+            )}
             <Notes items={[srt.message, srt.masking_note].filter(Boolean)}
               tone={srt.agrees && !srt.masking_note ? 'slate' : 'amber'} />
           </div>
