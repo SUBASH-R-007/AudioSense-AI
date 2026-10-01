@@ -10,13 +10,21 @@
 // informative next, and stop as soon as the 95% credible interval is tight
 // enough.
 //
-// Measured over 300 simulated listeners with realistic response noise
-// (4 dB slope, 3% lapses, 2% false alarms): 9.6 presentations per frequency
-// versus 11.6 for the staircase, mean absolute error 2.7 dB versus 3.3 dB,
-// and essentially no bias (−0.2 dB versus +1.2 dB). It does produce more
-// occasional large misses (1.3% of thresholds off by >10 dB versus 0.3%),
-// so the headline benefit is not raw speed — it is that every threshold
-// arrives with an error bar, which a staircase fundamentally cannot give.
+// Measured against the Staircase in toneAudiometer.js, both driven exactly as
+// ScreeningRunner drives them, over 1,000 simulated listeners x 12 thresholds
+// (true thresholds uniform over 0-70 dB HL in whole dB; cumulative-normal
+// psychometric function with a 4 dB spread, 3% lapses, 2% false alarms).
+// Each result is scored against the listener's clinical threshold — the
+// lowest 5-dB step they respond to at least half the time:
+//
+//                          presentations   bias     mean |error|   off >10 dB
+//   Bayesian (this file)        9.3        +0.0 dB     1.8 dB         0.16%
+//   Hughson-Westlake           10.6        +0.3 dB     2.2 dB         0.03%
+//
+// (Silent catch trials add about 12% to both.) So the gain in speed and
+// accuracy is modest, it misses by more than 10 dB a little more often, and
+// the headline benefit is that every threshold arrives with an error bar,
+// which a staircase fundamentally cannot give.
 //
 //   P(heard | level, threshold) = guess + (1 - guess - lapse) * Φ((L - T)/β)
 //
@@ -27,6 +35,10 @@
 const GUESS = 0.02   // responds with no stimulus present
 const LAPSE = 0.03   // misses a clearly audible tone
 const SLOPE = 4.5    // dB; spread of the psychometric function
+//: dB of posterior kept beyond each end of the presentable range. Without it
+//: the posterior cannot express "does not hear even the loudest tone", and a
+//: dead ear would be reported as a number at a level that was never heard.
+const EDGE = 20
 
 /** Logistic approximation to the cumulative normal — cheap and adequate. */
 function psi(level, threshold) {
@@ -46,7 +58,9 @@ export class BayesianThreshold {
     this.max = max
     this.step = 1
     this.grid = []
-    for (let t = min; t <= max; t += this.step) this.grid.push(t)
+    // Presentations stay within [min, max]; the threshold itself may lie
+    // outside it, and the posterior has to be able to say so.
+    for (let t = min - EDGE; t <= max + EDGE; t += this.step) this.grid.push(t)
 
     // Broad Gaussian prior — informative enough to start sensibly, weak
     // enough that a few responses dominate it.
@@ -73,20 +87,68 @@ export class BayesianThreshold {
     return Math.sqrt(this.grid.reduce((acc, t, i) => acc + this.post[i] * (t - m) ** 2, 0))
   }
 
-  /** Equal-tailed 95% credible interval, in dB. */
-  credibleInterval(mass = 0.95) {
-    const lo = (1 - mass) / 2
-    const hi = 1 - lo
+  /** Smallest grid level with at least `q` of the posterior mass at or below it. */
+  _quantile(q) {
     let cum = 0
-    let low = this.grid[0]
-    let high = this.grid[this.grid.length - 1]
-    let gotLow = false
     for (let i = 0; i < this.grid.length; i++) {
       cum += this.post[i]
-      if (!gotLow && cum >= lo) { low = this.grid[i]; gotLow = true }
-      if (cum >= hi) { high = this.grid[i]; break }
+      if (cum >= q) return this.grid[i]
     }
-    return [low, high]
+    return this.grid[this.grid.length - 1]
+  }
+
+  /**
+   * Equal-tailed 95% credible interval, in dB, clamped to the presentable
+   * range — a bound beyond it would quote a level the procedure cannot play.
+   */
+  credibleInterval(mass = 0.95) {
+    const tail = (1 - mass) / 2
+    const clamp = (t) => Math.min(this.max, Math.max(this.min, t))
+    return [clamp(this._quantile(tail)), clamp(this._quantile(1 - tail))]
+  }
+
+  /**
+   * The threshold on the clinical convention, not the psychometric midpoint.
+   *
+   * ASHA (2005), Guidelines for Manual Pure-Tone Threshold Audiometry:
+   * threshold is "the lowest decibel hearing level at which responses occur
+   * in at least one half of a series of ascending trials", in 5-dB steps. The
+   * posterior is over T, the level heard half the time (psi's midpoint, to
+   * within 0.1 dB of the guess/lapse asymmetry). A listener with midpoint T
+   * responds at least half the time at every step at or above T, so their
+   * clinical threshold is the lowest 5-dB step at or above T: ceil(T / 5) * 5.
+   * That mapping is monotone, so the posterior median of the clinical
+   * threshold is that same step taken at the posterior median of T — the
+   * estimate that minimises the expected absolute error in dB.
+   *
+   * Rounding the posterior mean to the NEAREST step would report the
+   * midpoint instead, which sits about half a step below the lowest level
+   * reliably heard: one step too good, always in the same direction.
+   *
+   * Beyond the presentable range: a median below `min` reports `min` (heard
+   * at the softest level the procedure can play), and a median above `max`
+   * reports 'NR' — no response at the highest level, as the staircase does.
+   */
+  clinicalThreshold() {
+    const step = Math.ceil(this._quantile(0.5) / 5) * 5
+    if (step > this.max) return 'NR'
+    return Math.max(this.min, step)
+  }
+
+  /**
+   * A result at either end of the range must rest on a presentation actually
+   * made there: 'NR' on a tone at `max` that went unanswered, and `min` on a
+   * tone at `min` that was heard. Otherwise it is an extrapolation past the
+   * last level tested.
+   */
+  _edgeUnverified(threshold) {
+    if (threshold === 'NR') {
+      return !this.trials.some((t) => t.level === this.max && !t.heard)
+    }
+    if (threshold === this.min) {
+      return !this.trials.some((t) => t.level === this.min && t.heard)
+    }
+    return false
   }
 
   /**
@@ -117,9 +179,19 @@ export class BayesianThreshold {
 
     const [lo, hi] = this.credibleInterval()
     // Stop when the interval is tight, or when we have spent enough trials.
-    if ((hi - lo <= 10 && this.trials.length >= 4) || this.trials.length >= 12) {
+    //
+    // The width is judged on the interval clamped at the floor only. Every
+    // threshold below `min` reports the same normal result, so uncertainty
+    // down there is not worth another tone; above `max`, the difference
+    // between a response at the loudest level and none at all moves the
+    // grade, so that uncertainty keeps the procedure presenting at `max`.
+    const top = this._quantile(0.975)
+    const candidate = this.clinicalThreshold()
+    const settled = top - lo <= 10 && this.trials.length >= 4
+      && !this._edgeUnverified(candidate)
+    if (settled || this.trials.length >= 12) {
       this.done = true
-      this.threshold = Math.round(this.mean / 5) * 5
+      this.threshold = candidate
     }
     return { mean: this.mean, sd: this.sd, ci: [lo, hi] }
   }
@@ -132,7 +204,7 @@ export class BayesianThreshold {
   summary() {
     const [lo, hi] = this.credibleInterval()
     return {
-      threshold: this.threshold ?? Math.round(this.mean / 5) * 5,
+      threshold: this.threshold ?? this.clinicalThreshold(),
       mean: Math.round(this.mean * 10) / 10,
       sd: Math.round(this.sd * 10) / 10,
       ci: [lo, hi],

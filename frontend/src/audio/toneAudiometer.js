@@ -142,6 +142,7 @@ export class Staircase {
     this.done = false
     this.threshold = null
     this.presentations = 0
+    this.floorHeard = 0 // responses at the bottom of the range
   }
 
   record(heard) {
@@ -159,21 +160,35 @@ export class Staircase {
     }
 
     if (heard) {
+      // A listener who keeps responding at the bottom of the range never
+      // misses a tone, so no ascending run can start; two responses at the
+      // floor are the threshold there (the 2-of-ascending rule cannot apply).
+      if (this.level <= this.min) {
+        this.floorHeard += 1
+        if (this.floorHeard >= 2) {
+          this.done = true
+          this.threshold = this.min
+          return this.threshold
+        }
+      }
       this.level = Math.max(this.min, this.level - 10)
     } else {
       this.ascending = true
-      this.level = Math.min(this.max, this.level + 5)
-      if (this.level >= this.max && this.presentations > 4) {
-        // No response at the output ceiling.
+      // No response AT the output ceiling is what "No Response" means: the
+      // tone at the maximum has to have been played and missed. Stepping up
+      // to the maximum after a miss 5 dB below it says nothing yet.
+      if (this.level >= this.max) {
         this.done = true
         this.threshold = 'NR'
         return this.threshold
       }
+      this.level = Math.min(this.max, this.level + 5)
     }
 
     if (this.presentations > 30) { // safety stop
       this.done = true
       this.threshold = this.level
+      return this.threshold
     }
     return null
   }
