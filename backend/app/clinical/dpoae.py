@@ -24,23 +24,35 @@ above that ceiling are marked uninformative rather than failed.
 THE NOISE FLOOR IS PART OF THE RESULT. A 3 dB signal-to-noise ratio in a
 quiet ear and in a screaming infant are not the same measurement. A high
 noise floor invalidates the frequency rather than failing it, and the
-response says which.
+response says which. A frequency that could not be judged never counts
+towards a pass, a refer, or a finding of cochlear damage: when the decision
+would turn on what those frequencies might have shown, the outcome is
+"incomplete".
 
-Reference: Gorga et al. (1997) normative DPOAE levels; ASHA (1997) and
-JCIH (2019) screening protocols; Lonsbury-Martin & Martin (1990).
+The per-frequency judgement (SNR, minimum emission level, noise ceiling) is
+``oae.judge_emission`` — one rule shared with the battery, so the instrument
+page and the dashboard cannot disagree about the same recording.
+
+Reference: BSA (2023) Recommended Procedure: Clinical Application of OAEs,
+s.6.2, s.7.2, s.8.1; Gorga et al. (1997) normative DPOAE levels; ASHA (1997)
+and JCIH (2019) screening protocols; Lonsbury-Martin & Martin (1990).
 """
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence
 
-from app.clinical.oae import OAE_CEILING_DB_HL, SNR_PRESENT_DB
+from app.clinical.oae import (MIN_EMISSION_DB_SPL, NOISE_FLOOR_MAX_DB_SPL,
+                              OAE_CEILING_DB_HL, SNR_PRESENT_DB, criterion_text,
+                              display_snr, judge_emission)
 
 #: Standard DP-gram frequencies (f2, Hz).
 DP_FREQS: List[int] = [1000, 1500, 2000, 3000, 4000, 6000, 8000]
 
 #: A noise floor above this makes the measurement uninterpretable, whatever
-#: the SNR appears to be.
-NOISE_FLOOR_CEILING_DB = 10.0
+#: the SNR appears to be: an absent emission could be hidden in the noise, and
+#: BSA (2023) s.7.2 requires low noise for a present response too. Same value
+#: as the battery's rule (``oae.NOISE_FLOOR_MAX_DB_SPL``, BSA 2023 s.6.2).
+NOISE_FLOOR_CEILING_DB = NOISE_FLOOR_MAX_DB_SPL
 
 #: Screening protocols. ``required`` is how many of ``freqs`` must pass.
 PROTOCOLS: Dict[str, dict] = {
@@ -119,18 +131,36 @@ def dp_gram(
     thresholds = ac_numeric or {}
 
     for row in rows:
-        row["snr"] = round(row["amplitude"] - row["noise_floor"], 1)
-        row["present"] = row["snr"] >= spec["snr"]
+        judged = judge_emission(row["amplitude"], row["noise_floor"], spec["snr"])
+        row["snr"] = display_snr(judged["snr"], spec["snr"])
+        row["present"] = judged["present"]
+        row["status"] = judged["status"]
+        row["noisy_response"] = judged["noisy_response"]
         row["region"] = COCHLEAR_REGION.get(row["freq"], "")
         row["in_protocol"] = row["freq"] in spec["freqs"]
 
         threshold = thresholds.get(row["freq"])
         row["threshold"] = threshold
-        if row["noise_floor"] > NOISE_FLOOR_CEILING_DB:
+        if judged["status"] == "inconclusive":
             row["verdict"] = "invalid"
-            row["reason"] = (f"Noise floor {row['noise_floor']:g} dB SPL is too high "
-                             "to judge this frequency — quieten the room or settle "
-                             "the patient and repeat.")
+            if judged["noisy_response"]:
+                # A response above a noisy floor is neither a pass (BSA s.6.2:
+                # low noise was not reached) nor something to throw away.
+                row["reason"] = (
+                    f"A response clears the noise floor by {row['snr']:g} dB, but the "
+                    f"floor ({row['noise_floor']:g} dB SPL) is above the "
+                    f"{NOISE_FLOOR_CEILING_DB:g} dB SPL a valid result needs, so this "
+                    "frequency cannot pass. Repeat in quiet to confirm it."
+                    + (f" At a threshold of {threshold:g} dB HL a confirmed emission "
+                       "would mean the thresholds overstate the loss or the lesion "
+                       "lies beyond the cochlea."
+                       if threshold is not None and threshold > OAE_CEILING_DB_HL
+                       else ""))
+            else:
+                row["reason"] = (f"Noise floor {row['noise_floor']:g} dB SPL is above the "
+                                 f"{NOISE_FLOOR_CEILING_DB:g} dB SPL needed to judge this "
+                                 "frequency — an emission could be hidden in the noise. "
+                                 "Quieten the room or settle the patient and repeat.")
         elif not row["present"] and threshold is not None \
                 and threshold > OAE_CEILING_DB_HL:
             # Expected absence: says nothing beyond what the audiogram said.
@@ -140,6 +170,17 @@ def dp_gram(
         elif row["present"]:
             row["verdict"] = "pass"
             row["reason"] = f"Emission {row['snr']:g} dB above the noise floor."
+            if threshold is not None and threshold > OAE_CEILING_DB_HL:
+                row["reason"] += (
+                    f" A threshold of {threshold:g} dB HL would not normally leave an "
+                    "emission: the thresholds may overstate the loss, or the lesion "
+                    "lies beyond the cochlea.")
+        elif judged["status"] == "reduced":
+            row["verdict"] = "refer"
+            row["reason"] = (f"Emission {row['snr']:g} dB above the noise floor but "
+                             f"only {row['amplitude']:g} dB SPL, below the "
+                             f"{MIN_EMISSION_DB_SPL:g} dB SPL minimum — outer hair "
+                             "cell function is reduced at this frequency.")
         else:
             row["verdict"] = "refer"
             row["reason"] = (f"No emission ({row['snr']:g} dB SNR, criterion "
@@ -153,16 +194,25 @@ def dp_gram(
     invalid = [r for r in tested if r["verdict"] == "invalid"]
     missing = [f for f in spec["freqs"] if f not in {r["freq"] for r in rows}]
 
-    if missing or len(invalid) > len(tested) - spec["required"]:
+    # A refer must hold whatever the unjudged frequencies would have shown:
+    # with 1 pass, 1 refer and 1 noisy frequency against a 2-of-3 rule, the
+    # noisy one decides the outcome, so the answer is "incomplete", not refer.
+    if missing:
         outcome, headline = "incomplete", (
-            "Not enough valid frequencies to reach a screening decision.")
+            f"Not enough valid frequencies to reach a screening decision — "
+            f"{missing} Hz not tested.")
     elif len(passed) >= spec["required"]:
         outcome, headline = "pass", (
             f"PASS — {len(passed)} of {len(tested)} protocol frequencies present.")
-    else:
+    elif len(passed) + len(invalid) < spec["required"]:
         outcome, headline = "refer", (
             f"REFER — only {len(passed)} of {len(tested)} protocol frequencies "
             f"present, against {spec['required']} required.")
+    else:
+        outcome, headline = "incomplete", (
+            "Not enough valid frequencies to reach a screening decision — "
+            f"{[r['freq'] for r in invalid]} Hz too noisy to judge, and they "
+            "decide the outcome. Repeat them in quiet.")
 
     return {
         "points": rows,
@@ -175,7 +225,7 @@ def dp_gram(
         "uninformative_freqs": [r["freq"] for r in rows
                                 if r["verdict"] == "uninformative"],
         "missing_freqs": missing,
-        "criterion": f"emission >= {spec['snr']:g} dB above the noise floor",
+        "criterion": criterion_text(spec["snr"]),
     }
 
 
@@ -189,10 +239,26 @@ def cochlear_profile(gram: Optional[dict]) -> Optional[dict]:
     if not gram:
         return None
     referred = [r for r in gram["points"] if r["verdict"] == "refer"]
+    invalid = [r["freq"] for r in gram["points"] if r["verdict"] == "invalid"]
     if not referred:
+        # "Intact" needs emissions that were actually seen. A gram in which
+        # nothing could be judged has shown nothing either way.
+        if not any(r["verdict"] == "pass" for r in gram["points"]):
+            return {
+                "pattern": "undetermined",
+                "summary": ("No frequency gave a usable present-or-absent result, "
+                            "so outer hair cell function cannot be judged from "
+                            "this recording."),
+                "regions": [],
+            }
+        summary = "Outer hair cell function is present across the tested range."
+        if invalid:
+            summary = ("Outer hair cell function is present at every frequency "
+                       f"that could be judged; {invalid} Hz could not be tested "
+                       "for noise.")
         return {
             "pattern": "intact",
-            "summary": "Outer hair cell function is present across the tested range.",
+            "summary": summary,
             "regions": [],
         }
 
@@ -212,13 +278,23 @@ def cochlear_profile(gram: Optional[dict]) -> Optional[dict]:
                    "below — a notched pattern, characteristic of noise injury.")
     elif low >= 3000:
         pattern = "basal"
-        summary = ("Loss confined to the basal turn — the high-frequency end, "
-                   "which noise and ageing damage first.")
+        # "Confined" is a claim about the frequencies below the loss; one that
+        # could not be judged may hold the same loss.
+        unjudged = [f for f in invalid if f < low]
+        summary = (("Loss confined to the basal turn" if not unjudged else
+                    "Loss at the basal turn")
+                   + " — the high-frequency end, which noise and ageing damage first."
+                   + (f" {unjudged} Hz could not be judged for noise, so whether "
+                      "the loss extends lower is not known." if unjudged else ""))
     elif high <= 2000:
         pattern = "apical"
-        summary = ("Loss confined to the apical turn — an unusual low-frequency "
-                   "pattern; consider hydrops or a conductive component blocking "
-                   "the emission.")
+        unjudged = [f for f in invalid if f > high]
+        summary = (("Loss confined to the apical turn" if not unjudged else
+                    "Loss at the apical turn")
+                   + " — an unusual low-frequency pattern; consider hydrops or a "
+                   "conductive component blocking the emission."
+                   + (f" {unjudged} Hz could not be judged for noise, so whether "
+                      "the loss extends higher is not known." if unjudged else ""))
     else:
         pattern = "diffuse"
         summary = "Loss across most of the tested range — widespread outer hair "\
@@ -250,10 +326,16 @@ def analyze(
     profile = cochlear_profile(gram)
     # Reuse the existing agreement engine so the audiogram cross-check is
     # identical whether OAEs arrive through this instrument or the full
-    # battery endpoint.
+    # battery endpoint. Frequencies too noisy to judge are left out: they
+    # are evidence of neither damage nor a working cochlea.
     mismatches = oae_audiogram_agreement(
-        {"points": [{"freq": r["freq"], "snr": r["snr"], "present": r["present"]}
-                    for r in gram["points"]]},
+        {"points": [{"freq": r["freq"], "snr": r["snr"], "present": r["present"],
+                     "status": r["status"], "amplitude": r["amplitude"],
+                     "noise_floor": r["noise_floor"],
+                     "noisy_response": r.get("noisy_response", False),
+                     "valid": r["verdict"] != "invalid"}
+                    for r in gram["points"]
+                    if r["verdict"] != "invalid" or r.get("noisy_response")]},
         ac_numeric or {},
     )
 
@@ -280,9 +362,13 @@ def analyze(
         "mismatches": mismatches,
         "preclinical_damage": [m for m in mismatches
                                if m["kind"] == "preclinical_damage"],
+        "possible_unexplained_emissions": [m for m in mismatches
+                                           if m["kind"] == "possible_threshold_mismatch"],
         "unexplained_emissions": [m for m in mismatches
                                   if m["kind"] == "oae_threshold_mismatch"],
         "interpretation": interpretation,
         "ceiling_db_hl": OAE_CEILING_DB_HL,
         "default_snr_criterion": SNR_PRESENT_DB,
+        "min_emission_db_spl": MIN_EMISSION_DB_SPL,
+        "noise_floor_ceiling_db_spl": NOISE_FLOOR_CEILING_DB,
     }

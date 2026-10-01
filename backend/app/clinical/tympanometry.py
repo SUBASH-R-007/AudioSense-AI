@@ -27,19 +27,45 @@ Measured quantities, as the reference lists them:
     ECV   ear-canal volume         children 0.3-1.0 ml,  adults 0.6-2.0 ml
     TPP   tympanometric peak pressure        +50 to -100 daPa
     SA    static acoustic admittance   children 0.35-1.25, adults 0.37-1.66 mmho
-    TG    tympanic gradient                  > 0.2
+    TG    tympanic gradient                  > 0.2   (heuristic, see GRADIENT_BASIS)
 
 Both shape measures are reported. The gradient is a dimensionless ratio; the
 tympanometric width is the same idea expressed in daPa (Margolis & Heller
 1987; ASHA 1997). They agree on real traces, and reporting both means the
-result is readable against either convention.
+result is readable against either convention. Only the width has a published
+normative range behind it; the gradient cut-off is reported as a heuristic.
 
-PROBE TONE STILL MATTERS. Below six months a 226 Hz probe can produce a
-normal-looking trace over a middle ear full of fluid, so the module refuses to
-type it rather than returning a confident wrong answer.
+PEAK HEIGHT IS A COMPENSATED QUANTITY. Static admittance is the peak minus the
++200 daPa tail, the canal's own contribution removed (ASHA 1997; BSA 2024
+§11.1.3). Whether a peak is shallow, deep or off the scale is judged on that
+difference and never on the raw reading, which still contains the ear-canal
+volume. A perforated ear adds the middle-ear space to the canal — 3-7 ml
+(BSA 2024 §11.1.4) — so its flat trace can sit at 4-5 ml; read raw, that
+volume looks like a peak running off the scale. A trace with unrecorded
+points has left the scale only when both limbs climb toward them fast enough
+to pass the Add height there. Anything else — a dropout away from the peak,
+or an apex lost while the limbs were still well short of that height — hides
+the measurement the type depends on, so the trace is not typed.
+
+PROBE TONE DECIDES WHICH RULES APPLY. Every type and band above is a 226 Hz
+criterion. Below six months a 226 Hz probe can produce a normal-looking trace
+over a middle ear full of fluid (Baldwin 2006: 226 Hz is invalid below 21
+weeks), so such a trace is refused — never typed, never called normal. A
+1000 Hz trace is read by the infant method instead: a main peak above the
+baseline joining the sweep's tails is a positive peak, and a flat or
+trough-shaped trace, or one with no identifiable peak, is abnormal (Baldwin
+2006, after Marchant et al. 1986; BSA 2024 §11.2). A positive peak passes only
+if it also reaches the newborn pass-fail admittance (Margolis et al. 2003,
+measured from the -400 daPa tail to that same peak). Ear-canal volume and
+peak pressure are not interpreted at 1000 Hz, so an infant trace never yields
+a cerumen, perforation or otosclerosis verdict. A positive peak is only ever
+established from recorded points, and an incomplete 1000 Hz trace — a sweep
+short of +200 to -400 daPa (BSA 2024 §10.2), or points missing — is never
+reported as more than provisional.
 """
 from __future__ import annotations
 
+from bisect import bisect_left
 from typing import Dict, List, Optional, Sequence, Tuple
 
 #: Standard pressure sweep, daPa.
@@ -62,6 +88,21 @@ GRADIENT_NORMAL_MIN = 0.2
 #: baseline within the sweep, so the drawn curve cannot represent it exactly.
 GRADIENT_DRAWABLE_MIN = 0.2
 
+#: Where the 0.2 gradient cut-off comes from, stated wherever it is applied.
+#: The ratio form of the gradient is Brooks (1968); de Jonge (1986) compared
+#: it with other gradient measures in normal ears. The 0.2 cut-off is taken
+#: from the clinic's reference table and could not be traced to a normative
+#: study — AAA (2020) asks only for a gradient "abnormally reduced (refer to
+#: normative data)", and the published effusion criterion (Nozza et al. 1992,
+#: < 0.1 mmho) is an absolute gradient, not this ratio. It is therefore a
+#: heuristic: it is reported, it never changes the type, and the
+#: tympanometric width against Margolis & Heller (1987) is the validated
+#: shape criterion.
+GRADIENT_BASIS = (
+    "Gradient cut-off 0.2 is a heuristic from the clinic's reference table, "
+    "not a validated normative criterion; judge peak shape by tympanometric "
+    "width (Margolis & Heller 1987).")
+
 #: Tympanometric width normal range, daPa (the daPa expression of the same
 #: shape property as the gradient).
 WIDTH_NORMAL_ADULT = (51, 114)
@@ -77,23 +118,115 @@ WIDTH_NORMAL_CHILD = (60, 150)
 #: flagged rather than silently resolved.
 FLAT_ADMITTANCE_MAX = 0.2
 AMBIGUOUS_BAND = (0.15, 0.25)
+#: The smallest admittance difference the curve analysis treats as real
+#: rather than sampling noise — the floor below which width, gradient and
+#: notch are not measured. An engineering margin, not a published norm.
+MEASURABLE_MMHO = 0.05
 
 #: Compensated admittance beyond which the peak runs off the scale of a
 #: clinical instrument, which is what separates Type Add from Type Ad.
 OFF_SCALE_ADMITTANCE = 3.0
 
-#: Raw admittance the instrument can actually plot. Above this the pen leaves
+#: The admittance a clinical instrument can plot. Above this the pen leaves
 #: the paper: a Type Add trace ascends on both sides and never comes back down
 #: within the recordable range, so it has NO apex. Points beyond the ceiling
 #: are recorded as None rather than as a number, because the instrument did
 #: not measure them — drawing a closed peak there would invent an apex the
 #: machine never saw.
+#:
+#: A complete trace (no unrecorded points) is read as having left the scale
+#: only when its *compensated* peak reaches this value, i.e. when a peak
+#: exists and is that tall. The raw reading includes the canal volume, and a
+#: perforated ear's flat 4-5 ml trace is a large volume, not a peak.
 INSTRUMENT_CEILING_MMHO = 4.0
+#: A trace with unrecorded points is read as having left the scale there only
+#: when both limbs climb toward the gap and, continuing to climb, would carry
+#: the compensated peak to OFF_SCALE_ADMITTANCE — the height that types a
+#: closed curve Add — by the first unrecorded point. A limb whose last
+#: recorded step is still steeper than the one before may be assumed to climb
+#: at most this many times faster than over that last step. A limb already
+#: rounding over toward an apex is credited with no further climb: it must
+#: stand at Add height where it was last recorded. A limb that falls short
+#: has lost the apex to a dropout rather than to the scale — read as
+#: off-scale, one dropped sample at the top of a normal peak would become
+#: Type Add, "ossicular discontinuity". The allowance is an engineering
+#: margin, not a published norm, and it errs toward leaving a trace untyped:
+#: one that fails the test is not typed at all, never typed as something else.
+OFF_SCALE_CLIMB_ALLOWANCE = 1.5
 
 #: Age below which children's normative bands apply.
 CHILD_MAX_AGE_YEARS = 10
-#: Probe tone below which infants must not be tested with 226 Hz.
+#: Age below which a 226 Hz probe is not interpretable (BSA 2024 §4.1, §10.2:
+#: 1000 Hz below 6 months corrected age; Baldwin 2006: 226 Hz invalid below
+#: 21 weeks).
 INFANT_MONTHS = 6
+
+#: Probe tones. Every type and normative band in this module is a 226 Hz
+#: criterion; some older instruments use 220 Hz, hence a band.
+STANDARD_PROBE_HZ = 226
+STANDARD_PROBE_BAND_HZ = (200, 300)
+#: The infant high-frequency probe.
+HIGH_PROBE_HZ = 1000
+HIGH_PROBE_BAND_HZ = (900, 1100)
+#: Age up to which the 1000 Hz probe is the recommended one. JCIH (2019), on
+#: the evidence of Hoffman et al. (2013), extended it to 9 months; from 9-12
+#: months the 226 Hz probe was the more accurate, and between 6 and 9 months
+#: either may be used (AAA 2020 Clinical Guidance, Tympanometry §4).
+HIGH_PROBE_MAX_MONTHS = 9
+
+#: Baldwin's 1000 Hz criterion is qualitative — the main peak is above the
+#: baseline or it is not (Baldwin 2006; BSA 2024 §11.2). A deflection this
+#: small is within the measurement noise of a sweep and is read as no peak,
+#: which refers. The same margin decides whether the trace falls away on both
+#: sides of a maximum, i.e. whether there is a peak at all rather than a trace
+#: still rising when the sweep ends. It is the measurability floor the 226 Hz
+#: curve analysis uses for width, gradient and notch — an engineering margin,
+#: not a published norm — and clearing it never on its own produces a normal
+#: result: a positive peak must also meet HF_NEWBORN_ADMITTANCE_P5.
+HF_PEAK_NOISE_MMHO = MEASURABLE_MMHO
+#: Margolis et al. (2003), 1 kHz newborn norms (birth to 4 weeks): static
+#: admittance from the -400 daPa tail to the peak, 5th-95th percentile
+#: 0.60-4.3 mmho, as tabulated in AAA (2020) Clinical Guidance, Table 1. The
+#: 5th percentile was the same for NICU and full-term infants, which Margolis
+#: et al. offer as a single pass-fail criterion. A positive peak below it does
+#: not pass: AAA (2020) Interpretation I.ii.b counts a peak whose static
+#: admittance is below the age norm as abnormal. The shape rule alone (BSA
+#: 2024 §11.2) would call any positive peak normal; where the two disagree the
+#: result is not reported as normal. It is measured to the main peak, never to
+#: the trace's highest sample, which on a sloping 1000 Hz trace is often the
+#: +200 daPa tail.
+HF_NEWBORN_ADMITTANCE_P5 = 0.6
+#: The 95th percentile of the same Margolis et al. (2003) norms (AAA 2020
+#: Table 1). Above it a positive peak is not "within the newborn norms": AAA
+#: (2020) Interpretation I.ii.b counts static admittance indicating
+#: hyper-mobility as abnormal, and Reporting 7.B.v reads it as increased
+#: middle-ear mobility (ossicular interruption or a tympanic-membrane
+#: abnormality), while the shape rule (BSA 2024 §11.2) would call any positive
+#: peak normal. Where they disagree the result is not reported as normal. It
+#: is not referred on this alone either: unlike the 5th percentile, Margolis
+#: et al. do not offer the 95th as a pass-fail criterion.
+HF_NEWBORN_ADMITTANCE_P95 = 4.3
+#: Kei et al. (2003), 1 kHz, neonates aged 1-6 days: static admittance from
+#: the +200 daPa tail to the peak, 5th percentile 0.39 mmho in right ears (AAA
+#: 2020 Table 1). Quoted, not applied as a pass mark: it shows that an
+#: admittance compensated to the +200 tail runs lower than Margolis's -400
+#: measure, so a printed value below HF_NEWBORN_ADMITTANCE_P5 cannot be judged
+#: without knowing which tail the instrument compensated to.
+HF_KEI_PLUS200_P5_RIGHT = 0.39
+#: The 1000 Hz sweep must cover at least +200 to -400 daPa (BSA 2024 §10.2:
+#: "the range should be at least from +200 daPa to -400 daPa"); the baseline
+#: is drawn between those pressure extremes (§11.2).
+HF_SWEEP_MIN_DAPA = -400
+HF_SWEEP_MAX_DAPA = 200
+#: Pressure either side, daPa, over which a 1000 Hz trace is averaged before
+#: its main peak is looked for. BSA 2024 §10.2 warns that infant movement can
+#: put a false peak in the trace. A tympanometric peak spans tens of daPa, so
+#: averaging three samples at the usual 10 daPa step leaves a real peak
+#: essentially intact while cutting a one-sample excursion to a third; at a
+#: coarser step the window holds one sample and nothing is averaged. An
+#: engineering margin, not a published norm. The peak's admittance is still
+#: measured on the recorded samples.
+HF_PEAK_SMOOTHING_DAPA = 10.0
 
 #: A notch is only a notch if the dip between two maxima is this deep,
 #: as a fraction of the peak height. Shallower ripples are measurement noise.
@@ -155,6 +288,33 @@ TYMPANOGRAM_TYPES: Dict[str, dict] = {
     },
 }
 
+#: The outcomes of the infant 1000 Hz classification. They are kept apart
+#: from the eight 226 Hz types on purpose: an infant trace is never given a
+#: Jerger letter, because every letter carries 226 Hz disorders with it. Only
+#: "1k-peak" passes; the other two refer.
+HIGH_FREQUENCY_TYPES: Dict[str, dict] = {
+    "1k-peak": {
+        "label": "1000 Hz — positive peak",
+        "shape": "Main peak above the baseline joining the sweep's tails",
+        "disorders": [],
+        "suggests_conductive": False,
+    },
+    "1k-low-peak": {
+        "label": "1000 Hz — positive peak below the newborn admittance criterion",
+        "shape": ("Main peak above the baseline, but static admittance below the "
+                  "newborn 5th percentile"),
+        "disorders": ["Middle-ear effusion", "Other middle-ear dysfunction"],
+        "suggests_conductive": True,
+    },
+    "1k-no-peak": {
+        "label": "1000 Hz — no positive peak",
+        "shape": ("Flat, trough-shaped (negative peak), or no identifiable main "
+                  "peak"),
+        "disorders": ["Middle-ear effusion", "Other middle-ear dysfunction"],
+        "suggests_conductive": True,
+    },
+}
+
 #: Type B means three different things depending on the canal volume, and the
 #: small-volume case is an instrument artefact rather than middle-ear disease.
 TYPE_B_BY_VOLUME = {
@@ -184,9 +344,23 @@ CITATIONS = [
     "Margolis & Heller (1987); ASHA (1997) — tympanometric width",
 ]
 
+HIGH_FREQUENCY_CITATIONS = [
+    "Baldwin, M. (2006). Int J Audiol 45:417-427 — 1000 Hz trace "
+    "classification, after Marchant et al. (1986)",
+    "British Society of Audiology (2024). Recommended Procedure: Tympanometry "
+    "and Acoustic Reflex Thresholds, §10.2 and §11.2",
+    "Margolis et al. (2003). J Am Acad Audiol 14:383-392 — 1 kHz newborn norms; "
+    "5th percentile as a single pass-fail criterion; 95th percentile 4.3 mmho",
+    "Kei et al. (2003). J Am Acad Audiol 14(1) — 1 kHz neonatal norms, +200 "
+    "daPa tail",
+    "JCIH (2019); AAA (2020) Clinical Guidance — 1000 Hz probe in infancy; "
+    "Interpretation I.ii.b, admittance indicating hypo- or hyper-mobility is "
+    "abnormal; Reporting 7.B.v",
+]
+
 
 def normative(age_years: Optional[float]) -> dict:
-    """Normal ranges for this patient's age band."""
+    """Normal 226 Hz ranges for this patient's age band."""
     child = age_years is not None and age_years < CHILD_MAX_AGE_YEARS
     return {
         "compliance": list(COMPLIANCE_NORMAL_CHILD if child else COMPLIANCE_NORMAL_ADULT),
@@ -194,9 +368,73 @@ def normative(age_years: Optional[float]) -> dict:
         "ecv": list(ECV_NORMAL_CHILD if child else ECV_NORMAL_ADULT),
         "width": list(WIDTH_NORMAL_CHILD if child else WIDTH_NORMAL_ADULT),
         "gradient_min": GRADIENT_NORMAL_MIN,
+        "gradient_basis": GRADIENT_BASIS,
         "band": "child" if child else "adult",
+        "probe_hz": STANDARD_PROBE_HZ,
+        "applicable": True,
         "citations": list(CITATIONS),
     }
+
+
+def _normative_not_applicable(band: str, note: str,
+                              citations: Optional[List[str]] = None) -> dict:
+    """The 226 Hz bands withheld, in the same shape as ``normative``.
+
+    The numeric bands are empty rather than filled with 226 Hz numbers,
+    because a 226 Hz band printed beside an infant or 1000 Hz result is
+    exactly the misreading this exists to prevent.
+    """
+    return {
+        "compliance": [], "pressure": [], "ecv": [], "width": [],
+        "gradient_min": None,
+        "gradient_basis": None,
+        "band": band,
+        "probe_hz": None,
+        "applicable": False,
+        "note": note,
+        "citations": list(citations if citations is not None else CITATIONS),
+    }
+
+
+def normative_high_frequency() -> dict:
+    """What a 1000 Hz infant trace is judged against: a shape, not bands."""
+    out = _normative_not_applicable(
+        "infant_1000hz",
+        "1000 Hz infant trace: classified by whether the main peak lies above "
+        "the baseline joining the sweep's tails (Baldwin 2006; BSA 2024 §11.2), "
+        f"and passes only with at least {HF_NEWBORN_ADMITTANCE_P5:g} mmho from "
+        "the -400 daPa tail to that peak (Margolis et al. 2003); above "
+        f"{HF_NEWBORN_ADMITTANCE_P95:g} mmho, the 95th percentile, it is not "
+        "reported as normal. The 226 Hz "
+        "pressure, admittance, volume and width bands do not apply, and "
+        "ear-canal volume is not interpreted.",
+        HIGH_FREQUENCY_CITATIONS)
+    out["probe_hz"] = HIGH_PROBE_HZ
+    return out
+
+
+def probe_mode(age_years: Optional[float], probe_hz: Optional[int]) -> str:
+    """Which interpretation this probe tone permits at this age.
+
+        jerger                 226 Hz probe at an age where it is valid
+        high_frequency         1000 Hz probe — the infant baseline method
+        infant_low_probe       226 Hz probe below six months: not interpretable
+        infant_probe_unknown   probe not recorded below six months: cannot
+                               assume it was the 1000 Hz one
+        unsupported_probe      any other probe frequency
+
+    ``probe_hz`` None means "not recorded". At six months and over that is
+    read as the standard 226 Hz probe, which is what every clinical
+    tympanometer defaults to.
+    """
+    infant = age_years is not None and age_years * 12 < INFANT_MONTHS
+    if probe_hz is None:
+        return "infant_probe_unknown" if infant else "jerger"
+    if HIGH_PROBE_BAND_HZ[0] <= probe_hz <= HIGH_PROBE_BAND_HZ[1]:
+        return "high_frequency"
+    if STANDARD_PROBE_BAND_HZ[0] <= probe_hz <= STANDARD_PROBE_BAND_HZ[1]:
+        return "infant_low_probe" if infant else "jerger"
+    return "unsupported_probe"
 
 
 # --------------------------------------------------------------------------
@@ -221,14 +459,30 @@ def classify(
     notch: Optional[dict] = None,
     age_years: Optional[float] = None,
     off_scale: bool = False,
+    probe_hz: Optional[int] = None,
 ) -> Optional[dict]:
     """Assign one of the eight types from the measured quantities.
 
     Order matters. A flat trace has no peak to describe, so it is settled
-    first. An off-scale trace has no apex at all, so it comes next — there is
-    no shape left to call notched. Only then does a notch outrank depth,
-    because Type D and Type E are notched by definition while Ad is not.
+    first, and a known flat admittance outranks any claim that the trace ran
+    off the scale — there is no peak to run off it. An off-scale trace has no
+    apex at all, so it comes next: there is no shape left to call notched.
+    Only then does a notch outrank depth, because Type D and Type E are
+    notched by definition while Ad is not.
+
+    Returns None when the type cannot be determined: too little data, a
+    peak whose pressure was not recorded (it could be C or not), a pressure
+    without an admittance, or a probe/age combination the 226 Hz rules do not
+    cover. None is the honest answer there; every type is a clinical claim.
     """
+    mode = probe_mode(age_years, probe_hz)
+    if mode == "high_frequency":
+        return classify_high_frequency(compliance, peak_pressure, age_years)
+    if mode != "jerger":
+        # A 226 Hz (or unrecorded) probe below six months, or a probe these
+        # rules were not written for. There is no type to give.
+        return None
+
     norms = normative(age_years)
     lo, hi = norms["compliance"]
     band = volume_band(ecv, norms)
@@ -247,23 +501,14 @@ def classify(
             **(extra or {}),
         }
 
-    # 1. Off the scale, before anything else. Such a trace has neither a peak
-    #    pressure nor a peak admittance to reason about, so every test below
-    #    would be asking about a measurement that does not exist.
-    if off_scale:
-        return build("Add", "The trace runs off the instrument scale — the "
-                            "limbs ascend without meeting, so there is no "
-                            "measurable peak. This is ossicular discontinuity.",
-                     {"off_scale": True})
-
-    if peak_pressure is None and compliance is None:
-        return None
-
-    # 2. Flat: no measurable peak. The canal volume decides what it means.
     ambiguous = (compliance is not None
                  and AMBIGUOUS_BAND[0] <= compliance <= AMBIGUOUS_BAND[1])
-    flat = compliance is not None and compliance < FLAT_ADMITTANCE_MAX
-    if flat or peak_pressure is None:
+
+    # 1. Flat: no measurable peak. The canal volume decides what it means —
+    #    for a perforation, that volume includes the middle-ear space and is
+    #    large, which is a volume and not a peak (Jerger 1970; BSA 2024
+    #    §11.1.4). A flat trace has no peak pressure, so none is needed.
+    if compliance is not None and compliance < FLAT_ADMITTANCE_MAX:
         split = TYPE_B_BY_VOLUME[band]
         extra = {"disorders": list(split["disorders"])}
         if ambiguous:
@@ -273,10 +518,25 @@ def classify(
                 "Type B over Type As.")
         return build("B", split["interpretation"], extra)
 
+    # 2. Off the scale. Such a trace has neither a peak pressure nor a peak
+    #    admittance to reason about, so every test below would be asking about
+    #    a measurement that does not exist. The caller only reports off-scale
+    #    when a peak exists and either rose past the ceiling or climbs past
+    #    Type Add height into points the instrument could not record.
+    if off_scale:
+        return build("Add", "The trace runs off the instrument scale — the "
+                            "limbs ascend without meeting, so there is no "
+                            "measurable peak. This is ossicular discontinuity.",
+                     {"off_scale": True})
+
+    if compliance is None:
+        # A peak pressure without a peak admittance: the depth that separates
+        # As, A, Ad and Add is unknown.
+        return None
+
     # 3. Notched peaks are Type D or E regardless of depth.
     if notch and notch.get("notched"):
-        wide = notch.get("width", 0.0) > NOTCH_WIDE_DAPA or (
-            compliance is not None and compliance > hi)
+        wide = notch.get("width", 0.0) > NOTCH_WIDE_DAPA or compliance > hi
         if wide:
             return build("E", "A wide notched peak indicates ossicular disruption.",
                          {"notch": notch})
@@ -284,9 +544,17 @@ def classify(
                           "scarred tympanic membrane.", {"notch": notch})
 
     # 4. A complete curve whose peak still exceeds the off-scale threshold.
-    if compliance is not None and compliance >= OFF_SCALE_ADMITTANCE:
+    #    Compensated admittance alone decides this, so the peak pressure is
+    #    not needed.
+    if compliance >= OFF_SCALE_ADMITTANCE:
         return build("Add", "Admittance beyond the instrument scale — ossicular "
                             "discontinuity.")
+
+    # A peak exists (it is not flat) but its pressure was not recorded. Type
+    # B means "no peak", so it is wrong here; and whether this is Type C
+    # depends on exactly the number that is missing.
+    if peak_pressure is None:
+        return None
 
     # 5. Pressure before depth: a peak at -250 daPa is Type C whatever its height.
     if peak_pressure < PRESSURE_NORMAL[0]:
@@ -295,10 +563,10 @@ def classify(
                           "retraction pocket forms, cholesteatoma.")
 
     # 6. Depth against the age-appropriate band.
-    if compliance is not None and compliance > hi:
+    if compliance > hi:
         return build("Ad", "A deep peak indicates a flaccid membrane or an "
                            "ossicular discontinuity.")
-    if compliance is not None and compliance < lo:
+    if compliance < lo:
         extra = {}
         if ambiguous:
             extra["borderline"] = (
@@ -311,10 +579,241 @@ def classify(
 
     interpretation = "Normal middle-ear pressure and mobility."
     if gradient is not None and gradient < GRADIENT_NORMAL_MIN:
-        interpretation += (f" Gradient {gradient:.2f} is below {GRADIENT_NORMAL_MIN}, "
-                           "so the peak is abnormally rounded — an early effusion "
-                           "sign that peak height alone misses.")
+        interpretation += (f" Gradient {gradient:.2f} is below the {GRADIENT_NORMAL_MIN:g} "
+                           "heuristic cut-off, so the peak may be rounded — an "
+                           "early effusion sign that peak height alone misses. "
+                           "Check the tympanometric width before acting on it.")
     return build("A", interpretation)
+
+
+def classify_high_frequency(
+    peak_height: Optional[float],
+    peak_pressure: Optional[float] = None,
+    age_years: Optional[float] = None,
+    from_trace: bool = False,
+    reaches_sweep_minimum: Optional[bool] = None,
+    peak_re_negative_tail: Optional[float] = None,
+    rise_without_peak_toward: Optional[float] = None,
+    reaches_sweep_maximum: Optional[bool] = None,
+    gap: Optional[str] = None,
+) -> Optional[dict]:
+    """Classify a 1000 Hz infant trace: a passing positive peak, or not.
+
+    Baldwin (2006), adapted from Marchant et al. (1986), as specified by BSA
+    (2024) §11.2: draw a baseline between the pressure extremes, identify the
+    main peak, and if it lies above the baseline the trace is a positive peak;
+    a flat or trough-shaped (negative-peak) trace is abnormal. Peak pressure
+    does not matter — "a positive peak at a positive or negative middle-ear
+    pressure is classified as normal" — and ear-canal volume is disregarded
+    at 1000 Hz. A positive peak passes only if its static admittance also
+    meets the Margolis et al. (2003) newborn pass-fail criterion
+    (HF_NEWBORN_ADMITTANCE_P5); below it the result is "1k-low-peak".
+
+    ``peak_height`` is the main peak's height above that baseline when
+    ``from_trace`` (None when the trace has no main peak), and
+    ``peak_re_negative_tail`` is the same peak measured from the -400 daPa
+    tail. From summary values ``peak_height`` is the printed static
+    admittance: it cannot show whether the peak sits above the baseline, nor
+    which tail the instrument compensated to, so a summary result is never
+    more than provisional. ``rise_without_peak_toward`` is the sweep end a
+    trace rises into without ever turning down.
+
+    ``gap`` describes points the sweep lists without a reading: "apex" when
+    the trace climbs toward them from both sides, so the top of the peak was
+    not recorded and the peak is read from the highest recorded point beside
+    it (its admittance is then a lower bound); "dropout" when it does not, so
+    a peak inside them cannot be excluded. A positive peak is only ever
+    established from recorded points — an unrecorded stretch is never itself
+    read as a peak.
+
+    Normal function is only reported when nothing undermines it. A sweep too
+    short to draw the baseline, missing points, a summary-only entry, a trace
+    with no identifiable peak, or an age outside the method's range all leave
+    the result provisional and say why.
+    """
+    if from_trace:
+        positive = peak_height is not None and peak_height > HF_PEAK_NOISE_MMHO
+    else:
+        if peak_height is None:
+            return None
+        positive = peak_height > HF_PEAK_NOISE_MMHO
+        if positive and peak_pressure is None:
+            # The printout gives an admittance but no peak pressure: whether
+            # the instrument found a peak at all cannot be told from these
+            # numbers.
+            return None
+
+    # The admittance the pass-fail criterion is judged on.
+    if not positive:
+        admittance = None
+    elif from_trace:
+        admittance = peak_re_negative_tail
+    else:
+        admittance = peak_height
+    low = admittance is not None and admittance < HF_NEWBORN_ADMITTANCE_P5
+    high = admittance is not None and admittance > HF_NEWBORN_ADMITTANCE_P95
+    key = "1k-no-peak" if not positive else "1k-low-peak" if low else "1k-peak"
+
+    caveats: List[str] = []
+    months = None if age_years is None else age_years * 12
+    if months is None:
+        caveats.append(
+            "Age not recorded. The 1000 Hz criteria are for infants — under 6 "
+            "months corrected age (BSA 2024), extended to 9 months by JCIH "
+            "(2019).")
+    elif months >= HIGH_PROBE_MAX_MONTHS:
+        caveats.append(
+            f"At {months:g} months the 226 Hz probe is the more accurate "
+            "(Hoffman et al. 2013; JCIH 2019), and these infant criteria may "
+            "not hold. Repeat at 226 Hz for a typed result.")
+    if not from_trace and positive:
+        caveats.append(
+            "Classified from summary values. Whether the peak lies above the "
+            "baseline joining the sweep's tails cannot be seen without the "
+            "trace (Baldwin 2006) — confirm it on the printed tympanogram.")
+    if from_trace and (reaches_sweep_minimum is False
+                       or reaches_sweep_maximum is False):
+        caveats.append(
+            f"The sweep did not cover {HF_SWEEP_MAX_DAPA:+d} to {HF_SWEEP_MIN_DAPA} "
+            "daPa, the minimum range for 1000 Hz infant tympanometry (BSA 2024 "
+            "§10.2). The baseline is drawn between those pressure extremes "
+            "(§11.2), so it cannot be drawn as specified. Repeat with the full "
+            "sweep.")
+    # A positive peak whose admittance from the -400 daPa tail could not be
+    # measured has not met the Margolis et al. (2003) pass-fail criterion
+    # either way; in infant screening a pass that cannot be established is a
+    # repeat, never a pass.
+    criterion_unmeasured = key == "1k-peak" and from_trace and admittance is None
+    if criterion_unmeasured:
+        caveats.append(
+            f"The admittance from the {HF_SWEEP_MIN_DAPA} daPa tail to the peak "
+            "could not be measured, so the newborn pass-fail criterion "
+            f"({HF_NEWBORN_ADMITTANCE_P5:g} mmho, Margolis et al. 2003; AAA 2020 "
+            "Table 1) was not applied and this is not a pass. Repeat with the "
+            "full sweep.")
+    if high:
+        caveats.append(
+            f"Static admittance {'of at least ' if from_trace and gap == 'apex' else ''}"
+            f"{admittance:.2f} mmho is above {HF_NEWBORN_ADMITTANCE_P95:g} mmho, "
+            "the newborn 95th percentile (Margolis et al. 2003; AAA 2020 Table "
+            "1). By shape a positive peak is normal (BSA 2024 §11.2), but AAA "
+            "(2020) counts admittance indicating hyper-mobility as abnormal and "
+            "reads it as increased middle-ear mobility — ossicular interruption "
+            "or a tympanic-membrane abnormality. Check the probe fit and repeat; "
+            "if it persists, otoscopy.")
+    if from_trace and gap == "apex":
+        caveats.append(
+            "Points at the top of the trace were not recorded, so the peak the "
+            "method classifies on is missing. "
+            + (f"The highest recorded point beside them stands {admittance:.2f} "
+               f"mmho above the {HF_SWEEP_MIN_DAPA} daPa tail; the apex can only "
+               "be higher, but its admittance is unknown. "
+               if admittance is not None else "")
+            + "Repeat the trace to record the whole peak.")
+    elif from_trace and gap == "dropout":
+        caveats.append(
+            "Points are missing from the sweep where the trace does not rise "
+            "toward them. A peak inside the gap cannot be excluded, so the "
+            "result read from the recorded points is not final. Repeat the "
+            "trace.")
+    if not from_trace and low:
+        caveats.append(
+            f"Margolis's {HF_NEWBORN_ADMITTANCE_P5:g} mmho criterion is measured "
+            f"from the {HF_SWEEP_MIN_DAPA} daPa tail. If the instrument "
+            "compensated to the +200 daPa tail instead, newborn 5th percentiles "
+            f"on that tail are lower (Kei et al. 2003: {HF_KEI_PLUS200_P5_RIGHT:g} "
+            "mmho, right ears; AAA 2020 Table 1), so this printed value cannot be "
+            "judged without the trace. Read the printed tympanogram before "
+            "referring on this number alone.")
+    if from_trace and not positive and rise_without_peak_toward is not None:
+        caveats.append(
+            f"The admittance rises into the {rise_without_peak_toward:+g} daPa end "
+            "of the sweep and never turns down, so a peak beyond the swept range "
+            "cannot be excluded. Repeat with the full sweep (BSA 2024 §11.2 "
+            "allows the negative extreme to reach -600 daPa) before treating "
+            "this as a negative trace — but it is not a normal result as "
+            "recorded.")
+
+    entry = HIGH_FREQUENCY_TYPES[key]
+    volume_note = (" Ear-canal volume and peak pressure are not interpreted at "
+                   "1000 Hz (BSA 2024 §11.2).")
+    refer_note = (" Repeat the trace to exclude movement artefact; if it "
+                  "persists, refer for otoscopy and medical review — middle-ear "
+                  "effusion is the usual cause in infancy.")
+    if key == "1k-peak" and not caveats:
+        interpretation = ("A positive peak above the baseline joining the sweep's "
+                          "tails, with static admittance within the newborn "
+                          "norms: consistent with normal middle-ear function "
+                          "(Baldwin 2006, after Marchant et al. 1986; Margolis "
+                          "et al. 2003)." + volume_note)
+    elif key == "1k-peak":
+        interpretation = ("A positive peak was recorded, but normal middle-ear "
+                          "function cannot be confirmed from this result — see "
+                          "the caveats." + volume_note)
+    elif key == "1k-low-peak" and from_trace and gap == "apex":
+        interpretation = (
+            f"The highest recorded points beside an unrecorded apex stand "
+            f"{admittance:.2f} mmho above the {HF_SWEEP_MIN_DAPA} daPa tail, below "
+            f"{HF_NEWBORN_ADMITTANCE_P5:g} mmho, the newborn pass-fail criterion of "
+            "Margolis et al. (2003; AAA 2020 Table 1). The apex itself was not "
+            "recorded, so the trace cannot pass as recorded." + refer_note
+            + volume_note)
+    elif key == "1k-low-peak" and from_trace:
+        interpretation = (
+            f"A positive peak above the baseline, but its static admittance of "
+            f"{admittance:.2f} mmho from the {HF_SWEEP_MIN_DAPA} daPa tail is "
+            f"below {HF_NEWBORN_ADMITTANCE_P5:g} mmho, the newborn 5th percentile "
+            "that Margolis et al. (2003) give as a pass-fail criterion (AAA 2020 "
+            "Table 1). By shape alone a positive peak is normal (BSA 2024 §11.2), "
+            "but admittance below the age norm is abnormal (AAA 2020), so normal "
+            "middle-ear function is not reported." + refer_note + volume_note)
+    elif key == "1k-low-peak":
+        interpretation = (
+            f"The printed static admittance of {admittance:.2f} mmho is below "
+            f"{HF_NEWBORN_ADMITTANCE_P5:g} mmho, the newborn pass-fail criterion "
+            "of Margolis et al. (2003; AAA 2020 Table 1), so this result does not "
+            "pass. Confirm it on the printed trace (see the caveats)." + refer_note
+            + volume_note)
+    else:
+        shape = ("No main peak: the trace rises into the end of the sweep without "
+                 "turning down, so there is no positive peak to classify"
+                 if from_trace and rise_without_peak_toward is not None else
+                 "No positive peak above the baseline — a flat or trough-shaped "
+                 "trace")
+        interpretation = (
+            shape + ", which is abnormal at 1000 Hz (Baldwin 2006; BSA 2024 "
+            "§11.2)." + refer_note + " Ear-canal volume is not interpreted at "
+            "1000 Hz, so this does not separate effusion from a perforation or a "
+            "blocked probe — otoscopy and a probe check do.")
+
+    out = {
+        "type": key,
+        "label": entry["label"],
+        "shape": entry["shape"],
+        "interpretation": interpretation,
+        "disorders": list(entry["disorders"]),
+        "suggests_conductive": entry["suggests_conductive"],
+        "ecv_flag": "not_interpreted",
+        "normative": normative_high_frequency(),
+        "probe_hz": HIGH_PROBE_HZ,
+        "criterion": ("Positive main peak above the baseline between the pressure "
+                      "extremes = normal; flat, trough-shaped or no identifiable "
+                      "peak = abnormal (Baldwin 2006; BSA 2024 §11.2). A positive "
+                      f"peak passes only with at least {HF_NEWBORN_ADMITTANCE_P5:g} "
+                      f"mmho from the {HF_SWEEP_MIN_DAPA} daPa tail to the peak "
+                      "(Margolis et al. 2003; AAA 2020 Table 1); above "
+                      f"{HF_NEWBORN_ADMITTANCE_P95:g} mmho, the 95th percentile, "
+                      "it is not reported as normal (AAA 2020 Interpretation "
+                      "I.ii.b)."),
+        "static_admittance": None if admittance is None else round(admittance, 3),
+        "refer": key != "1k-peak" or criterion_unmeasured,
+    }
+    if from_trace and gap == "apex" and admittance is not None:
+        out["static_admittance_is_lower_bound"] = True
+    if caveats:
+        out["provisional"] = True
+        out["caveats"] = caveats
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -324,6 +823,10 @@ def _as_points(trace: Sequence) -> List[Tuple[float, float]]:
     points: List[Tuple[float, float]] = []
     for item in trace or []:
         if isinstance(item, dict):
+            if item.get("off_scale"):
+                # A point marked off the scale has no reading, whatever number
+                # it carries: at most that is the instrument's limit.
+                continue
             p, a = item.get("pressure"), item.get("admittance")
         else:
             p, a = item[0], item[1]
@@ -353,9 +856,9 @@ def _tympanic_gradient(points, peak_pressure: float, height: float,
         GR = (Ytm - Y+-50) / Ytm
 
     where Ytm is the compensated peak admittance and Y+-50 the mean compensated
-    admittance 50 daPa either side of it. A sharp peak drops away quickly and
-    scores high; a broad, rounded peak scores low. Normal is > 0.2, so the
-    direction matches the reference table.
+    admittance 50 daPa either side of it — the ratio form of Brooks (1968). A
+    sharp peak drops away quickly and scores high; a broad, rounded peak scores
+    low. The reference table's normal "> 0.2" is a heuristic (GRADIENT_BASIS).
     """
     if height <= 0.05:
         return None
@@ -435,34 +938,245 @@ def _detect_notch(points, tail: float, height: float) -> dict:
     }
 
 
-def _detect_off_scale(trace: Sequence, points: List[Tuple[float, float]]) -> bool:
+def _unmeasured_pressures(trace: Sequence) -> List[float]:
+    """Pressures the sweep lists without a reading.
+
+    An admittance left empty is unmeasured, and so is a point the recording
+    marks as off the scale (``_as_points`` leaves both out).
+    """
+    out: List[float] = []
+    for item in trace or []:
+        if isinstance(item, dict):
+            p = item.get("pressure")
+            unmeasured = bool(item.get("off_scale")) or item.get("admittance") is None
+        else:
+            p = item[0]
+            unmeasured = item[1] is None
+        if p is not None and unmeasured:
+            out.append(float(p))
+    return out
+
+
+def _limb_climbs_to(points: List[Tuple[float, float]], border: int,
+                    outward: int) -> bool:
+    """Does the limb on one side of a gap climb to the point bordering it?
+
+    The bordering point must be the highest on its side of the gap (within
+    the measurability floor), and the last recorded step into it must still
+    be rising. Then the trace's maximum lies in the gap.
+    """
+    a = points[border][1]
+    limb = points[:border + 1] if outward < 0 else points[border:]
+    if a < max(v for _, v in limb) - MEASURABLE_MMHO:
+        return False
+    j = border + outward
+    return 0 <= j < len(points) and a > points[j][1] \
+        and points[j][0] != points[border][0]
+
+
+def _climb_reaches_add(points: List[Tuple[float, float]], border: int,
+                       outward: int, gap_pressure: float, tail: float) -> bool:
+    """Would this limb carry the compensated peak to Type Add height by the
+    first unrecorded point? See OFF_SCALE_CLIMB_ALLOWANCE."""
+    p_b, a_b = points[border]
+    if a_b - tail >= OFF_SCALE_ADMITTANCE:
+        return True
+    k = border + 2 * outward
+    if not 0 <= k < len(points):
+        # Too short a limb to tell whether it is still steepening.
+        return False
+    (p_o, a_o), (p_k, a_k) = points[border + outward], points[k]
+    if p_k == p_o:
+        return False
+    rate = (a_b - a_o) / abs(p_b - p_o)
+    if rate <= (a_o - a_k) / abs(p_o - p_k):
+        # Already rounding over toward an apex: credited with no further
+        # climb, so it must stand at Add height where it was last recorded.
+        return False
+    reach = a_b - tail + OFF_SCALE_CLIMB_ALLOWANCE * rate * abs(gap_pressure - p_b)
+    return reach >= OFF_SCALE_ADMITTANCE
+
+
+def _classify_gaps(trace: Sequence, points: List[Tuple[float, float]],
+                   tail: float) -> Tuple[bool, Optional[str]]:
     """Did the trace leave the instrument's range near its peak?
 
-    Two ways this shows up. Either the recording explicitly marks points as
-    off-scale (or leaves them empty), or the measured values themselves reach
-    the ceiling. In both cases the limbs ascend and never meet, so there is no
-    apex — which is the whole distinction between Type Add and Type Ad.
+    Returns ``(off_scale, gap)``. ``gap`` describes the points the sweep
+    lists without a reading inside its recorded range:
+
+        "off_scale"  both limbs climb toward them and would reach Type Add
+                     height there — the peak left the scale, which is the
+                     defining feature of Type Add
+        "apex"       both limbs climb toward them but stop short of that —
+                     the top of the peak was simply not recorded
+        "dropout"    the trace does not climb toward them from both sides —
+                     a recording dropout away from the peak
+        None         nothing missing
+
+    A gap only counts as off-scale when a peak exists beside it: both
+    bordering points stand above the +200 daPa tail by more than a flat
+    trace. Off-scale is judged on that compensated height, never on the raw
+    reading — a perforation's flat trace at 4-5 ml is canal plus middle-ear
+    volume (BSA 2024 §11.1.4), not a peak, and a flat trace does not climb
+    toward anything. A dropout or an unrecorded apex can hide the very
+    measurement the type depends on, so neither is typed.
+
+    With nothing missing, the trace has left the scale only if its
+    compensated peak reaches the instrument ceiling itself.
     """
-    for item in trace or []:
-        if not isinstance(item, dict):
+    pressures = [p for p, _ in points]
+    regions: Dict[int, List[float]] = {}
+    for g in _unmeasured_pressures(trace):
+        if not points or not pressures[0] < g < pressures[-1] or g in pressures:
             continue
-        if item.get("off_scale"):
-            return True
-        # An admittance recorded as empty between two measured points is a
-        # gap in the trace, not a missing row at the end of it.
-        if item.get("admittance") is None and item.get("pressure") is not None:
-            pressures = [p for p, _ in points]
-            if pressures and min(pressures) < item["pressure"] < max(pressures):
-                return True
-    return bool(points) and max(a for _, a in points) >= INSTRUMENT_CEILING_MMHO
+        # The recorded point just below the gap; the one just above it follows.
+        regions.setdefault(bisect_left(pressures, g) - 1, []).append(g)
+
+    kinds = set()
+    for left, gaps in regions.items():
+        right = left + 1
+        if not (_limb_climbs_to(points, left, -1)
+                and _limb_climbs_to(points, right, +1)):
+            kinds.add("dropout")
+            continue
+        peak_beside = (min(points[left][1], points[right][1]) - tail
+                       > FLAT_ADMITTANCE_MAX)
+        if peak_beside \
+                and _climb_reaches_add(points, left, -1, min(gaps), tail) \
+                and _climb_reaches_add(points, right, +1, max(gaps), tail):
+            kinds.add("off_scale")
+        else:
+            kinds.add("apex")
+    if kinds:
+        gap = next(k for k in ("off_scale", "apex", "dropout") if k in kinds)
+        return gap == "off_scale", gap
+
+    rise = (max(a for _, a in points) - tail) if points else 0.0
+    return rise > FLAT_ADMITTANCE_MAX and rise >= INSTRUMENT_CEILING_MMHO, None
 
 
-def analyze_trace(trace: Sequence, age_years: Optional[float] = None) -> Optional[dict]:
-    """Peak, gradient, width, notch and tail volume from a pressure sweep."""
+def _smoothed(points: List[Tuple[float, float]]) -> List[float]:
+    """Each admittance averaged over the samples within HF_PEAK_SMOOTHING_DAPA."""
+    out: List[float] = []
+    for p, _ in points:
+        window = [a for q, a in points if abs(q - p) <= HF_PEAK_SMOOTHING_DAPA + 1e-9]
+        out.append(sum(window) / len(window))
+    return out
+
+
+def _main_peak(points: List[Tuple[float, float]], base,
+               values: Optional[List[float]] = None) -> Optional[int]:
+    """Index of the 1000 Hz main peak, or None when the trace has none.
+
+    BSA (2024) §11.2 asks the reader to "identify the main peak" — a point the
+    trace rises to and falls away from. A candidate is an interior local
+    maximum from which the trace falls by more than HF_PEAK_NOISE_MMHO on
+    each side before it meets higher ground or the end of the sweep, so a
+    sampling ripple is not a peak and neither is a trace still rising when
+    the sweep ends. Of the candidates, the main peak is the one standing
+    highest above the baseline, the distance the method classifies on.
+
+    ``values`` are the admittances the search runs on — the averaged trace
+    (``_smoothed``) — defaulting to the recorded samples.
+    """
+    values = [a for _, a in points] if values is None else values
+    n = len(points)
+    best: Optional[Tuple[float, int]] = None
+    for i in range(1, n - 1):
+        a = values[i]
+        if a < values[i - 1] or a < values[i + 1]:
+            continue
+        falls = []
+        for step in (-1, 1):
+            lowest, j = a, i + step
+            while 0 <= j < n and values[j] <= a:
+                lowest = min(lowest, values[j])
+                j += step
+            falls.append(a - lowest)
+        if min(falls) <= HF_PEAK_NOISE_MMHO:
+            continue
+        height = a - base(points[i][0])
+        if best is None or height > best[0]:
+            best = (height, i)
+    return None if best is None else best[1]
+
+
+def _baseline_measures(points: List[Tuple[float, float]]) -> dict:
+    """The 1000 Hz infant measures: the main peak against the tail baseline.
+
+    BSA (2024) §11.2, after Baldwin (2006): a baseline is drawn between the
+    pressure extremes, to the x axis if the trace dips below it; the main
+    peak's vertical distance from that line decides positive or negative.
+    The newborn admittance criterion is measured to that same main peak from
+    the -400 daPa tail (Margolis et al. 2003).
+
+    The peak is looked for on the averaged trace (HF_PEAK_SMOOTHING_DAPA), so
+    a one-sample movement artefact is not a main peak, and is then measured
+    on the recorded sample it stands on. It counts as above the baseline only
+    as far as both the recorded sample and the averaged trace put it there.
+    """
+    (p_lo, a_lo), (p_hi, a_hi) = points[0], points[-1]
+    a_lo, a_hi = max(a_lo, 0.0), max(a_hi, 0.0)
+    span = p_hi - p_lo
+
+    def base(p: float) -> float:
+        return a_lo if span == 0 else a_lo + (a_hi - a_lo) * (p - p_lo) / span
+
+    deviations = [a - base(p) for p, a in points]
+    largest, below = max(deviations), min(deviations)
+    negative_tail = _interp(points, float(HF_SWEEP_MIN_DAPA))
+    smooth = _smoothed(points)
+    main = _main_peak(points, base, smooth)
+
+    rise_toward = None
+    if main is None:
+        peak_pressure = peak_admittance = above = re_negative_tail = None
+        if max(s - base(p) for (p, _), s in zip(points, smooth)) > HF_PEAK_NOISE_MMHO:
+            # The trace bulges above the baseline but never turns down: it
+            # keeps rising into whichever end it stays level with its maximum.
+            top = max(range(len(points)), key=lambda i: smooth[i])
+            fall_left = smooth[top] - min(smooth[:top + 1])
+            fall_right = smooth[top] - min(smooth[top:])
+            rise_toward = p_lo if fall_left <= fall_right else p_hi
+    else:
+        centre = points[main][0]
+        nearby = [i for i, (p, _) in enumerate(points)
+                  if abs(p - centre) <= HF_PEAK_SMOOTHING_DAPA + 1e-9]
+        peak_pressure, peak_admittance = points[max(nearby, key=lambda i: points[i][1])]
+        above = min(peak_admittance - base(peak_pressure),
+                    smooth[main] - base(centre))
+        re_negative_tail = (None if negative_tail is None
+                            else peak_admittance - negative_tail)
+
+    return {
+        "baseline": [[round(p_lo, 1), round(a_lo, 3)], [round(p_hi, 1), round(a_hi, 3)]],
+        "main_peak_found": main is not None,
+        "peak_above_baseline": None if above is None else round(above, 3),
+        "peak_pressure": None if peak_pressure is None else round(peak_pressure, 1),
+        "peak_admittance": (None if peak_admittance is None
+                            else round(peak_admittance, 3)),
+        "largest_rise_above_baseline": round(max(largest, 0.0), 3),
+        "deepest_below_baseline": round(-below, 3) if below < 0 else 0.0,
+        "rise_without_peak_toward": rise_toward,
+        "reaches_sweep_minimum": p_lo <= HF_SWEEP_MIN_DAPA,
+        "reaches_sweep_maximum": p_hi >= HF_SWEEP_MAX_DAPA,
+        "peak_re_negative_tail": (None if re_negative_tail is None
+                                  else round(re_negative_tail, 3)),
+    }
+
+
+def analyze_trace(trace: Sequence, age_years: Optional[float] = None,
+                  probe_hz: Optional[int] = STANDARD_PROBE_HZ) -> Optional[dict]:
+    """Peak, gradient, width, notch and tail volume from a pressure sweep.
+
+    The geometry is measured whatever the probe. What it is *judged* against
+    depends on the probe and age (``probe_mode``): only a valid 226 Hz trace
+    gets the volume and shape flags, because those flags are 226 Hz criteria.
+    """
     points = _as_points(trace)
     if len(points) < 5:
         return None
-    off_scale = _detect_off_scale(trace, points)
+    mode = probe_mode(age_years, probe_hz)
 
     pressures = [p for p, _ in points]
     admittances = [a for _, a in points]
@@ -471,6 +1185,19 @@ def analyze_trace(trace: Sequence, age_years: Optional[float] = None) -> Optiona
     # the probe is effectively measuring the canal alone.
     tail_candidates = [a for p, a in points if p >= max(pressures) - 50]
     tail = min(tail_candidates) if tail_candidates else min(admittances)
+    off_scale, gap = _classify_gaps(trace, points, tail)
+    if mode == "high_frequency":
+        # Type Add is a 226 Hz type, and the +200 daPa tail is not what a
+        # 1000 Hz trace is measured from. Missing points are described, and
+        # the infant classification decides what they leave undetermined.
+        off_scale = False
+        gap = "apex" if gap == "off_scale" else gap
+    gap_without_peak = gap in ("apex", "dropout")
+    # Points the recording itself marks as beyond its range. They are read
+    # like any unrecorded point, but the words must not call them a dropout:
+    # the instrument said where they went, only not how high.
+    marked_off_scale = any(isinstance(item, dict) and item.get("off_scale")
+                           for item in trace or [])
 
     peak_idx = max(range(len(points)), key=lambda i: admittances[i])
     peak_pressure, peak_raw = points[peak_idx]
@@ -479,22 +1206,35 @@ def analyze_trace(trace: Sequence, age_years: Optional[float] = None) -> Optiona
     width = _tympanometric_width(points, peak_idx, tail)
     gradient = _tympanic_gradient(points, peak_pressure, peak_raw - tail, tail)
     notch = _detect_notch(points, tail, peak_raw - tail)
-    norms = normative(age_years)
+    judged = mode == "jerger"
+    if judged:
+        norms = normative(age_years)
+    elif mode == "high_frequency":
+        norms = normative_high_frequency()
+    else:
+        norms = _normative_not_applicable(
+            "not_applicable", _UNTYPED_REASONS.get(mode, ""))
+    no_apex = off_scale or gap_without_peak
 
     flags: List[str] = []
-    if not off_scale and peak_pressure <= min(pressures) + 10:
-        flags.append("Peak sits at the negative end of the sweep — extend the "
-                     "sweep below -400 daPa before accepting this as Type C.")
-    if peak_compensated <= FLAT_ADMITTANCE_MAX:
-        flags.append("No measurable peak — check the probe seal before reporting "
-                     "this as a flat trace.")
-    if tail > norms["ecv"][1]:
-        flags.append(f"Ear-canal volume {tail:.2f} ml exceeds the normal ceiling "
-                     f"of {norms['ecv'][1]:.1f} — perforation or a patent grommet.")
-    if tail < norms["ecv"][0]:
-        flags.append(f"Ear-canal volume {tail:.2f} ml is below the normal floor of "
-                     f"{norms['ecv'][0]:.1f} — suspect cerumen or a probe blocked "
-                     "against the canal wall, not middle-ear disease.")
+    if judged and not no_apex:
+        # A flat trace's highest sample can land anywhere, including the
+        # sweep's end; that is not a peak sitting there.
+        if peak_compensated > FLAT_ADMITTANCE_MAX \
+                and peak_pressure <= min(pressures) + 10:
+            flags.append("Peak sits at the negative end of the sweep — extend the "
+                         "sweep below -400 daPa before accepting this as Type C.")
+        if peak_compensated <= FLAT_ADMITTANCE_MAX:
+            flags.append("No measurable peak — check the probe seal before reporting "
+                         "this as a flat trace.")
+    if judged:
+        if tail > norms["ecv"][1]:
+            flags.append(f"Ear-canal volume {tail:.2f} ml exceeds the normal ceiling "
+                         f"of {norms['ecv'][1]:.1f} — perforation or a patent grommet.")
+        if tail < norms["ecv"][0]:
+            flags.append(f"Ear-canal volume {tail:.2f} ml is below the normal floor of "
+                         f"{norms['ecv'][0]:.1f} — suspect cerumen or a probe blocked "
+                         "against the canal wall, not middle-ear disease.")
     if off_scale:
         # With no apex, every peak-derived measure describes nothing. The
         # highest recorded value would understate the admittance and make an
@@ -502,13 +1242,47 @@ def analyze_trace(trace: Sequence, age_years: Optional[float] = None) -> Optiona
         # not a width; and the pressure of a peak that was never reached is not
         # a peak pressure.
         flags.append(
-            f"The trace exceeds the instrument ceiling of "
-            f"{INSTRUMENT_CEILING_MMHO:g} mmho and has no recordable peak. "
-            "Peak pressure, peak admittance, gradient and width cannot be "
+            ("Both limbs climb toward the unrecorded points fast enough to pass "
+             f"Type Add height ({OFF_SCALE_ADMITTANCE:g} mmho above the tail) "
+             "there: the peak runs off the instrument scale and has no "
+             "recordable apex. " if gap == "off_scale" else
+             f"The trace exceeds the instrument ceiling of "
+             f"{INSTRUMENT_CEILING_MMHO:g} mmho and has no recordable peak. ")
+            + "Peak pressure, peak admittance, gradient and width cannot be "
             "measured from it.")
+    elif mode == "high_frequency" and gap:
+        flags.append(
+            "Points are missing from the sweep"
+            + (" at the top of the trace" if gap == "apex" else
+               ", where the trace does not rise toward them")
+            + ". The 1000 Hz result is read from the recorded points and is "
+            "provisional. Repeat the trace.")
+    elif gap == "apex" and marked_off_scale:
+        flags.append(
+            "The points at the top of the peak are marked beyond the "
+            "instrument's range, but the recorded limbs either side are already "
+            f"rounding over short of Type Add height ({OFF_SCALE_ADMITTANCE:g} "
+            "mmho above the tail), so how far the peak rose — and so whether it "
+            "is Type Add — cannot be established from this trace. Read the peak "
+            "admittance from an instrument range that records it.")
+    elif gap == "apex":
+        flags.append(
+            "Points are missing at the top of the peak, but the limbs either "
+            f"side stop short of Type Add height ({OFF_SCALE_ADMITTANCE:g} mmho "
+            "above the tail) — the apex was not recorded, which is a dropout "
+            "rather than a peak running off the scale. Peak height and "
+            "pressure cannot be measured, so the trace cannot be typed. Repeat "
+            "the sweep.")
+    elif gap == "dropout":
+        flags.append(
+            "Points are missing from the sweep but the trace does not rise "
+            "toward them — a recording dropout, not a peak running off the "
+            "scale. A peak could be hidden in the gap, so the trace cannot be "
+            "typed. Repeat the sweep.")
+    if no_apex:
         gradient = width = None
         notch = {"notched": False}
-    else:
+    elif judged:
         if width is not None and width > norms["width"][1] \
                 and peak_compensated > FLAT_ADMITTANCE_MAX:
             flags.append(f"Tympanometric width {width:.0f} daPa is wider than normal "
@@ -516,24 +1290,39 @@ def analyze_trace(trace: Sequence, age_years: Optional[float] = None) -> Optiona
                          "suggests early effusion even with normal peak height.")
         if gradient is not None and gradient < GRADIENT_NORMAL_MIN \
                 and peak_compensated > FLAT_ADMITTANCE_MAX:
-            flags.append(f"Tympanic gradient {gradient:.2f} is below the normal "
-                         f"minimum of {GRADIENT_NORMAL_MIN:g}.")
+            flags.append(f"Tympanic gradient {gradient:.2f} is below the "
+                         f"{GRADIENT_NORMAL_MIN:g} heuristic cut-off. " + GRADIENT_BASIS)
+
+    high_frequency = None
+    if mode == "high_frequency":
+        high_frequency = _baseline_measures(points)
+        if not (high_frequency["reaches_sweep_minimum"]
+                and high_frequency["reaches_sweep_maximum"]):
+            flags.append(
+                f"The sweep runs from {min(pressures):g} to {max(pressures):g} "
+                "daPa. A 1000 Hz infant sweep should cover at least "
+                f"{HF_SWEEP_MAX_DAPA:+d} to {HF_SWEEP_MIN_DAPA} daPa (BSA 2024 "
+                "§10.2) so the baseline can be drawn from the pressure extremes.")
 
     return {
-        "peak": {"pressure": None if off_scale else round(peak_pressure, 1),
-                 "admittance": None if off_scale else peak_compensated,
-                 "raw_admittance": None if off_scale else round(peak_raw, 3),
+        "peak": {"pressure": None if no_apex else round(peak_pressure, 1),
+                 "admittance": None if no_apex else peak_compensated,
+                 "raw_admittance": None if no_apex else round(peak_raw, 3),
                  "reached_ceiling": off_scale},
         "ecv": round(tail, 3),
         "width": None if width is None else round(width, 1),
         "gradient": None if gradient is None else round(gradient, 3),
         "notch": notch,
         "off_scale": off_scale,
+        "gap_without_peak": gap_without_peak,
+        "gap": gap,
+        "gap_marked_off_scale": bool(gap) and marked_off_scale,
         "ceiling": INSTRUMENT_CEILING_MMHO,
         "points": _echo_points(trace, points),
         "sweep": [min(pressures), max(pressures)],
         "flags": flags,
         "normative": norms,
+        "high_frequency": high_frequency,
         "source": "measured",
     }
 
@@ -704,6 +1493,66 @@ def reference_curves(age_years: Optional[float] = None) -> List[dict]:
 # --------------------------------------------------------------------------
 # full study
 # --------------------------------------------------------------------------
+#: Why a probe/age combination yields no type, keyed by ``probe_mode``.
+_UNTYPED_REASONS = {
+    "infant_low_probe": (
+        "Not typed. A 226 Hz tympanogram below 6 months of age cannot be "
+        "interpreted: the infant ear is mass-dominated and its cartilaginous "
+        "canal can return a normal-looking trace over a middle ear full of "
+        "fluid (Baldwin 2006; BSA 2024 §4.1). Repeat with a 1000 Hz probe."),
+    "infant_probe_unknown": (
+        "Not typed. The probe frequency was not recorded, and below 6 months "
+        "only a 1000 Hz trace can be interpreted (BSA 2024 §10.2). Record the "
+        "probe tone, or repeat with a 1000 Hz probe."),
+    "unsupported_probe": (
+        "Not typed. The tympanogram types and normal ranges here are 226 Hz "
+        "criteria, with a separate 1000 Hz method for infants; no criteria are "
+        "implemented for this probe frequency."),
+}
+
+
+def _untyped_reason(mode: str, curve: dict, peak_pressure, compliance) -> Optional[str]:
+    """Why no type was given, in words a clinician can act on."""
+    if mode in _UNTYPED_REASONS:
+        return _UNTYPED_REASONS[mode]
+    if curve.get("gap") == "apex" and curve.get("gap_marked_off_scale"):
+        return ("Not typed. The points at the top of the peak are marked beyond "
+                "the instrument's range, but the recorded limbs either side are "
+                "already rounding over short of Type Add height, so the peak "
+                "height that decides the type cannot be established from this "
+                "trace. Read the peak admittance from an instrument range that "
+                "records it.")
+    if curve.get("gap") == "apex":
+        return ("Not typed. Points at the top of the peak were not recorded, "
+                "and the limbs either side stop short of Type Add height, so "
+                "the apex was lost to a dropout rather than to the instrument "
+                "scale. The peak height and pressure that decide the type are "
+                "the missing measurements. Repeat the sweep.")
+    if curve.get("gap_without_peak"):
+        return ("Not typed. The sweep has an unmeasured gap but does not rise "
+                "toward it, so it is neither an off-scale peak nor a flat trace "
+                "with confidence — a narrow peak could sit inside the gap. "
+                "Repeat the sweep.")
+    if peak_pressure is None and compliance is None:
+        return None
+    if compliance is None:
+        return ("Not typed. A peak pressure was entered without a static "
+                "admittance, and the admittance is what separates a shallow, "
+                "normal, deep and off-scale peak. Enter the static admittance "
+                "from the printout.")
+    if peak_pressure is None:
+        if mode == "high_frequency":
+            return ("Not typed. An admittance was entered without a peak "
+                    "pressure, so these numbers cannot show whether the "
+                    "instrument found a peak at all. Read the result from the "
+                    "printed trace.")
+        return (f"Not typed. Peak pressure was not recorded. A static admittance "
+                f"of {compliance:.2f} mmho means a peak exists, so the trace is "
+                "not flat (not Type B), but whether it is Type C depends on the "
+                "missing pressure. Enter the peak pressure from the printout.")
+    return None
+
+
 def analyze(
     ear: str = "right",
     trace: Optional[Sequence] = None,
@@ -713,7 +1562,7 @@ def analyze(
     reflexes: Optional[Dict[str, Optional[float]]] = None,
     pta: Optional[float] = None,
     age_years: Optional[float] = None,
-    probe_hz: int = 226,
+    probe_hz: int = STANDARD_PROBE_HZ,
     gradient: Optional[float] = None,
 ) -> dict:
     """One tympanometry study: curve, type, gradient, reflexes, interpretation.
@@ -722,13 +1571,19 @@ def analyze(
     prints — ECV, peak pressure, static compliance and gradient. With the
     summary the curve is modelled from those numbers, and an entered gradient
     shapes it so the drawing reads back as the value that was typed.
+
+    The probe tone and age choose the rules (``probe_mode``). A 226 Hz trace
+    under six months is refused rather than typed; a 1000 Hz trace is read by
+    the infant baseline method; anything the rules cannot type comes back with
+    ``tympanogram`` None and a ``not_typed`` reason.
     """
     # Imported here rather than at module scope: immittance.py takes its
     # classifier from this module, so a top-level import would close a cycle.
     from app.clinical.immittance import analyze_reflexes
 
+    mode = probe_mode(age_years, probe_hz)
     entered_gradient = gradient
-    curve = analyze_trace(trace or [], age_years)
+    curve = analyze_trace(trace or [], age_years, probe_hz=probe_hz)
     gradient = notch = None
     off_scale = False
     if curve:
@@ -739,6 +1594,13 @@ def analyze(
         notch = curve["notch"]
         off_scale = curve["off_scale"]
     else:
+        if mode == "jerger":
+            norms = normative(age_years)
+        elif mode == "high_frequency":
+            norms = normative_high_frequency()
+        else:
+            norms = _normative_not_applicable("not_applicable",
+                                              _UNTYPED_REASONS.get(mode, ""))
         curve = {
             "peak": {"pressure": peak_pressure,
                      "admittance": compliance,
@@ -748,12 +1610,15 @@ def analyze(
             "gradient": entered_gradient,
             "notch": {"notched": False},
             "off_scale": False,
+            "gap_without_peak": False,
+            "gap": None,
             "ceiling": INSTRUMENT_CEILING_MMHO,
             "points": synthesize_trace(peak_pressure, compliance, ecv,
                                        gradient=entered_gradient),
             "sweep": list(SWEEP),
             "flags": [],
-            "normative": normative(age_years),
+            "normative": norms,
+            "high_frequency": None,
             "source": "modelled",
             "note": ("Curve drawn from the entered peak, compliance and canal "
                      "volume. It illustrates those numbers; it is not a "
@@ -767,46 +1632,99 @@ def analyze(
                 and entered_gradient < GRADIENT_DRAWABLE_MIN else None),
         }
 
-    typed = classify(peak_pressure, compliance, ecv,
-                     gradient if gradient is not None else entered_gradient,
-                     notch, age_years, off_scale=off_scale)
+    typed = None
+    if mode == "jerger" and not curve.get("gap_without_peak"):
+        typed = classify(peak_pressure, compliance, ecv,
+                         gradient if gradient is not None else entered_gradient,
+                         notch, age_years, off_scale=off_scale, probe_hz=probe_hz)
+    elif mode == "high_frequency":
+        measures = curve.get("high_frequency")
+        if measures:
+            # Missing points never stop a 1000 Hz reading: it is taken from
+            # the recorded points and the gap leaves it provisional.
+            typed = classify_high_frequency(
+                measures["peak_above_baseline"], measures["peak_pressure"],
+                age_years, from_trace=True,
+                reaches_sweep_minimum=measures["reaches_sweep_minimum"],
+                reaches_sweep_maximum=measures["reaches_sweep_maximum"],
+                peak_re_negative_tail=measures["peak_re_negative_tail"],
+                rise_without_peak_toward=measures["rise_without_peak_toward"],
+                gap=curve.get("gap"))
+            # The 226 Hz peak is the trace's highest sample over the +200
+            # tail; on a sloping 1000 Hz trace that is often the tail itself.
+            # Report the main peak the verdict was reached on, measured as
+            # Margolis et al. (2003) measure it. The +200 daPa admittance is
+            # not a volume at 1000 Hz and is disregarded (BSA 2024 §11.2), and
+            # width and gradient are 226 Hz shape measures.
+            peak_pressure = measures["peak_pressure"]
+            compliance = measures["peak_re_negative_tail"]
+            ecv = None
+        else:
+            typed = classify_high_frequency(compliance, peak_pressure, age_years)
+    not_typed = None if typed else _untyped_reason(mode, curve, peak_pressure,
+                                                   compliance)
     reflex = analyze_reflexes(reflexes or {}, pta)
 
     infant_warning = None
-    if age_years is not None and age_years * 12 < INFANT_MONTHS and probe_hz < 1000:
+    if mode == "infant_low_probe":
         infant_warning = (
             f"A {probe_hz} Hz probe is not valid below {INFANT_MONTHS} months of "
             "age — the compliant infant ear canal can produce a normal-looking "
-            "trace over a middle ear full of fluid. Repeat with a 1000 Hz probe "
-            "before interpreting this.")
-        if typed:
-            typed = {**typed, "provisional": True}
+            "trace over a middle ear full of fluid. This trace is not typed; "
+            "repeat with a 1000 Hz probe.")
+    elif mode == "jerger" and age_years is not None \
+            and INFANT_MONTHS <= age_years * 12 < HIGH_PROBE_MAX_MONTHS:
+        curve["flags"].append(
+            f"At {age_years * 12:g} months JCIH (2019) still recommends a 1000 Hz "
+            "probe, and either probe may be used between 6 and 9 months (AAA "
+            "2020). A 226 Hz trace can miss an effusion at this age (Hoffman et "
+            "al. 2013) — confirm at 1000 Hz if the result will change management.")
 
+    norms = curve["normative"]
+    width, shape_gradient = curve.get("width"), curve.get("gradient")
+    if curve["source"] != "measured":
+        compliance_reference = "as entered from the printout"
+    elif mode == "high_frequency":
+        width = shape_gradient = None
+        compliance_reference = (
+            f"{HF_SWEEP_MIN_DAPA} daPa tail to the highest recorded point beside "
+            "the unrecorded apex — a lower bound (Margolis et al. 2003)"
+            if curve.get("gap") == "apex" else
+            f"{HF_SWEEP_MIN_DAPA} daPa tail to the main peak (Margolis et al. 2003)")
+    else:
+        compliance_reference = "+200 daPa tail to the peak"
     return {
         "ear": ear,
         "probe_hz": probe_hz,
+        "probe_mode": mode,
         "age_years": age_years,
         "curve": curve,
         "tympanogram": typed,
+        "not_typed": not_typed,
         "reflexes": reflex,
         "measurements": {
             "peak_pressure": peak_pressure,
             "static_compliance": compliance,
+            "static_compliance_reference": compliance_reference,
             "ecv": ecv,
-            "width": curve.get("width"),
-            "gradient": curve.get("gradient"),
+            "width": width,
+            "gradient": shape_gradient,
         },
         "within_normal": _within_normal(peak_pressure, compliance, ecv,
-                                        curve.get("width"), curve.get("gradient"),
-                                        curve["normative"]),
+                                        width, shape_gradient, norms),
         "infant_warning": infant_warning,
-        "interpretation": _interpret(typed, curve, reflex, infant_warning),
+        "interpretation": _interpret(typed, curve, reflex, infant_warning, not_typed),
         "flags": curve["flags"],
     }
 
 
 def _within_normal(pressure, compliance, ecv, width, gradient, norms
                    ) -> Dict[str, Optional[bool]]:
+    if not norms.get("applicable", True):
+        # No 226 Hz band applies to this trace, so no number is "normal".
+        return {"pressure": None, "compliance": None, "ecv": None,
+                "width": None, "gradient": None}
+
     def check(value, bounds):
         return None if value is None else bounds[0] <= value <= bounds[1]
 
@@ -819,37 +1737,43 @@ def _within_normal(pressure, compliance, ecv, width, gradient, norms
     }
 
 
-def _interpret(typed, curve, reflex, infant_warning) -> List[str]:
+def _interpret(typed, curve, reflex, infant_warning,
+               not_typed: Optional[str] = None) -> List[str]:
     lines: List[str] = []
     if infant_warning:
         lines.append(infant_warning)
     if not typed:
-        lines.append("Not enough data to type this tympanogram.")
+        if not_typed and not_typed not in lines and not infant_warning:
+            lines.append(not_typed)
+        elif not infant_warning:
+            lines.append("Not enough data to type this tympanogram.")
         return lines
 
     lines.append(f"{typed['label']}. {typed['interpretation']}")
     if typed["disorders"]:
         lines.append("Associated disorders: " + ", ".join(typed["disorders"]) + ".")
+    lines.extend(typed.get("caveats") or [])
 
     notch = curve.get("notch") or {}
     if notch.get("notched"):
         lines.append(f"Notched peak: maxima at {notch['peaks']} daPa, "
                      f"{notch['width']:g} daPa apart.")
 
-    gradient, width = curve.get("gradient"), curve.get("width")
     norms = curve["normative"]
-    if gradient is not None:
-        if gradient < GRADIENT_NORMAL_MIN:
-            lines.append(
-                f"Tympanic gradient {gradient:.2f} against a normal minimum of "
-                f"{GRADIENT_NORMAL_MIN:g}. A broad, rounded peak is an early "
-                "effusion sign that peak height alone misses.")
-        else:
-            lines.append(f"Tympanic gradient {gradient:.2f} is normal "
-                         f"(> {GRADIENT_NORMAL_MIN:g}).")
-    if width is not None:
-        lines.append(f"Tympanometric width {width:.0f} daPa "
-                     f"(normal {norms['width'][0]}-{norms['width'][1]}).")
+    if norms.get("applicable", True):
+        gradient, width = curve.get("gradient"), curve.get("width")
+        if gradient is not None:
+            if gradient < GRADIENT_NORMAL_MIN:
+                lines.append(
+                    f"Tympanic gradient {gradient:.2f} against a cut-off of "
+                    f"{GRADIENT_NORMAL_MIN:g}. A broad, rounded peak is an early "
+                    "effusion sign that peak height alone misses. " + GRADIENT_BASIS)
+            else:
+                lines.append(f"Tympanic gradient {gradient:.2f} is at or above the "
+                             f"{GRADIENT_NORMAL_MIN:g} heuristic cut-off.")
+        if width is not None:
+            lines.append(f"Tympanometric width {width:.0f} daPa "
+                         f"(normal {norms['width'][0]}-{norms['width'][1]}).")
 
     if reflex:
         lines.append(reflex["note"])

@@ -96,17 +96,23 @@ def test_same_volume_is_normal_for_an_adult_and_large_for_a_child():
 # ------------------------------------------------------- probe tone -------
 
 def test_226_hz_probe_is_refused_for_a_young_infant():
+    """Refused means not typed — a provisional "Type A, normal" is still a
+    normal verdict on a trace that cannot show one."""
     result = tympanometry.analyze(trace=gaussian_trace(0, 0.8),
                                   age_years=0.25, probe_hz=226)
     assert result["infant_warning"]
     assert "1000 Hz" in result["infant_warning"]
-    assert result["tympanogram"]["provisional"] is True
+    assert result["tympanogram"] is None
+    assert result["not_typed"]
+    assert not any("normal" in line.lower() and "normal-looking" not in line.lower()
+                   for line in result["interpretation"])
 
 
 def test_1000_hz_probe_is_accepted_for_the_same_infant():
     result = tympanometry.analyze(trace=gaussian_trace(0, 0.8),
                                   age_years=0.25, probe_hz=1000)
     assert result["infant_warning"] is None
+    assert result["tympanogram"]["type"] == "1k-peak"
     assert "provisional" not in result["tympanogram"]
 
 
@@ -151,8 +157,10 @@ def dp(freqs, amplitude, noise=-12.0):
 
 
 def test_snr_criterion_is_inclusive_at_the_boundary():
-    at = dpoae.dp_gram([{"freq": 2000, "amplitude": -6.0, "noise_floor": -12.0}])
-    below = dpoae.dp_gram([{"freq": 2000, "amplitude": -6.1, "noise_floor": -12.0}])
+    # Amplitudes kept above the -5 dB SPL minimum emission level (BSA 2023
+    # s.8.1) so that only the SNR decides; -6 dB SPL would fail on level.
+    at = dpoae.dp_gram([{"freq": 2000, "amplitude": 0.0, "noise_floor": -6.0}])
+    below = dpoae.dp_gram([{"freq": 2000, "amplitude": -0.1, "noise_floor": -6.0}])
     assert at["points"][0]["present"] is True     # exactly 6.0 dB
     assert below["points"][0]["present"] is False
 
@@ -405,9 +413,16 @@ def test_a_deep_but_closed_peak_stays_type_ad():
 
 
 def test_a_trace_recorded_with_an_explicit_gap_is_read_as_off_scale():
-    """Real instruments mark the unmeasured region rather than omitting it."""
-    trace = [{"pressure": p, "admittance": None if -60 <= p <= 40 else 1.0}
-             for p in range(-400, 201, 10)]
+    """Real instruments mark the unmeasured region rather than omitting it.
+
+    The limbs must rise toward the gap: off-scale is a peak that left the
+    range, so a gap in a trace that never rises is not one (see
+    test_auditfix_b1 for that case).
+    """
+    rising = gaussian_trace(-10, 7.0, tail=1.0)
+    trace = [{"pressure": pt["pressure"],
+              "admittance": None if -60 <= pt["pressure"] <= 40 else pt["admittance"]}
+             for pt in rising]
     result = tympanometry.analyze(trace=trace, age_years=30)
     assert result["curve"]["off_scale"] is True
     assert result["tympanogram"]["type"] == "Add"

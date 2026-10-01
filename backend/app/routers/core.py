@@ -109,6 +109,27 @@ def analyze(record: TestRecord):
         for side in ("right", "left")
     })
     for side in ("right", "left"):
+        # A 226 Hz tympanogram in an infant can look normal over an effusion,
+        # and every middle-ear inference below leans on it — the reader has to
+        # see that before trusting any of them.
+        ear_immittance = immittance[side] or {}
+        infant_warning = ear_immittance.get("infant_warning")
+        if infant_warning:
+            # Reflexes entered without a tympanogram carry the same probe-tone
+            # problem, and they feed the neural-pathway inferences.
+            tympanogram = bool(ear_immittance.get("tympanogram")
+                               or ear_immittance.get("tympanogram_untyped"))
+            safety["alerts"].append({
+                "level": "validity",
+                "title": ("Infant tympanogram — probe tone not recorded" if tympanogram
+                          else "Infant acoustic reflexes — probe tone not recorded"),
+                "ear": side, "detail": infant_warning,
+                "action": ("Repeat with a 1000 Hz probe before relying on the "
+                           "middle-ear result." if tympanogram
+                           else "Repeat the reflexes with a 1000 Hz probe before "
+                                "relying on them."),
+            })
+            safety["validity_warning"] = True
         ear_review = battery[side]
         for c in ear_review["contradictions"]:
             safety["alerts"].append({
@@ -117,6 +138,26 @@ def analyze(record: TestRecord):
                 "action": c.get("action", "Review the full test battery."),
             })
             safety["validity_warning"] = True
+        # Results that could not be interpreted on their own are not
+        # conflicts. Most are worth reading and no more; one that leaves a
+        # clinical question open (``follow_up``: an emission expected at a
+        # normal threshold that could not be judged, absent emissions the
+        # middle ear explains, or unexplained poor word recognition) is raised
+        # at validity level, because the verdict and triage act only on
+        # emergency, urgent and validity alerts — at info level its repeat
+        # test would sit under "no action required". ``battery_note`` tells
+        # these repeat-test items apart from the contradictions above, for any
+        # consumer that ranks them against a threshold-based referral.
+        for note in ear_review.get("notes") or []:
+            level = "validity" if note.get("follow_up") else "info"
+            safety["alerts"].append({
+                "level": level,
+                "title": note["title"], "ear": side, "detail": note["detail"],
+                "action": note.get("action", "Review the full test battery."),
+                "battery_note": True,
+            })
+            if level == "validity":
+                safety["validity_warning"] = True
         for conf in ear_review["confirmations"]:
             if conf.get("priority"):
                 safety["alerts"].append({
@@ -144,6 +185,26 @@ def analyze(record: TestRecord):
                           "certify disability on the current thresholds.",
             })
             safety["validity_warning"] = True
+        elif s["srt"] and s["srt"].get("indeterminate_reason") in (
+                "steep_configuration", "incomplete"):
+            # The SRT neither confirms nor refutes the pure tones (a
+            # precipitous configuration, where the SRT can follow the best
+            # single threshold, or 500/1000/2000 Hz incomplete). That is not
+            # a suspicion of exaggeration, but it removes the speech check a
+            # certificate relies on: where the disability figure reaches the
+            # RPwD benchmark it holds the case for review; elsewhere it is
+            # information.
+            benchmark = bool((rules_result.get("disability") or {})
+                             .get("benchmark_disability"))
+            safety["alerts"].append({
+                "level": "validity" if benchmark else "info",
+                "title": "SRT cannot confirm the pure tones",
+                "ear": side, "detail": s["srt"]["message"],
+                "action": ("Confirm thresholds with an objective measure (ABR/ASSR) "
+                           "before certifying disability."),
+            })
+            if benchmark:
+                safety["validity_warning"] = True
         if s["retrocochlear_suspicion"]:
             safety["alerts"].append({
                 "level": "urgent",

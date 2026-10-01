@@ -32,6 +32,18 @@ const TYPE_STYLE = {
   E: 'border-rose-300 bg-rose-50 text-rose-900',
 }
 
+// The 1000 Hz infant outcomes ('1k-peak', '1k-low-peak', '1k-no-peak') are
+// not Jerger types; they are styled by what they mean — refer, or a pass
+// that is only provisional when the trace was incomplete.
+const typeStyle = (t) => {
+  if (!t) return 'border-slate-300 bg-slate-50 text-slate-700'
+  if (TYPE_STYLE[t.type]) return TYPE_STYLE[t.type]
+  if (t.refer) return 'border-rose-300 bg-rose-50 text-rose-900'
+  if (t.provisional) return 'border-amber-300 bg-amber-50 text-amber-900'
+  if (String(t.type || '').startsWith('1k')) return 'border-emerald-300 bg-emerald-50 text-emerald-900'
+  return 'border-slate-300 bg-slate-50 text-slate-700'
+}
+
 const OUTCOME_STYLE = {
   pass: 'border-emerald-300 bg-emerald-50 text-emerald-900',
   refer: 'border-rose-300 bg-rose-50 text-rose-900',
@@ -198,8 +210,9 @@ function Tympanometry({ reference, onType }) {
   // Age is not a label on this test, it is the test. It picks the normative
   // band — ear-canal volume 0.3–1.0 ml in a child against 0.6–2.0 in an adult,
   // static compliance 0.35–1.25 against 0.37–1.66 — and a 226 Hz probe is
-  // refused under six months because the infant canal is compliant enough to
-  // absorb the low-frequency probe and return a flat trace from a healthy ear.
+  // refused under six months because the compliant infant canal can return a
+  // normal-looking trace over a middle ear full of fluid (Baldwin 2006; BSA
+  // 2024 §4.1).
   // Defaulting to 30 therefore judged every child's tympanogram against adult
   // norms, which reads a stiff paediatric ear as normal.
   const recorded = Number(patient?.age)
@@ -260,8 +273,8 @@ function Tympanometry({ reference, onType }) {
       tour="tympanogram"
       right={jerger && (
         <span className={`rounded-lg border px-2.5 py-1 text-[12px] font-semibold ${
-          TYPE_STYLE[jerger.type] || 'border-slate-300 bg-slate-50 text-slate-700'}`}>
-          {jerger.label}
+          typeStyle(jerger)}`}>
+          {jerger.label}{jerger.provisional ? ' (provisional)' : ''}
         </span>
       )}
     >
@@ -363,7 +376,7 @@ function Tympanometry({ reference, onType }) {
           <LineChart data={result?.curve?.points || trace}
             margin={{ top: 8, right: 12, bottom: 24, left: 4 }}>
             <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
-            {norms && (
+            {norms && norms.applicable !== false && norms.pressure?.length === 2 && (
               <ReferenceArea x1={norms.pressure[0]} x2={norms.pressure[1]}
                 fill="#0d9488" fillOpacity={0.07} />
             )}
@@ -406,6 +419,21 @@ function Tympanometry({ reference, onType }) {
               unit="daPa" ok={result.within_normal.width} />
           </div>
 
+          {result.measurements.static_compliance_reference && (
+            <p className="mt-1.5 text-[11px] leading-snug text-slate-500">
+              Static compliance measured {result.measurements.static_compliance_reference}.
+            </p>
+          )}
+          {result.not_typed && (
+            <p className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900">
+              {result.not_typed}
+            </p>
+          )}
+          {(jerger?.caveats || []).map((c) => (
+            <p key={c} className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900">
+              {c}
+            </p>
+          ))}
           {result.infant_warning && (
             <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] leading-relaxed text-rose-900">
               {result.infant_warning}
@@ -426,17 +454,31 @@ function Tympanometry({ reference, onType }) {
             {result.interpretation.map((line, i) => <li key={i}>· {line}</li>)}
           </ul>
 
-          {norms && (
+          {norms && norms.applicable === false && (
+            <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
+              {norms.note || 'The 226 Hz normal ranges do not apply to this probe tone and age.'}
+              {(norms.citations || []).length > 0 && ` ${norms.citations.join('; ')}.`}
+            </p>
+          )}
+          {norms && norms.applicable !== false && norms.pressure?.length === 2 && (
             <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
               Normal ranges for the {norms.band} band — pressure {norms.pressure[0]} to{' '}
               {norms.pressure[1]} daPa, compliance {norms.compliance[0]}–{norms.compliance[1]} mmho,
               volume {norms.ecv[0]}–{norms.ecv[1]} cm³, width {norms.width[0]}–{norms.width[1]} daPa.
-              {' '}{norms.citations.join('; ')}.
+              {' '}{(norms.citations || []).join('; ')}.
             </p>
           )}
         </>
       )}
-      {result?.measurements && (
+      {result?.measurements && result.probe_mode && result.probe_mode !== 'jerger' && (
+        <p className="mt-3 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-[11.5px] leading-relaxed text-slate-500">
+          This result cannot be attached to the analysis: the test battery types a
+          tympanogram on 226 Hz rules from its peak pressure, admittance and canal
+          volume, and this {probeHz === '1000' || probeHz === 1000 ? '1000 Hz' : 'infant'} trace
+          is read differently. Report it from this page.
+        </p>
+      )}
+      {result?.measurements && (!result.probe_mode || result.probe_mode === 'jerger') && (
         <AttachToAnalysis
           ear={ear}
           summary={

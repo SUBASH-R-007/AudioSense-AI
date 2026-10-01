@@ -251,11 +251,21 @@ def test_reflexes_absent_with_emissions_present_points_beyond_the_cochlea():
     assert any("emissions are present" in r["when"] for r in result["reflex_findings"])
 
 
-def test_reflexes_present_with_a_severe_loss_is_flagged():
+def test_reflexes_present_with_a_profound_loss_is_flagged():
+    """Silman & Gelfand (1981): absent reflexes are rare in cochlear losses
+    below about 80 dB HL, so presence questions the thresholds only above
+    that — the same cut-off as the battery (consistency.py)."""
+    record = audiogram(pta=85, tymp="A", reflex_pattern="present",
+                       ear_type="Sensorineural")
+    result = linkage.immittance_vs_diseases(record)
+    assert any("profound loss" in r["when"] for r in result["reflex_findings"])
+
+
+def test_reflexes_present_with_a_severe_loss_are_expected_not_flagged():
     record = audiogram(pta=75, tymp="A", reflex_pattern="present",
                        ear_type="Sensorineural")
     result = linkage.immittance_vs_diseases(record)
-    assert any("severe loss" in r["when"] for r in result["reflex_findings"])
+    assert result["reflex_findings"] == []
 
 
 def test_no_tympanogram_reports_unavailable():
@@ -495,7 +505,11 @@ def test_each_component_of_the_audiogram_match_is_reported_separately():
 
 def test_every_disease_has_a_characteristic_audiogram():
     from app.clinical.symptom_kb import DISEASE_AUDIOGRAM
-    assert set(DISEASE_AUDIOGRAM) == set(DISEASES)
+    # A condition defined by its onset rather than its configuration (SSNHL)
+    # declares that it has no characteristic audiogram; every other has one.
+    shaped = {k for k, d in DISEASES.items()
+              if d.get("characteristic_audiogram", True)}
+    assert set(DISEASE_AUDIOGRAM) == shaped
     for key, entry in DISEASE_AUDIOGRAM.items():
         assert set(entry["ac"]) == {250, 500, 1000, 2000, 4000, 8000}
         assert set(entry["bc"]) == {250, 500, 1000, 2000, 4000}

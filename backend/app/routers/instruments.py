@@ -99,10 +99,23 @@ def tympanometry_reference(age_years: Optional[float] = None):
         "gradient_formula": (
             "GR = (Ytm − Y±50) ÷ Ytm, where Ytm is the compensated peak "
             "admittance and Y±50 the mean 50 daPa either side of it. A sharp "
-            "peak scores high; a rounded one scores low. Normal > 0.2."),
+            "peak scores high; a rounded one scores low. "
+            f"{tympanometry.GRADIENT_NORMAL_MIN:g} is used as a heuristic "
+            "cut-off, not a published norm."),
+        "gradient_basis": tympanometry.GRADIENT_BASIS,
         "infant_note": (
             f"Below {tympanometry.INFANT_MONTHS} months a 226 Hz probe can look "
             "normal over a middle ear full of fluid. Use a 1000 Hz probe."),
+        "high_frequency": {
+            "types": [{"type": key, **entry}
+                      for key, entry in tympanometry.HIGH_FREQUENCY_TYPES.items()],
+            "newborn_admittance_p5": tympanometry.HF_NEWBORN_ADMITTANCE_P5,
+            "newborn_admittance_p95": tympanometry.HF_NEWBORN_ADMITTANCE_P95,
+            "sweep_dapa": [tympanometry.HF_SWEEP_MIN_DAPA,
+                           tympanometry.HF_SWEEP_MAX_DAPA],
+            "citations": list(tympanometry.HIGH_FREQUENCY_CITATIONS),
+        },
+        "off_scale_climb_allowance": tympanometry.OFF_SCALE_CLIMB_ALLOWANCE,
     }
 
 
