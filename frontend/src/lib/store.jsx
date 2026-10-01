@@ -29,7 +29,13 @@ export function AppProvider({ children }) {
   // Evoked potentials, tuning forks and behavioural observation used to live
   // only on their own screens, so a case could be fully worked up and the
   // dashboard would still show three of its modalities as never performed.
-  const [aep, setAepRaw] = useState(() => load('as_aep', null))
+  // An AEP record without a "recorded" stamp was auto-stored by the older
+  // Evoked Potentials page from its example values, not attached by a
+  // clinician; it must not tick the AEP step or reach the results.
+  const [aep, setAepRaw] = useState(() => {
+    const stored = load('as_aep', null)
+    return stored && typeof stored === 'object' && stored.recorded ? stored : null
+  })
   const [tuningFork, setTuningForkRaw] = useState(() => load('as_tuning_fork', null))
   const [boa, setBoaRaw] = useState(() => load('as_boa', null))
   // The exact request last sent to /api/analyze. Kept so a test performed

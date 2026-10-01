@@ -232,10 +232,14 @@ def test_a_normal_adult_llr_raises_nothing():
 
 
 def test_the_p1_maturation_check_accepts_an_age_appropriate_toddler():
-    """A prominent P1 near 120 ms at 18 months is normal, not delayed."""
+    """A prominent P1 near 120 ms at 18 months is normal, not delayed.
+
+    The expectation is the Sharma, Dorman & Spahr (2002) normal-hearing fit,
+    155.6 - 32.746 ln(1.5 years) = 142.3 ms, not a fixed 120 ms band value.
+    """
     result = aep.analyze_llr({"P1": 118, "N1": 140, "P2": 195}, age_months=18)
     assert result["maturation"]["delayed"] is False
-    assert result["maturation"]["expected"] == 120
+    assert result["maturation"]["expected"] == pytest.approx(142.3, abs=0.05)
 
 
 def test_a_p1_that_stays_infantile_is_the_implant_biomarker():
@@ -342,7 +346,9 @@ def test_a_response_level_far_above_the_band_refers_for_objective_testing():
 
 
 def test_localisation_below_four_months_is_questioned():
-    result = boa.analyze_boa(2, observed_level_db_spl=70, responses=["head_turn"])
+    # Localisation, not the rudimentary head turn the 6 weeks - 4 months band
+    # itself lists; that one is age-appropriate (test_auditfix_b1).
+    result = boa.analyze_boa(2, observed_level_db_spl=70, responses=["localisation"])
     assert "response_beyond_age" in result["flags"]
     assert result["age_appropriate_responses"] is False
 
