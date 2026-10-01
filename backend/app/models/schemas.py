@@ -104,6 +104,13 @@ class PatientInfo(BaseModel):
     #: Reported symptoms, e.g. ["tinnitus", "vertigo", "aural fullness"].
     symptoms: List[str] = Field(default_factory=list)
 
+    @field_validator("occupation", mode="before")
+    @classmethod
+    def _occupation_not_recorded(cls, v):
+        # A form that never asked sends null; that is "not recorded", the
+        # same as an empty string, not a malformed request.
+        return "" if v is None else v
+
 
 class TestRecord(BaseModel):
     """One complete pure-tone audiometry test."""

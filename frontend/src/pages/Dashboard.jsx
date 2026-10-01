@@ -26,6 +26,9 @@ const Card = ({ title, children, badge, tour }) => (
 )
 
 const PATTERN_OPTIONS = [
+  // The classifier reports an ear within WHO 2021 normal limits as "normal"
+  // (no configuration), so a clinician must be able to say so too.
+  ['normal', 'Within normal limits (no configuration)'],
   ['flat', 'Flat'],
   ['sloping_high_frequency', 'Sloping (high-frequency)'],
   ['ski_slope', 'Ski-slope'],
@@ -44,7 +47,9 @@ const prettyPattern = (key) =>
 /** Clinician override — the disagreement is the training signal. */
 function CorrectionControl({ analysis, ear, ml, showToast }) {
   const [open, setOpen] = useState(false)
-  const [choice, setChoice] = useState(ml.pattern)
+  // An unclassified ear (too few frequencies) has no label to agree with;
+  // the select still needs a value, so it starts on the first option.
+  const [choice, setChoice] = useState(ml.pattern ?? PATTERN_OPTIONS[0][0])
   const [stats, setStats] = useState(null)
   const [saving, setSaving] = useState(false)
 
@@ -240,12 +245,22 @@ function SecondOpinion({ side, ear, forest }) {
     let cancelled = false
     setDeep(null)
     setUnavailable(null)
-    api.deepPredict({ ac: ear.ac || {}, bc: ear.bc || {} })
+    // Bone conduction is used by both models at 250-4000 Hz only; the forest
+    // ignores an 8 kHz value, and the ensemble refuses one, so it is left out
+    // here for both to read the same ear.
+    const bc = Object.fromEntries(
+      Object.entries(ear.bc || {}).filter(([f]) => Number(f) <= 4000))
+    api.deepPredict({ ac: ear.ac || {}, bc })
       .then((d) => { if (!cancelled) setDeep(d) })
-      // The endpoint answers 503 on an install where the ensemble was never
-      // trained. That is a missing optional model, not a failure of the case,
-      // so it degrades to a quiet line rather than an error.
-      .catch((e) => { if (!cancelled) setUnavailable(e.message || 'not available') })
+      // 503 means the ensemble was never trained on this install: a missing
+      // optional model, not a failure of the case. 422 means the ensemble
+      // declined THIS ear (too few frequencies, no 4 kHz, a value it cannot
+      // use) and says why. Each gets its own wording.
+      .catch((e) => {
+        if (!cancelled) {
+          setUnavailable({ status: e.status, message: e.message || 'not available' })
+        }
+      })
     return () => { cancelled = true }
   }, [ear, side])
 
@@ -259,8 +274,17 @@ function SecondOpinion({ side, ear, forest }) {
       <div className="mt-2">
         {unavailable && (
           <p className="text-[11.5px] leading-snug text-slate-500">
-            Unavailable on this install — the deep ensemble is not trained
-            ({unavailable}). The classification above stands on the forest alone.
+            {unavailable.status === 422 ? (
+              <>Not classified — {unavailable.message}. The classification above
+                stands on the forest alone.</>
+            ) : unavailable.status === 503 ? (
+              <>Unavailable on this install — the deep ensemble is not trained
+                ({unavailable.message}). The classification above stands on the
+                forest alone.</>
+            ) : (
+              <>The second opinion could not be fetched ({unavailable.message}).
+                The classification above stands on the forest alone.</>
+            )}
           </p>
         )}
         {!unavailable && !deep && (
@@ -268,6 +292,11 @@ function SecondOpinion({ side, ear, forest }) {
         )}
         {deep && (() => {
           const agrees = deep.pattern === forest?.pattern
+          // A normal-gate or unclassified result is a rule applied to the
+          // thresholds, not a network's reading, so "five networks agree"
+          // would describe something that did not happen.
+          const gated = deep.pattern_source && deep.pattern_source !== 'model'
+          const forestGated = forest?.pattern_source && forest.pattern_source !== 'model'
           return (
             <>
               <div className="flex flex-wrap items-center gap-2">
@@ -280,14 +309,34 @@ function SecondOpinion({ side, ear, forest }) {
                   {side} ear
                 </span>
                 <span className="text-[12px] text-slate-700">
-                  ensemble reads <b>{prettyPattern(deep.pattern)}</b> at{' '}
-                  {Math.round(deep.confidence * 100)}%
+                  {deep.pattern == null ? (
+                    <>ensemble does not classify this ear</>
+                  ) : gated ? (
+                    <>ensemble reads <b>{prettyPattern(deep.pattern)}</b></>
+                  ) : (
+                    <>ensemble reads <b>{prettyPattern(deep.pattern)}</b> at{' '}
+                      {Math.round((deep.confidence ?? 0) * 100)}%</>
+                  )}
                 </span>
               </div>
 
+              {deep.reliability_note && (
+                <p className={`mt-1.5 text-[11.5px] leading-snug ${
+                  deep.reliable ? 'text-slate-500' : 'text-amber-800'}`}>
+                  {deep.reliable ? 'Reliable: ' : 'Not reliable: '}{deep.reliability_note}
+                </p>
+              )}
+
               <p className={`mt-1.5 rounded-lg px-2.5 py-1.5 text-[12px] leading-snug ${
                 agrees ? 'bg-slate-50 text-slate-600' : 'bg-amber-50 text-amber-900'}`}>
-                {agrees ? (
+                {agrees && (gated || forestGated) ? (
+                  <>
+                    Both models apply the same rule here rather than a learned
+                    reading: {deep.pattern === 'normal'
+                      ? 'thresholds within WHO 2021 normal limits have no configuration to classify.'
+                      : 'too few frequencies were tested to classify a configuration.'}
+                  </>
+                ) : agrees ? (
                   <>
                     Five independently initialised networks reach the same pattern
                     as the forest. Both models learned the same synthetic
@@ -323,11 +372,15 @@ function SecondOpinion({ side, ear, forest }) {
               </dl>
 
               {deep.novel_input && (
-                <p className="mt-1.5 rounded-lg bg-rose-50 px-2.5 py-1.5 text-[11.5px] leading-snug text-rose-900">
-                  The networks disagree with <i>each other</i> here, which is the
-                  signature of an input unlike anything in training. Treat both
-                  models&rsquo; labels as unsupported on this audiogram.
-                </p>
+                <div className="mt-1.5 rounded-lg bg-rose-50 px-2.5 py-1.5 text-[11.5px] leading-snug text-rose-900">
+                  This audiogram is unlike anything either model was trained on.
+                  Treat both models&rsquo; labels as unsupported on it.
+                  {(deep.novelty_reasons || []).length > 0 && (
+                    <ul className="mt-1 list-disc pl-4">
+                      {deep.novelty_reasons.map((r) => <li key={r}>{r}</li>)}
+                    </ul>
+                  )}
+                </div>
               )}
 
               <p className="mt-1.5 text-[11px] leading-snug text-slate-400">
@@ -679,12 +732,22 @@ export default function Dashboard() {
                 <EarRow key={side} side={side[0].toUpperCase()}
                   color={side === 'right' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}>
                   <b>{m.pattern_label}</b>
-                  <div className="mt-1 flex items-center gap-2">
-                    <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-100">
-                      <div className="h-full rounded-full bg-teal-500" style={{ width: `${m.confidence * 100}%` }} />
+                  {/* The normal gate and the too-few-frequencies case are rules
+                      applied to the thresholds, not model outputs, so they get
+                      no confidence bar (a 0% bar would read as a failed guess). */}
+                  {(!m.pattern_source || m.pattern_source === 'model') && m.confidence != null && (
+                    <div className="mt-1 flex items-center gap-2">
+                      <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-100">
+                        <div className="h-full rounded-full bg-teal-500" style={{ width: `${m.confidence * 100}%` }} />
+                      </div>
+                      <span className="text-[11.5px] text-slate-500">{Math.round(m.confidence * 100)}%</span>
                     </div>
-                    <span className="text-[11.5px] text-slate-500">{Math.round(m.confidence * 100)}%</span>
-                  </div>
+                  )}
+                  {m.reliability_note && m.reliable === false && m.pattern !== 'normal' && (
+                    <div className="mt-1 text-[11.5px] leading-snug text-amber-800">
+                      Not reliable enough to act on: {m.reliability_note}
+                    </div>
+                  )}
                   {m.ood && <div className="mt-1 text-[11.5px] font-medium text-rose-600">{m.ood_message}</div>}
                 </EarRow>
               )
@@ -775,7 +838,15 @@ export default function Dashboard() {
                   {ear.abg && <span className="text-slate-400"> · ABG {ear.abg.value} dB</span>}
                   {ear.provisional && (
                     <div className="mt-0.5 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10.5px] font-semibold text-amber-700">
-                      provisional — BC incomplete
+                      {(ear.bc_nr_freqs || []).length > 0
+                        ? `provisional — no BC response at ${ear.bc_nr_freqs.join('/')} Hz`
+                        : !ear.abg ? 'provisional — BC not tested'
+                        : 'provisional — BC incomplete'}
+                    </div>
+                  )}
+                  {ear.air_bone_gap_note && (
+                    <div className="mt-1 text-[11.5px] leading-snug text-amber-800">
+                      {ear.air_bone_gap_note}
                     </div>
                   )}
                 </EarRow>
@@ -841,6 +912,11 @@ export default function Dashboard() {
               <p className="mt-1.5 text-[12px] leading-snug text-slate-600">
                 {babbleScreen.result.interpretation}
               </p>
+              {babbleScreen.result.reliable === false && babbleScreen.result.reliability_note && (
+                <p className="mt-1.5 text-[11.5px] leading-snug text-amber-800">
+                  {babbleScreen.result.reliability_note}
+                </p>
+              )}
               {babbleScreen.versus_audiogram?.hidden_hearing_loss && (
                 <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11.5px] leading-snug text-amber-900">
                   Normal tones but poor speech-in-babble — the dissociation
@@ -855,10 +931,10 @@ export default function Dashboard() {
             </Card>
           )}
 
-          {/* The "Compared with peers" (ISO 7029 hearing-age) card lived here
-              until it was removed at NIEPMD's request. The backend still
-              computes analysis.norms — the verdict banner's "Hearing age"
-              number reads it — so only the card came out, not the feature. */}
+          {/* No age comparison on this page — no peer card, no "hearing
+              age", no ISO 7029 percentile — at NIEPMD's request. Nothing here
+              reads analysis.norms, and the verdict banner drops any
+              hearing-age figure a server or a saved analysis still carries. */}
           <Card title="Cochlear damage map" tour="cochlea"
             badge={
               <div className="flex rounded-lg bg-slate-100 p-0.5">
@@ -882,14 +958,35 @@ export default function Dashboard() {
 
           <Card title="Disability (RPwD Act 2016)" tour="disability"
             badge={disability?.benchmark_disability ? (
-              <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">benchmark ≥40%</span>
+              disability.certifiable === false ? (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-800">provisional — not certifiable</span>
+              ) : (
+                <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">benchmark ≥40%</span>
+              )
+            ) : disability?.certifiable === false ? (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-800">not certifiable</span>
             ) : null}>
             {disability ? (
               <>
                 <div className="text-2xl font-bold text-slate-900">
                   {disability.binaural_pct}<span className="text-base font-semibold text-slate-400">%</span>
-                  <span className="ml-2 text-[12px] font-medium text-slate-500">binaural hearing disability</span>
+                  <span className="ml-2 text-[12px] font-medium text-slate-500">
+                    binaural hearing disability{disability.certifiable === false ? ' (provisional estimate)' : ''}
+                  </span>
                 </div>
+                {disability.certifiable === false && disability.certification_note && (
+                  <p className="mt-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[12px] leading-snug text-amber-900">
+                    {disability.certification_note}
+                  </p>
+                )}
+                {/* A certifiable figure still rests on the 2018 Gazette method,
+                    which S.O. 1338(E) (2024) superseded; the note says so
+                    beside the number that goes on a certificate. */}
+                {disability.certifiable !== false && disability.guideline_note && (
+                  <p className="mt-1.5 text-[11.5px] leading-snug text-slate-500">
+                    {disability.guideline_note}
+                  </p>
+                )}
                 <details className="mt-2 text-[12.5px] text-slate-600">
                   <summary className="cursor-pointer font-medium text-teal-700">Show formula steps</summary>
                   <div className="mt-1.5 space-y-1 rounded-lg bg-slate-50 p-2.5 font-mono text-[11.5px]">
@@ -897,6 +994,11 @@ export default function Dashboard() {
                     <div>L: {disability.left.formula}</div>
                     <div>Binaural: {disability.binaural_formula}</div>
                     <div className="text-slate-400">{disability.benchmark_note}</div>
+                    {disability.method && (
+                      <div className="text-slate-400">
+                        {disability.method}; {disability.rounding_rule}; no response counted as {disability.nr_value_db} dB
+                      </div>
+                    )}
                   </div>
                 </details>
               </>
@@ -978,17 +1080,32 @@ export default function Dashboard() {
                           : 'bg-amber-100 text-amber-700'
                       }`}>Reflexes {imm.reflexes.pattern}</span>
                     )}
-                    {oaeEar && (
-                      <span className={`rounded-md px-2 py-1 text-[11px] font-semibold ${
-                        oaeEar.all_present ? 'bg-emerald-100 text-emerald-700'
-                          : oaeEar.all_absent ? 'bg-rose-100 text-rose-700'
-                          : 'bg-amber-100 text-amber-700'
-                      }`}>
-                        OAE {oaeEar.all_present ? 'present'
-                          : oaeEar.all_absent ? 'absent'
-                          : `absent at ${oaeEar.absent_freqs.join('/')} Hz`}
-                      </span>
-                    )}
+                    {oaeEar && (() => {
+                      const present = oaeEar.present_freqs || []
+                      const absent = oaeEar.absent_freqs || []
+                      const unjudged = oaeEar.inconclusive_freqs || []
+                      const notJudged = unjudged.length ? `; ${unjudged.join('/')} Hz not judged` : ''
+                      let text
+                      let tone
+                      if (!present.length && !absent.length) {
+                        text = 'OAE could not be judged — repeat in quiet'
+                        tone = 'bg-amber-100 text-amber-800'
+                      } else if (!absent.length) {
+                        text = (unjudged.length ? `OAE present at ${present.join('/')} Hz` : 'OAE present') + notJudged
+                        tone = unjudged.length ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-700'
+                      } else if (!present.length) {
+                        text = (unjudged.length ? `OAE absent at ${absent.join('/')} Hz` : 'OAE absent') + notJudged
+                        tone = 'bg-rose-100 text-rose-700'
+                      } else {
+                        text = `OAE absent at ${absent.join('/')} Hz` + notJudged
+                        tone = 'bg-amber-100 text-amber-700'
+                      }
+                      return (
+                        <span className={`rounded-md px-2 py-1 text-[11px] font-semibold ${tone}`}>
+                          {text}
+                        </span>
+                      )
+                    })()}
                   </div>
 
                   {ear.confirmations.map((c, i) => (
@@ -1009,7 +1126,19 @@ export default function Dashboard() {
                       )}
                     </div>
                   ))}
-                  {!ear.confirmations.length && !ear.contradictions.length && (
+                  {(ear.notes || []).map((n, i) => (
+                    <div key={`n${i}`} className={`mt-2 rounded-lg p-2 ${
+                      n.follow_up ? 'bg-amber-50 ring-1 ring-amber-200' : 'bg-slate-50'}`}>
+                      <div className="text-[12.5px] font-semibold text-slate-800">ⓘ {n.title}</div>
+                      <div className="mt-0.5 text-[12px] leading-snug text-slate-600">{n.detail}</div>
+                      {n.action && (
+                        <div className={`mt-1 text-[12px] font-medium ${
+                          n.follow_up ? 'text-amber-800' : 'text-slate-500'}`}>→ {n.action}</div>
+                      )}
+                    </div>
+                  ))}
+                  {!ear.confirmations.length && !ear.contradictions.length
+                    && !(ear.notes || []).length && (
                     <div className="mt-2 text-[12px] text-slate-400">
                       No cross-checks available for this ear.
                     </div>

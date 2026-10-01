@@ -34,9 +34,16 @@ const ACTION_STYLE = {
   routine: 'bg-slate-900 text-white',
 }
 
+// The results page carries no age comparison (NIEPMD). The frontend and the
+// API deploy separately, and an analysis saved in this browser session
+// outlives both, so a "Hearing age" figure from an older server is dropped
+// here rather than trusted to be absent.
+const isAgeComparison = (n) => /hearing[\s_-]*age/i.test(`${n?.label ?? ''} ${n?.key ?? ''}`)
+
 export default function VerdictBanner({ verdict }) {
   if (!verdict) return null
   const tone = TONE[verdict.tone] || TONE.unknown
+  const numbers = (verdict.numbers || []).filter((n) => !isAgeComparison(n))
 
   return (
     <section
@@ -60,9 +67,9 @@ export default function VerdictBanner({ verdict }) {
         </div>
       </div>
 
-      {verdict.numbers?.length > 0 && (
+      {numbers.length > 0 && (
         <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {verdict.numbers.map((n) => (
+          {numbers.map((n) => (
             <div key={n.label}
               className={`rounded-xl px-3 py-2.5 ${
                 n.emphasis ? 'bg-white ring-1 ring-rose-200' : 'bg-white/70'}`}>
@@ -75,6 +82,11 @@ export default function VerdictBanner({ verdict }) {
                 {n.unit && <span className="ml-1 text-[12px] text-slate-500">{n.unit}</span>}
                 {n.hint && (
                   <div className="mt-0.5 text-[11px] leading-snug text-slate-500">{n.hint}</div>
+                )}
+                {/* A figure the rules engine marks not certifiable carries the
+                    reason; it must be readable where the number is. */}
+                {n.certifiable === false && n.note && (
+                  <div className="mt-1 text-[10.5px] leading-snug text-amber-800">{n.note}</div>
                 )}
               </dd>
             </div>
