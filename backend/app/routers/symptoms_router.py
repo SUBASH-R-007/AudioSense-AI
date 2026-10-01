@@ -23,6 +23,11 @@ class SymptomRequest(BaseModel):
     side: str = "unspecified"
     duration: str = "unspecified"
     onset: str = "unknown"
+    #: The patient's recorded occupation. A high-noise trade adds a prompt to
+    #: take a noise history; it never records an exposure on its own. Optional
+    #: and nullable: patient records carry ``occupation: null`` when it was
+    #: never asked, and that must not fail the whole history.
+    occupation: Optional[str] = None
 
 
 @router.get("/catalog")
@@ -46,6 +51,7 @@ def analyze(req: SymptomRequest):
     result = S.assess(
         age=req.age, complaints=req.complaints, symptoms=reported,
         side=req.side, duration=req.duration, onset=req.onset,
+        occupation=req.occupation or "",
     )
     result["sex"] = req.sex
     return result

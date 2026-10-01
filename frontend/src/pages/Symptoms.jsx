@@ -156,7 +156,8 @@ export default function Symptoms() {
   // assessment on screen, not an empty form beside a filled-in result.
   useEffect(() => {
     if (!assessment) return
-    setPicked(new Set((assessment.reported?.symptoms || []).map((s) => s.key)))
+    setPicked(new Set((assessment.reported?.symptoms || [])
+      .filter((s) => !s.implied).map((s) => s.key)))
     setAge(assessment.age)
     setOnset(assessment.onset || 'unknown')
     setSide(assessment.side || 'unspecified')
@@ -194,8 +195,11 @@ export default function Symptoms() {
   async function run() {
     setBusy(true)
     try {
+      // The occupation decides whether the engine prompts for a noise
+      // history; null means "not recorded" and is accepted as such.
       const assessment = await api.symptoms({
         age: Number(age), symptoms: [...picked], notes, side, duration, onset,
+        occupation: patient?.occupation ?? null,
       })
       setResult(assessment)
     } catch (e) {
@@ -399,6 +403,20 @@ export default function Symptoms() {
                 </div>
               )}
 
+              {(result.history_prompts || []).length > 0 && (
+                <div className="rounded-2xl border border-amber-200 bg-white p-5 shadow-sm">
+                  <h2 className="text-[15px] font-semibold text-amber-900">Ask about</h2>
+                  <ul className="mt-2 space-y-2">
+                    {result.history_prompts.map((p) => (
+                      <li key={p.id || p.text}
+                        className="rounded-lg bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900">
+                        {p.text}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {result.reported.unmatched.length > 0 && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900">
                   <span className="font-semibold">Not recognised:</span>{' '}
@@ -456,6 +474,16 @@ export default function Symptoms() {
                       {d.audiology_note && (
                         <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-600">
                           {d.audiology_note}
+                        </p>
+                      )}
+                      {d.context_note && (
+                        <p className="mt-1.5 text-[11.5px] leading-relaxed text-amber-800">
+                          {d.context_note}
+                        </p>
+                      )}
+                      {d.against_note && (
+                        <p className="mt-1.5 text-[11.5px] leading-relaxed text-amber-800">
+                          {d.against_note}
                         </p>
                       )}
                       <div className="mt-1.5 text-[10.5px] uppercase tracking-wide text-slate-400">
@@ -537,6 +565,15 @@ export default function Symptoms() {
                       </p>
                     </div>
 
+                    {/* The differential re-ranked against the measured type of
+                        hearing — which possibility leads once the audiogram is
+                        taken into account, or why none can. */}
+                    {correlation.reconciled?.headline && (
+                      <p className="mt-2.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[12.5px] leading-relaxed text-slate-700">
+                        {correlation.reconciled.headline}
+                      </p>
+                    )}
+
                     {/* Ears that contradict the diagnosis are listed first and
                         never folded away behind the verdict line. */}
                     {correlation.against?.length > 0 && (
@@ -554,6 +591,21 @@ export default function Symptoms() {
                         {correlation.supports.map((line) => (
                           <li key={line}
                             className="rounded-lg bg-emerald-50 px-3 py-2 text-[12px] leading-relaxed text-emerald-900">
+                            <EarLine text={line} />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {/* Neither fit nor conflict: a provisional type (bone
+                        conduction untested or no response), or an ear within
+                        normal limits for a condition that predicts a loss. */}
+                    {[...(correlation.undetermined || []),
+                      ...(correlation.within_normal_limits || [])].length > 0 && (
+                      <ul className="mt-2.5 space-y-1.5">
+                        {[...(correlation.undetermined || []),
+                          ...(correlation.within_normal_limits || [])].map((line) => (
+                          <li key={line}
+                            className="rounded-lg bg-slate-50 px-3 py-2 text-[12px] leading-relaxed text-slate-700">
                             <EarLine text={line} />
                           </li>
                         ))}
