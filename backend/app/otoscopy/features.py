@@ -386,9 +386,11 @@ _register(["band_energy", "longest_line", "line_count"])
 # cannot answer "where on the drum", and for otoscopy that is most of the
 # diagnosis: the same dark defect is a central perforation in the middle of
 # the pars tensa, a marginal one at the annulus, and an attic one superiorly.
-# The blocks below encode position explicitly. Measured on the reference set,
-# adding them lifted leave-one-image-out top-1 accuracy by roughly ten points
-# over the summary descriptors alone.
+# The blocks below encode position explicitly. They were added on the
+# strength of a comparison that held out one view at a time while sibling
+# views of the same source picture stayed in training, so the size of their
+# benefit on unseen photographs is not established; the model card carries
+# the only held-out figures worth quoting.
 
 POLAR_RINGS, POLAR_SECTORS = 6, 12
 RADIAL_BINS = 10

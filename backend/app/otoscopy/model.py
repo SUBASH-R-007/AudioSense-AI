@@ -2,13 +2,22 @@
 
 Two things matter more here than raw accuracy.
 
-FIRST, HONEST VALIDATION. The reference set is small, and augmented copies of
-one photograph are not independent observations. Cross-validating without
-accounting for that inflates accuracy to a number that means nothing. This
-module holds out whole source images (``LeaveOneGroupOut`` over the source
-photograph, augmentations included), so the reported score is what happens on
-an image the model has genuinely never seen. The number that comes out is
-lower than a naive split would give, and it is the one worth quoting.
+FIRST, HONEST VALIDATION. The reference set is small, and neither augmented
+copies of one view nor the several views cut from one montage in the
+reference document are independent observations: sibling views share the
+camera, the session, the exposure and often the ear. The 62 reference views
+come from 22 source pictures. Validation therefore holds out every view cut
+from the test picture, with all their augmentations, and fits every
+preprocessing step (the scaler included) on the training fold alone, so the
+reported score is what happens on a photograph the model has genuinely never
+seen. That number is far lower than a crop-level split gives, and it is the
+one worth quoting; the crop-level figure is kept on the card, labelled as
+optimistic, only so the two can be compared.
+
+The classifier is NOT validated for diagnosis. Its label is reported as the
+closest reference pattern, with ``reliable: false`` and the measured
+held-out accuracy beside it, and its probabilities are not calibrated — on
+held-out photographs it is about as confident when wrong as when right.
 
 SECOND, RETRIEVAL BESIDE CLASSIFICATION. A label with a probability is a
 claim. The three most similar labelled reference views, shown side by side
@@ -23,7 +32,10 @@ model card changes to record the larger training set.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -37,6 +49,11 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 REFERENCE_DIR = DATA_DIR / "otoscope_reference"
 KAGGLE_DIR = DATA_DIR / "otoscope_kaggle"
 ARTIFACT = DATA_DIR / "otoscopy_model.joblib"
+#: The published model card. Written by ``train`` beside the artifact, and
+#: rewritten by ``evaluate`` when the validation is re-measured without
+#: refitting; it is served in place of the copy baked into the artifact
+#: whenever both describe the same training data.
+CARD_PATH = DATA_DIR / "otoscopy_model_card.json"
 
 #: Folder names used by public otoscope datasets, mapped onto our taxonomy.
 #: Unmapped folders are reported rather than guessed at — a silently
@@ -148,9 +165,11 @@ def load_dataset(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Path], List[str]]:
     """Feature matrix, labels, grouping key and source paths.
 
-    The grouping key is the source photograph. Every augmentation of one
-    photograph carries the same key, so validation can hold all of them out
-    together.
+    The grouping key is the image file — one reference view. Every
+    augmentation of one view carries the same key, so validation can hold all
+    of them out together and score the view once. Views cut from the same
+    source picture carry different keys here; ``source_groups`` maps each row
+    to that picture, which is the unit validation must hold out.
     """
     X: List[np.ndarray] = []
     y: List[str] = []
@@ -182,19 +201,57 @@ def load_dataset(
             sorted(set(unmapped_all)))
 
 
+#: ``extract_otoscope_reference.py`` names each panel it cuts out of a
+#: montage ``<class>_<digest>_<NN>``, where ``<digest>`` (eight hex digits of
+#: the MD5 of the embedded picture) identifies the picture it came from.
+_SOURCE_DIGEST = re.compile(r"_([0-9a-f]{8})_\d{2,}$")
+
+
+def source_photograph(path) -> str:
+    """The source picture a reference view was cut from.
+
+    Panels of one montage share a camera, a session, an exposure and often
+    the ear itself, so for validation they are one observation, not several.
+    A file that does not follow the extraction script's naming — a public
+    dataset image — is treated as its own source.
+    """
+    p = Path(str(path))
+    match = _SOURCE_DIGEST.search(p.stem)
+    return match.group(1) if match else p.as_posix()
+
+
+def source_groups(paths: Sequence) -> np.ndarray:
+    """Integer source-picture id per row, for ``LeaveOneGroupOut``."""
+    keys = np.asarray([source_photograph(p) for p in paths])
+    return np.unique(keys, return_inverse=True)[1]
+
+
+def training_fingerprint(ref_paths: Sequence, ref_y: Sequence) -> str:
+    """Identity of a training set: which files, under which labels.
+
+    Ties a published model card to the artifact it describes. Path
+    separators are normalised so the same data fingerprints the same on
+    Windows and in the Linux container.
+    """
+    items = sorted(f"{lbl}|{str(p).replace(chr(92), '/')}"
+                   for p, lbl in zip(ref_paths, ref_y))
+    return hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()[:16]
+
+
 # --------------------------------------------------------------------------
 # training
 # --------------------------------------------------------------------------
 def _make_classifier():
     """PCA then multinomial logistic regression.
 
-    Chosen by measurement, not preference. Random forests, extra trees and an
-    RBF SVM were all compared under the same leave-one-image-out protocol on
-    the reference set; this pipeline beat every one of them on top-1 and
-    top-3 (the forest managed 39% / 65%). With 391 correlated descriptors and
-    62 source images, the projection to 20 components is what keeps the model
-    from fitting the noise. Current figures are in the model card, which is
-    regenerated by the training script rather than written down here.
+    Chosen over random forests, extra trees and an RBF SVM in a comparison
+    run with one reference view held out at a time — a protocol that leaves
+    sibling views of the test picture in training, so the comparison favoured
+    whichever model memorised montages best and has not been repeated with
+    whole source pictures held out. With 391 correlated descriptors and 62
+    views from 22 source pictures, the projection to 20 components is what
+    keeps the model from fitting the noise. Measured figures live only in the
+    model card, which the training and evaluation scripts regenerate.
     """
     from sklearn.decomposition import PCA
     from sklearn.linear_model import LogisticRegression
@@ -206,122 +263,390 @@ def _make_classifier():
     )
 
 
-def _honest_cv(X: np.ndarray, y: np.ndarray, groups: np.ndarray) -> dict:
-    """Leave-one-source-image-out accuracy at three levels of granularity.
+#: Thresholds on the model's own averaged probabilities. They describe how
+#: far the top class separates from the rest, NOT how likely it is to be
+#: right: on held-out source pictures the top probability is about as high
+#: when the answer is wrong as when it is right. The card records the
+#: held-out accuracy inside each band so that can be checked, and no
+#: calibration is fitted — 22 source pictures cannot validate one.
+PROBABLE_MIN_CONFIDENCE = 0.55
+PROBABLE_MIN_MARGIN = 0.18
+PROVISIONAL_MIN_CONFIDENCE = 0.38
 
-    Held out by source photograph, so no augmented sibling of a test image is
-    ever in the training fold. This is deliberately the pessimistic estimate,
-    and it is the one reported in the UI.
+
+def _probability_band(confidence: float, margin: float) -> str:
+    if confidence >= PROBABLE_MIN_CONFIDENCE and margin >= PROBABLE_MIN_MARGIN:
+        return "probable"
+    if confidence >= PROVISIONAL_MIN_CONFIDENCE:
+        return "provisional"
+    return "uncertain"
+
+
+def wilson_interval(k: int, n: int, z: float = 1.959964) -> Optional[List[float]]:
+    """95% Wilson score interval for ``k`` successes in ``n`` trials.
+
+    Wilson EB (1927). Probable inference, the law of succession, and
+    statistical inference. J Am Stat Assoc 22:209-212. Used instead of the
+    normal approximation because it stays inside [0, 1] and keeps its
+    coverage at the small counts this reference set produces.
+    """
+    if n <= 0:
+        return None
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return [round(max(0.0, centre - half), 3), round(min(1.0, centre + half), 3)]
+
+
+def _cluster_bootstrap_interval(correct: Sequence, clusters: Sequence,
+                                n_boot: int = 2000,
+                                seed: int = 0) -> Optional[List[float]]:
+    """95% percentile interval for accuracy, resampling whole source pictures.
+
+    Views cut from one picture are correlated, so an interval that treats
+    them as independent (Wilson, above) is too narrow. Resampling clusters
+    rather than individual views is the standard remedy for hierarchical
+    data: Davison AC, Hinkley DV (1997), Bootstrap Methods and their
+    Application, section 3.8; Field CA, Welsh AH (2007), Bootstrapping
+    clustered data, J R Stat Soc B 69:369-390. Seeded so the card is
+    reproducible.
+    """
+    correct = np.asarray(correct, dtype=float)
+    clusters = np.asarray(clusters)
+    ids = np.unique(clusters)
+    if len(ids) < 2:
+        return None
+    hits = np.array([correct[clusters == c].sum() for c in ids])
+    sizes = np.array([(clusters == c).sum() for c in ids], dtype=float)
+    draws = np.random.default_rng(seed).integers(0, len(ids), size=(n_boot, len(ids)))
+    accuracy = hits[draws].sum(axis=1) / sizes[draws].sum(axis=1)
+    lo, hi = np.percentile(accuracy, [2.5, 97.5])
+    return [round(float(lo), 3), round(float(hi), 3)]
+
+
+#: How each validation protocol is described on the card.
+PROTOCOLS: Dict[str, str] = {
+    "source_photograph": (
+        "leave-one-source-photograph-out: every view cut from the held-out "
+        "picture, with all its augmentations, is removed from training; the "
+        "scaler, PCA and classifier are fit on the training fold alone; each "
+        "held-out view is scored once, with probabilities averaged over its "
+        "augmentations"),
+    "crop": (
+        "leave-one-view-out (OPTIMISTIC): one view and its augmentations are "
+        "held out while sibling views cut from the same source picture stay "
+        "in training, so the model is partly tested on a picture it learned "
+        "from; kept only for comparison with the source-photograph figure"),
+}
+
+
+def _grouped_cv(X: np.ndarray, y: np.ndarray, crops: np.ndarray,
+                folds: np.ndarray, protocol: str,
+                sources: Optional[np.ndarray] = None) -> dict:
+    """Held-out accuracy at three levels of granularity.
+
+    ``folds`` decides what is held out together; ``crops`` decides what is
+    scored as one test case. With ``folds`` set to the source picture
+    (``source_groups``) no view of the test picture, and no augmentation of
+    one, is ever in training. Every fitted step, the feature scaler
+    included, is fit inside the fold: a scaler fit on all rows has already
+    seen the test picture's feature distribution. ``sources`` (the source
+    picture per row) adds per-class source counts and an interval that
+    resamples whole pictures.
 
     Three levels are scored because they are not equally learnable and they
-    are not equally important. Which of three perforation sites this is: hard,
-    and the model is weak at it. Whether there is a perforation at all:
-    easier. Whether this ear needs an urgent referral: easier still, and the
-    only one a triage decision actually rests on.
+    are not equally important. Which of three perforation sites this is:
+    hard. Whether there is a perforation at all: easier in principle.
+    Whether this ear needs an urgent referral: the one a triage decision
+    rests on. Each is reported beside its no-information rate — the score of
+    always answering the commonest label — because a coarse level with a few
+    unbalanced bands can look accurate while knowing nothing.
     """
     from sklearn.model_selection import LeaveOneGroupOut
+    from sklearn.preprocessing import StandardScaler
 
     from app.otoscopy.taxonomy import CATEGORY, URGENCY
 
-    if len(np.unique(groups)) < 3:
-        return {"method": "none", "reason": "fewer than three source images"}
+    if len(np.unique(folds)) < 3:
+        return {"method": "none", "protocol": protocol,
+                "reason": "fewer than three held-out groups"}
 
-    logo = LeaveOneGroupOut()
-    total = 0
-    topk = {1: 0, 2: 0, 3: 0}
-    coarse = {"category": 0, "urgency": 0}
-    retrieval = {1: 0, 3: 0}
-    per_class: Dict[str, List[int]] = {c: [0, 0] for c in np.unique(y)}
-    confusion: Dict[str, Dict[str, int]] = {}
-
-    for train_idx, test_idx in logo.split(X, y, groups):
+    cases: List[dict] = []
+    for train_idx, test_idx in LeaveOneGroupOut().split(X, y, folds):
         if len(np.unique(y[train_idx])) < 2:
             continue
+        scaler = StandardScaler().fit(X[train_idx])
+        X_train = scaler.transform(X[train_idx])
+        X_test = scaler.transform(X[test_idx])
         clf = _make_classifier()
-        clf.fit(X[train_idx], y[train_idx])
-        # Average probabilities over the held-out image's augmentations, which
-        # is exactly how inference works in production.
-        probs = clf.predict_proba(X[test_idx]).mean(axis=0)
-        order = np.argsort(probs)[::-1]
-        ranked = [str(c) for c in np.asarray(clf.classes_)[order]]
+        clf.fit(X_train, y[train_idx])
+        classes = np.asarray(clf.classes_)
+        train_crops, train_y = crops[train_idx], y[train_idx]
+        test_crops, test_y = crops[test_idx], y[test_idx]
 
-        truth = str(y[test_idx][0])
-        total += 1
-        per_class[truth][1] += 1
-        for k in topk:
-            if truth in ranked[:k]:
-                topk[k] += 1
-        if ranked[0] == truth:
-            per_class[truth][0] += 1
-        confusion.setdefault(truth, {}).setdefault(ranked[0], 0)
-        confusion[truth][ranked[0]] += 1
-        if CATEGORY.get(ranked[0]) == CATEGORY.get(truth):
-            coarse["category"] += 1
-        if URGENCY.get(ranked[0]) == URGENCY.get(truth):
-            coarse["urgency"] += 1
+        for crop in np.unique(test_crops):
+            rows = test_crops == crop
+            # Average probabilities over the held-out view's augmentations,
+            # which is exactly how inference works in production.
+            probs = clf.predict_proba(X_test[rows]).mean(axis=0)
+            order = np.argsort(probs)[::-1]
+            ranked = [str(c) for c in classes[order]]
+            confidence = float(probs[order[0]])
+            runner_up = float(probs[order[1]]) if len(order) > 1 else 0.0
 
-        # Retrieval is scored on the same folds: does the nearest labelled
-        # reference view (a different source image) carry the right label?
-        query = X[test_idx].mean(axis=0)
-        dist = np.linalg.norm(X[train_idx] - query, axis=1)
-        seen, neighbours = set(), []
-        for i in np.argsort(dist):
-            key = groups[train_idx][i]
-            if key in seen:
-                continue
-            seen.add(key)
-            neighbours.append(str(y[train_idx][i]))
-            if len(neighbours) >= 3:
-                break
-        if neighbours and neighbours[0] == truth:
-            retrieval[1] += 1
-        if truth in neighbours:
-            retrieval[3] += 1
+            # Retrieval is scored on the same folds: does the nearest
+            # labelled view (one per training view) carry the right label?
+            query = X_test[rows].mean(axis=0)
+            dist = np.linalg.norm(X_train - query, axis=1)
+            seen, neighbours = set(), []
+            for i in np.argsort(dist):
+                if train_crops[i] in seen:
+                    continue
+                seen.add(train_crops[i])
+                neighbours.append(str(train_y[i]))
+                if len(neighbours) >= 3:
+                    break
 
-    if not total:
-        return {"method": "none", "reason": "no usable folds"}
+            cases.append({
+                "truth": str(test_y[rows][0]),
+                "ranked": ranked,
+                "confidence": confidence,
+                "band": _probability_band(confidence, confidence - runner_up),
+                "neighbours": neighbours,
+                "source": (int(sources[test_idx][rows][0])
+                           if sources is not None else None),
+            })
 
-    return {
-        "method": "leave-one-source-image-out; probabilities averaged over "
-                  "augmentations of the held-out image",
-        "images_tested": total,
-        "accuracy": round(topk[1] / total, 4),
-        "top2_accuracy": round(topk[2] / total, 4),
-        "top3_accuracy": round(topk[3] / total, 4),
-        "category_accuracy": round(coarse["category"] / total, 4),
-        "urgency_accuracy": round(coarse["urgency"] / total, 4),
-        "retrieval_top1": round(retrieval[1] / total, 4),
-        "retrieval_top3": round(retrieval[3] / total, 4),
+    if not cases:
+        return {"method": "none", "protocol": protocol, "reason": "no usable folds"}
+
+    n = len(cases)
+    truth = [c["truth"] for c in cases]
+    right = np.array([c["ranked"][0] == c["truth"] for c in cases])
+    k1 = int(right.sum())
+    k2 = sum(c["truth"] in c["ranked"][:2] for c in cases)
+    k3 = sum(c["truth"] in c["ranked"][:3] for c in cases)
+    k_cat = sum(CATEGORY.get(c["ranked"][0]) == CATEGORY.get(c["truth"]) for c in cases)
+    k_urg = sum(URGENCY.get(c["ranked"][0]) == URGENCY.get(c["truth"]) for c in cases)
+    k_ret1 = sum(bool(c["neighbours"]) and c["neighbours"][0] == c["truth"] for c in cases)
+    k_ret3 = sum(c["truth"] in c["neighbours"] for c in cases)
+
+    def no_information(mapping: Optional[Dict[str, str]] = None) -> float:
+        labels = [mapping.get(t) if mapping else t for t in truth]
+        return round(max(labels.count(v) for v in set(labels)) / n, 4)
+
+    per_class: Dict[str, dict] = {}
+    confusion: Dict[str, Dict[str, int]] = {}
+    for c in cases:
+        confusion.setdefault(c["truth"], {}).setdefault(c["ranked"][0], 0)
+        confusion[c["truth"]][c["ranked"][0]] += 1
+    for cls in sorted(set(truth)):
+        mine = [c for c in cases if c["truth"] == cls]
+        hit = sum(c["ranked"][0] == cls for c in mine)
+        entry = {"correct": hit, "n": len(mine),
+                 "recall": round(hit / len(mine), 3) if mine else None}
+        if sources is not None:
+            entry["source_photographs"] = len({c["source"] for c in mine})
+        per_class[cls] = entry
+
+    by_band: Dict[str, dict] = {}
+    for band in ("probable", "provisional", "uncertain"):
+        mine = [c for c in cases if c["band"] == band]
+        if mine:
+            hit = sum(c["ranked"][0] == c["truth"] for c in mine)
+            by_band[band] = {"correct": hit, "n": len(mine),
+                             "accuracy": round(hit / len(mine), 3)}
+
+    conf = np.array([c["confidence"] for c in cases])
+    out = {
+        "protocol": protocol,
+        "method": PROTOCOLS[protocol],
+        "optimistic": protocol != "source_photograph",
+        "scaler": "fit on the training fold only",
+        "held_out_groups": int(len(np.unique(folds))),
+        "images_tested": n,
+        "correct": k1,
+        "accuracy": round(k1 / n, 4),
+        "accuracy_ci95": wilson_interval(k1, n),
+        "accuracy_ci95_method": (
+            "Wilson score interval over views. It treats views as independent, "
+            "which views cut from one picture are not, so it is too narrow."),
+        "top2_accuracy": round(k2 / n, 4),
+        "top3_accuracy": round(k3 / n, 4),
+        "top3_ci95": wilson_interval(k3, n),
+        "category_accuracy": round(k_cat / n, 4),
+        "urgency_accuracy": round(k_urg / n, 4),
+        "urgency_ci95": wilson_interval(k_urg, n),
+        "retrieval_top1": round(k_ret1 / n, 4),
+        "retrieval_top3": round(k_ret3 / n, 4),
         "chance_level": round(1.0 / max(len(np.unique(y)), 1), 4),
-        "per_class_recall": {
-            c: {"correct": v[0], "n": v[1],
-                "recall": round(v[0] / v[1], 3) if v[1] else None}
-            for c, v in sorted(per_class.items())
+        "no_information_rate": {
+            "exact_class": no_information(),
+            "category": no_information(CATEGORY),
+            "urgency": no_information(URGENCY),
         },
+        "mean_top_probability": {
+            "when_correct": round(float(conf[right].mean()), 3) if right.any() else None,
+            "when_wrong": round(float(conf[~right].mean()), 3) if (~right).any() else None,
+        },
+        "accuracy_by_certainty": by_band,
+        "per_class_recall": per_class,
         "confusion": confusion,
     }
+    if sources is not None:
+        case_sources = [c["source"] for c in cases]
+        out["source_photographs"] = len(set(case_sources))
+        out["accuracy_ci95_by_source_photograph"] = _cluster_bootstrap_interval(
+            right, case_sources)
+    return out
+
+
+def reliability_note(card: Optional[dict]) -> str:
+    """Plain statement that the label is not validated, with the evidence.
+
+    Built from the card at the time it is shown, so the figures quoted are
+    always the ones measured and cannot drift out of date in a string.
+    """
+    v = (card or {}).get("validation") or {}
+    lead = ("Not a validated diagnosis: the label is the closest reference "
+            "pattern, offered for comparison with the reference views.")
+    if v.get("protocol") != "source_photograph" or v.get("accuracy") is None:
+        return (lead + " Its accuracy on photographs it has not seen has not "
+                "been measured for this model. Decide from what you see down "
+                "the scope.")
+
+    # e.g. "17 of 62 views (27%, 95% CI 15%-42%; chance 12.5%)"
+    ci = v.get("accuracy_ci95_by_source_photograph") or v.get("accuracy_ci95")
+    rate = f"{v['accuracy']:.0%}" + (f", 95% CI {ci[0]:.0%}-{ci[1]:.0%}" if ci else "")
+    chance = (f"; chance {v['chance_level'] * 100:g}%"
+              if v.get("chance_level") is not None else "")
+    if v.get("correct") is not None and v.get("images_tested"):
+        counted = f"{v['correct']} of {v['images_tested']} views ({rate}{chance})"
+    else:
+        bounds = (f"95% CI {ci[0]:.0%}-{ci[1]:.0%}" if ci else "") + chance
+        counted = (f"{v['accuracy']:.0%} of held-out views"
+                   + (f" ({bounds.lstrip('; ')})" if bounds else ""))
+    text = (f"{lead} With every view of the test photograph held out of "
+            f"training, it named the labelled pattern for {counted}")
+    if v.get("top3_accuracy") is not None:
+        text += f" and had it in its top three {v['top3_accuracy']:.0%} of the time"
+    text += "."
+    nir = (v.get("no_information_rate") or {}).get("urgency")
+    if v.get("urgency_accuracy") is not None and nir is not None:
+        text += (f" The urgency band was right {v['urgency_accuracy']:.0%} of "
+                 f"the time, against {nir:.0%} for always answering the "
+                 f"commonest band.")
+    wrong = (v.get("mean_top_probability") or {}).get("when_wrong")
+    if wrong is not None:
+        text += (f" Its top probability averaged {wrong:.0%} even when it was "
+                 "wrong, so the percentage beside a pattern is not the chance "
+                 "that it is right.")
+    separated = (v.get("accuracy_by_certainty") or {}).get("probable")
+    if separated and separated.get("n"):
+        text += (f" Even where its top pattern stood well clear of the rest "
+                 f"('probable'), it was right for {separated['correct']} of "
+                 f"{separated['n']} views.")
+    missed = []
+    for cls, r in (v.get("per_class_recall") or {}).items():
+        if r.get("n") and r.get("recall") is not None and r["recall"] < 0.25:
+            name = re.sub(r"\s*\([^)]*\)", "", TAXONOMY.get(cls, {}).get("name", cls))
+            missed.append(f"{name.lower()} ({r['correct']}/{r['n']})")
+    if missed:
+        listed = (missed[0] if len(missed) == 1
+                  else ", ".join(missed[:-1]) + " and " + missed[-1])
+        text += (f" On unseen photographs it rarely or never identified "
+                 f"{listed}, so a result that does not name them does not "
+                 f"exclude them.")
+    return text + " Decide from what you see down the scope."
+
+
+def _default_roots() -> List[Path]:
+    return [p for p in (REFERENCE_DIR, KAGGLE_DIR) if p.exists()]
+
+
+def _validate(X: np.ndarray, y: np.ndarray, crops: np.ndarray,
+              paths: Sequence) -> Tuple[dict, dict]:
+    """(source-photograph validation, optimistic view-level validation).
+
+    The first is the model's accuracy. The second exists only so the gap
+    between the two protocols stays visible on the card.
+    """
+    sources = source_groups(paths)
+    return (_grouped_cv(X, y, crops, sources, "source_photograph", sources),
+            _grouped_cv(X, y, crops, crops, "crop", sources))
+
+
+def _unique_views(paths: Sequence, y: Sequence) -> Tuple[List[str], List[str]]:
+    """One (path relative to data/, label) per view, in load order."""
+    seen = dict.fromkeys((str(Path(p).relative_to(DATA_DIR)), str(lbl))
+                         for p, lbl in zip(paths, y))
+    return [p for p, _ in seen], [lbl for _, lbl in seen]
+
+
+def _build_card(X: np.ndarray, y: np.ndarray, roots: Sequence[Path],
+                unmapped: List[str], view_paths: List[str], view_y: List[str],
+                validation: dict, optimistic: Optional[dict],
+                novelty_cut: float) -> dict:
+    """The model card, leading with what a reader most needs to know.
+
+    ``reliable`` is fixed at False. Cross-validation on a reference atlas
+    can show a model is NOT ready; it cannot show that it is. Clearing it
+    needs an external, prospective validation on consecutive clinic
+    photographs, which is a clinical-governance decision, not a training
+    output.
+    """
+    sources = {}
+    for root in roots:
+        found, _ = scan_directory(Path(root))
+        sources[Path(root).name] = {k: len(v) for k, v in sorted(found.items())}
+
+    card = {
+        "classes": sorted(set(y.tolist())),
+        "reliable": False,
+        "reliability_note": "",
+        "validation": validation,
+        "validation_optimistic": optimistic,
+        "n_images": int(len(view_paths)),
+        "n_source_photographs": int(len({source_photograph(p) for p in view_paths})),
+        "n_training_samples": int(X.shape[0]),
+        "n_features": int(X.shape[1]),
+        "augmentations_per_image": len(AUG_ROTATIONS) * len(AUG_GAINS) * len(AUG_FLIP),
+        "sources": sources,
+        "unmapped_folders": unmapped,
+        "kaggle_present": KAGGLE_DIR.exists(),
+        "novelty_threshold": round(novelty_cut, 3),
+        "training_fingerprint": training_fingerprint(view_paths, view_y),
+    }
+    card["reliability_note"] = reliability_note(card)
+    return card
 
 
 def train(
     roots: Optional[Sequence[Path]] = None,
     out_path: Path = ARTIFACT,
     run_cv: bool = True,
+    card_path: Path = CARD_PATH,
 ) -> dict:
     """Fit the classifier and write the artifact. Returns the model card."""
     import joblib
     from sklearn.preprocessing import StandardScaler
 
-    roots = list(roots) if roots else [p for p in (REFERENCE_DIR, KAGGLE_DIR) if p.exists()]
-    X, y, groups, paths, unmapped = load_dataset(roots)
+    roots = list(roots) if roots else _default_roots()
+    X, y, crops, paths, unmapped = load_dataset(roots)
     if X.shape[0] == 0:
         raise FileNotFoundError(
             f"no otoscope images found under {[str(r) for r in roots]}")
 
+    # Validation refits every step inside each fold from the raw features,
+    # so it never sees the scaler fitted below on all rows.
+    if run_cv:
+        validation, optimistic = _validate(X, y, crops, paths)
+    else:
+        validation, optimistic = {"method": "skipped"}, None
+
     scaler = StandardScaler().fit(X)
     Xs = scaler.transform(X)
-
-    cv = _honest_cv(Xs, y, groups) if run_cv else {"method": "skipped"}
-
     clf = _make_classifier()
     clf.fit(Xs, y)
 
@@ -329,6 +654,7 @@ def train(
     # "most similar reference view" points at a real file we can display.
     ref_X, ref_y, _, ref_paths, _ = load_dataset(roots, augmented=False)
     ref_Xs = scaler.transform(ref_X) if len(ref_X) else ref_X
+    ref_rel = [str(Path(p).relative_to(DATA_DIR)) for p in ref_paths]
 
     # Novelty threshold: how far a genuine otoscope image sits from its
     # nearest training neighbour. Anything well beyond this is not an ear.
@@ -338,33 +664,57 @@ def train(
         nn_dists.append(float(d.min()))
     novelty_cut = float(np.percentile(nn_dists, 99)) if nn_dists else 0.0
 
-    sources = {}
-    for root in roots:
-        found, _ = scan_directory(Path(root))
-        sources[Path(root).name] = {k: len(v) for k, v in sorted(found.items())}
-
-    card = {
-        "classes": sorted(set(y.tolist())),
-        "n_images": int(len(ref_paths)),
-        "n_training_samples": int(X.shape[0]),
-        "n_features": int(X.shape[1]),
-        "augmentations_per_image": len(AUG_ROTATIONS) * len(AUG_GAINS) * len(AUG_FLIP),
-        "sources": sources,
-        "unmapped_folders": unmapped,
-        "validation": cv,
-        "kaggle_present": KAGGLE_DIR.exists(),
-        "novelty_threshold": round(novelty_cut, 3),
-    }
+    card = _build_card(X, y, roots, unmapped, ref_rel,
+                       [str(v) for v in ref_y], validation, optimistic,
+                       novelty_cut)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({
         "clf": clf, "scaler": scaler, "feature_names": F.FEATURE_NAMES,
-        "ref_X": ref_Xs, "ref_y": ref_y,
-        "ref_paths": [str(Path(p).relative_to(DATA_DIR)) for p in ref_paths],
+        "ref_X": ref_Xs, "ref_y": ref_y, "ref_paths": ref_rel,
         "novelty_cut": novelty_cut, "card": card,
     }, out_path)
-    (DATA_DIR / "otoscopy_model_card.json").write_text(
-        json.dumps(card, indent=2), encoding="utf-8")
+    card_path.write_text(json.dumps(card, indent=2), encoding="utf-8")
+    _reset_bundle()
+    return card
+
+
+def evaluate(
+    roots: Optional[Sequence[Path]] = None,
+    artifact: Path = ARTIFACT,
+    card_path: Path = CARD_PATH,
+) -> dict:
+    """Re-measure the shipped model's validation and republish its card.
+
+    Refits nothing and leaves the artifact untouched. What is measured is
+    the training procedure on the same data — the procedure that produced
+    the artifact — so the card remains a description of the shipped model.
+    Refuses when the data on disk is not the data the artifact was trained
+    on, or the features no longer match: that needs ``train``, not a card.
+    """
+    import joblib
+
+    roots = list(roots) if roots else _default_roots()
+    bundle = joblib.load(artifact)
+    X, y, crops, paths, unmapped = load_dataset(roots)
+    if X.shape[0] == 0:
+        raise FileNotFoundError(
+            f"no otoscope images found under {[str(r) for r in roots]}")
+
+    view_paths, view_y = _unique_views(paths, y)
+    shipped = training_fingerprint(bundle.get("ref_paths", []), bundle.get("ref_y", []))
+    if training_fingerprint(view_paths, view_y) != shipped:
+        raise ValueError("the reference data on disk is not what the shipped "
+                         "artifact was trained on — retrain instead")
+    if X.shape[1] != len(bundle.get("feature_names", [])):
+        raise ValueError("the feature extractor has changed since the artifact "
+                         "was trained — retrain instead")
+
+    validation, optimistic = _validate(X, y, crops, paths)
+    card = _build_card(X, y, roots, unmapped, view_paths, view_y,
+                       validation, optimistic, float(bundle.get("novelty_cut", 0.0)))
+    card_path.write_text(json.dumps(card, indent=2), encoding="utf-8")
+    _reset_bundle()
     return card
 
 
@@ -378,6 +728,52 @@ def model_available() -> bool:
     return ARTIFACT.exists()
 
 
+def _reset_bundle() -> None:
+    global _BUNDLE
+    _BUNDLE = None
+
+
+def _published_card(bundle: dict, card_path: Optional[Path] = None) -> dict:
+    """The card to serve for a loaded artifact.
+
+    The published JSON card is served when it describes the same training
+    data as the artifact, which is how a re-measured validation reaches the
+    API without refitting the model. Otherwise the card baked into the
+    artifact is served — and if that card predates source-photograph
+    validation, its view-level figures are moved to ``validation_optimistic``
+    and ``validation`` is left empty, so nothing downstream quotes them as
+    the model's accuracy.
+    """
+    card_path = CARD_PATH if card_path is None else card_path
+    fingerprint = training_fingerprint(bundle.get("ref_paths", []),
+                                       bundle.get("ref_y", []))
+    try:
+        published = json.loads(Path(card_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        published = None
+    if (isinstance(published, dict)
+            and published.get("training_fingerprint") == fingerprint):
+        published["reliable"] = False
+        published["reliability_note"] = reliability_note(published)
+        return published
+
+    card = dict(bundle.get("card") or {})
+    validation = card.get("validation")
+    if not (isinstance(validation, dict)
+            and validation.get("protocol") == "source_photograph"):
+        if isinstance(validation, dict) and validation.get("accuracy") is not None:
+            card["validation_optimistic"] = {
+                **validation, "protocol": "crop", "optimistic": True,
+                "method": PROTOCOLS["crop"] + "; scaler fit on all rows before "
+                          "cross-validation",
+            }
+        card["validation"] = None
+    card["training_fingerprint"] = fingerprint
+    card["reliable"] = False
+    card["reliability_note"] = reliability_note(card)
+    return card
+
+
 def load_bundle() -> dict:
     global _BUNDLE
     if _BUNDLE is None:
@@ -385,7 +781,9 @@ def load_bundle() -> dict:
             raise FileNotFoundError(
                 "otoscopy model not trained — run: python -m scripts.train_otoscopy")
         import joblib
-        _BUNDLE = joblib.load(ARTIFACT)
+        bundle = joblib.load(ARTIFACT)
+        bundle["card"] = _published_card(bundle)
+        _BUNDLE = bundle
     return _BUNDLE
 
 
@@ -466,13 +864,14 @@ def reference_url(relative_path: str) -> str:
 def predict(image_bgr: np.ndarray) -> dict:
     """Read one otoscope image: ranked differential, evidence, references.
 
-    Deliberately NOT phrased as a single diagnosis. On the shipped reference
-    set the top label is right well under half the time while the top three
-    contain the right answer far more often, so a ranked differential is what
-    the evidence supports. The coarse category and the urgency band are
-    reported separately because they are measured separately and they are
-    what a triage decision actually rests on. Exact figures come from the
-    model card so they cannot drift out of date in a docstring.
+    Deliberately NOT phrased as a diagnosis. On photographs it has not seen,
+    the top label is wrong more often than it is right, so the leading class
+    is reported as the closest reference pattern, the result carries
+    ``reliable: false``, and ``reliability_note`` quotes the measured
+    held-out accuracy from the model card — the only place the figures are
+    kept, so they cannot drift out of date in code. The coarse category and
+    urgency band are rolled up from the same probabilities and inherit the
+    same lack of validation.
     """
     from app.otoscopy.taxonomy import (
         CATEGORY, CATEGORY_LABEL, URGENCY, URGENCY_LABEL,
@@ -516,9 +915,11 @@ def predict(image_bgr: np.ndarray) -> dict:
         "urgency": URGENCY.get(classes[i]),
     } for i in order]
 
-    # Roll the class probabilities up to the coarser levels. These are the
-    # numbers to trust: the category is right ~55% of the time and the
-    # urgency band ~60%, against 12.5% chance.
+    # Roll the class probabilities up to the coarser levels. They are
+    # measured separately, and their held-out accuracy, beside the score of
+    # always answering the commonest band, is on the model card
+    # (validation.category_accuracy, validation.urgency_accuracy,
+    # validation.no_information_rate). Read them there, not here.
     def _rollup(mapping: Dict[str, str]) -> List[dict]:
         totals: Dict[str, float] = {}
         for cls, p in zip(classes, probs):
@@ -530,28 +931,43 @@ def predict(image_bgr: np.ndarray) -> dict:
     categories = _rollup(CATEGORY)
     urgencies = _rollup(URGENCY)
 
-    # Confidence is only meaningful when the top two classes separate and the
-    # image is readable. Say so rather than printing a number that is not
-    # earned.
+    # The band says how far the top class separates from the rest and
+    # whether the image is readable at all. It is not a likelihood of being
+    # right (see the thresholds above), and a well separated top class is
+    # still an unvalidated one.
     margin = confidence - runner_up
     if not quality["usable"]:
         certainty = "unreliable"
     elif novel:
         certainty = "out-of-distribution"
-    elif confidence >= 0.55 and margin >= 0.18:
-        certainty = "probable"
-    elif confidence >= 0.38:
-        certainty = "provisional"
     else:
-        certainty = "uncertain"
+        certainty = _probability_band(confidence, margin)
+
+    card = bundle["card"]
+    name = TAXONOMY.get(top, {}).get("name", top)
+    note = reliability_note(card)
 
     return {
+        # Fixed False: the classifier has not been validated for diagnosis
+        # (see ``_build_card``), and every consumer of this result — the
+        # report, the linkage, the dashboard — should see that without
+        # having to read the model card.
+        "reliable": False,
+        "reliability_note": note,
         "prediction": {
             "label": top,
-            "name": TAXONOMY.get(top, {}).get("name", top),
+            "name": name,
+            "kind": "closest_reference_pattern",
+            "statement": (f"Closest reference pattern: {name}. "
+                          "Not a validated diagnosis."),
+            "reliable": False,
             "confidence": round(confidence, 4),
             "margin": round(margin, 4),
             "certainty": certainty,
+            # How often views given this band were right with their source
+            # picture held out — the band's measured meaning, from the card.
+            "certainty_held_out": ((card.get("validation") or {})
+                                   .get("accuracy_by_certainty") or {}).get(certainty),
         },
         "differential": ranked[:3],
         "ranked": ranked,
@@ -582,12 +998,14 @@ def predict(image_bgr: np.ndarray) -> dict:
             if memorised else None
         ),
         "clinical": describe(top),
-        "model": bundle["card"],
+        "model": card,
         "disclaimer": (
-            "Otoscopic pattern support, not a diagnosis. The model is trained "
-            "on a small reference set and offers a ranked differential to "
-            "compare against what you see down the scope; it cannot exclude "
-            "disease behind an obscured or partially visible membrane."
+            "Closest reference pattern, not a diagnosis. The model is trained "
+            "on a small reference set and has not been validated for "
+            "diagnosis; it ranks the reference patterns this image most "
+            "resembles so you can compare them against what you see down the "
+            "scope. It cannot exclude disease behind an obscured or partially "
+            "visible membrane."
         ),
     }
 
@@ -598,12 +1016,14 @@ def predict(image_bgr: np.ndarray) -> dict:
 def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
     """Does the picture agree with the audiogram and the tympanogram?
 
-    This is the part of otoscopy that does not depend on the classifier being
-    right, and it is where the clinical value sits. The taxonomy states what
-    each pattern predicts — a perforation should give a large ear-canal
-    volume and an air-bone gap; a normal drum should give neither. Comparing
-    that against the measured battery either corroborates the image or
-    produces a specific, checkable disagreement.
+    The taxonomy states what each pattern predicts — a perforation should
+    give a large ear-canal volume and an air-bone gap; a normal drum should
+    give neither. Comparing the closest reference pattern's predictions
+    against the measured battery produces a specific, checkable
+    disagreement, and a disagreement is informative whether or not the
+    classifier is right. An agreement is weaker: the pattern match is not
+    validated, so agreement corroborates it without confirming it, and when
+    the two conflict the unvalidated image reading is the likelier error.
 
     ``analysis`` is a response from ``POST /api/analyze``; None when the
     image was uploaded before any audiometry, in which case there is simply
@@ -631,56 +1051,81 @@ def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
     expects_gap = label in CONDUCTIVE_CLASSES
     lo, hi = entry.get("expected_gap_db", (0, 10))
 
+    name = entry.get("name", label)
+    # The pattern is a closest match, not an identification; every sentence
+    # below says so, because these lines are quoted on their own elsewhere.
+    pattern = f"the closest reference pattern ({name})"
+    subject = f"The closest reference pattern ({name})"
+
     if gap is not None:
         if expects_gap and gap >= max(lo, 10):
             agreements.append({
-                "title": "Air-bone gap matches the otoscopic finding",
-                "detail": (f"{entry.get('name', label)} predicts a conductive "
-                           f"component and the measured gap is {gap:g} dB."),
+                "title": "Air-bone gap is consistent with the closest reference pattern",
+                "detail": (f"{subject} predicts a "
+                           f"conductive component and the measured gap is "
+                           f"{gap:g} dB. This corroborates the pattern match; it "
+                           f"does not confirm it."),
             })
         elif expects_gap and gap < 10:
             conflicts.append({
-                "title": "Otoscopy suggests a conductive cause but there is no gap",
-                "detail": (f"The image was read as {entry.get('name', label)}, which "
-                           f"normally produces a {lo}-{hi} dB air-bone gap, yet the "
-                           f"measured gap is only {gap:g} dB."),
-                "action": "Re-check masked bone conduction, and re-examine the ear. "
-                          "One of the two findings is wrong.",
+                "title": "The image's closest pattern implies a conductive cause but there is no gap",
+                "detail": (f"{subject} normally produces "
+                           f"a {lo}-{hi} dB air-bone gap, yet the measured gap is "
+                           f"only {gap:g} dB."),
+                "action": "Re-examine the ear first — the pattern match is not "
+                          "validated and is the likelier error. If the appearance "
+                          "is confirmed, re-check masked bone conduction.",
             })
         elif not expects_gap and gap >= 15:
             conflicts.append({
-                "title": "Conductive loss with a normal-looking drum",
-                "detail": (f"A {gap:g} dB air-bone gap needs an explanation, and the "
-                           "image does not provide one."),
-                "action": "Consider ossicular fixation or a third-window disorder; "
-                          "confirm with tympanometry and acoustic reflexes.",
+                "title": "Conductive loss while the closest pattern is a normal-looking drum",
+                "detail": (f"A {gap:g} dB air-bone gap needs an explanation, and "
+                           f"{pattern} does not provide one."),
+                "action": "Re-examine the ear: the pattern match is not validated "
+                          "and may have missed a middle-ear cause. If the drum is "
+                          "confirmed normal, consider ossicular fixation or a "
+                          "third-window disorder; confirm with tympanometry and "
+                          "acoustic reflexes.",
             })
 
     if tymp_type:
         expected = str(entry.get("expected_tympanogram", ""))
-        if expected and tymp_type in expected:
+        # Compare against the type letters the taxonomy names, as whole
+        # tokens. A substring test would find Type "A" inside the word
+        # "LARGE" and call a Type A trace consistent with a perforation.
+        expected_types = set(re.findall(r"\b([ABC][sd12]?)\b", expected))
+        if expected and tymp_type in expected_types:
             agreements.append({
-                "title": f"Tympanogram Type {tymp_type} matches the appearance",
-                "detail": f"{entry.get('name', label)} predicts {expected}.",
+                "title": f"Tympanogram Type {tymp_type} is consistent with the closest reference pattern",
+                "detail": (f"{subject} predicts "
+                           f"{expected}. This corroborates the pattern match; it "
+                           f"does not confirm it."),
             })
         elif expected:
             conflicts.append({
-                "title": "Tympanogram does not match the otoscopic appearance",
-                "detail": (f"The image was read as {entry.get('name', label)}, which "
-                           f"predicts {expected}, but the measured trace is "
-                           f"Type {tymp_type}."),
-                "action": "Repeat the probe seal and re-examine; a mismatch here "
-                          "usually means one of the two was mis-recorded.",
+                "title": "Tympanogram does not match the image's closest reference pattern",
+                "detail": (f"{subject} predicts "
+                           f"{expected}, but the measured trace is Type "
+                           f"{tymp_type}."),
+                "action": "Re-examine the ear first — the pattern match is not "
+                          "validated and is the likelier error. If the appearance "
+                          "is confirmed, repeat the tympanogram with a fresh "
+                          "probe seal.",
             })
 
     # An unsafe pattern outranks any reassurance the audiogram might offer.
+    # The match itself is unvalidated, so it asks for a direct look rather
+    # than asserting the disease; what it must never do is stay silent.
     if label in {"perforation_attic", "tumor"}:
         conflicts.append({
-            "title": "Appearance requires referral regardless of the audiogram",
-            "detail": (f"{entry.get('name', label)} is managed on the examination, "
-                       "not the thresholds. Early cholesteatoma and small middle-ear "
-                       "masses are frequently silent on pure tones."),
-            "action": entry.get("referral", "Urgent ENT referral."),
+            "title": ("Unsafe reference pattern: if confirmed on examination, "
+                      "refer regardless of the audiogram"),
+            "detail": (f"The image most resembles {name.lower()}. That pattern "
+                       "is managed on the examination, not the thresholds: "
+                       "early cholesteatoma and small middle-ear masses are "
+                       "frequently silent on pure tones."),
+            "action": ("Examine the ear directly now. If the appearance is "
+                       "confirmed: " + entry.get("referral", "Urgent ENT referral.")),
         })
 
     return {
@@ -688,7 +1133,8 @@ def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
         "agreements": agreements,
         "conflicts": conflicts,
         "headline": (
-            "The image and the test battery agree." if agreements and not conflicts
+            "The image's closest reference pattern and the test battery agree "
+            "(corroboration, not confirmation)." if agreements and not conflicts
             else f"{len(conflicts)} finding(s) do not agree — resolve before reporting."
             if conflicts else "Not enough of the battery has been run to cross-check."
         ),

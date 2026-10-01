@@ -52,19 +52,30 @@ def reference_atlas():
 def model_info():
     """Model card — provenance and measured accuracy, stated plainly."""
     card = M.model_card()
+    validation = card.get("validation") or {}
+    grouped = validation.get("protocol") == "source_photograph"
+    limits = [
+        "Trained on a small labelled reference set, so it offers the closest "
+        "reference pattern rather than a diagnosis.",
+        ("Accuracy is reported holding out every view cut from the same source "
+         "photograph (" + f"{card.get('n_images', '?')} views from "
+         f"{card.get('n_source_photographs', '?')} pictures); the view-level "
+         "figure is kept only as validation_optimistic."
+         if grouped else
+         "No accuracy measured with whole source photographs held out is "
+         "available for this model; any view-level figure is optimistic."),
+    ]
+    # The per-class failures on unseen photographs (marginal, attic and
+    # central perforation, retraction, mass) are named in the card's own
+    # reliability note, measured rather than restated here.
+    if card.get("reliability_note"):
+        limits.append(card["reliability_note"])
+    limits.append("A photograph cannot exclude disease behind wax, blood or a "
+                  "partially visible membrane.")
     return {
         "trained": M.model_available(),
         **card,
-        "limits": [
-            "Trained on a small labelled reference set, so it offers a ranked "
-            "differential rather than a diagnosis.",
-            "Accuracy is reported leave-one-image-out; no augmented copy of a "
-            "test image was ever in its own training fold.",
-            "Retraction has too few reference views to be learned at all and "
-            "the model does not currently detect it.",
-            "A photograph cannot exclude disease behind wax, blood or a "
-            "partially visible membrane.",
-        ],
+        "limits": limits,
         "improve": ("Add the public otoscope dataset — see "
                     "scripts/fetch_otoscope_dataset.py — then re-run "
                     "python -m scripts.train_otoscopy. Nothing else changes."),
@@ -81,8 +92,17 @@ def reference_image(label: str, filename: str):
     # Reject anything that escapes the reference directory.
     if root not in path.parents or not path.is_file():
         raise HTTPException(404, "not found")
-    media = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-    return FileResponse(path, media_type=media)
+    media = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+             ".webp": "image/webp", ".gif": "image/gif"}.get(path.suffix.lower())
+    if media is None:
+        raise HTTPException(404, "not found")
+    # The atlas page loads these with crossOrigin and also fetches them for
+    # the guided tour. Starlette's CORS middleware adds "Vary: Origin" only
+    # when the request carries an Origin, so a copy cached from a plain
+    # <img> load could otherwise be served to a later CORS request without
+    # its CORS headers; Vary and revalidation keep the two apart.
+    return FileResponse(path, media_type=media,
+                        headers={"Vary": "Origin", "Cache-Control": "no-cache"})
 
 
 @router.post("/analyze")

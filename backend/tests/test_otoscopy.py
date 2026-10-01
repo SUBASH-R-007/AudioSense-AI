@@ -176,7 +176,13 @@ def test_evidence_quotes_measurements_the_model_actually_saw():
 def test_model_card_reports_validation_honestly():
     card = M.model_card()
     validation = card["validation"]
-    assert "leave-one-source-image-out" in validation["method"]
+    # Held out by source picture: views cut from one montage are one
+    # observation. The view-level figure is kept only as the labelled
+    # optimistic comparison, never as the model's accuracy.
+    assert validation["protocol"] == "source_photograph"
+    assert "leave-one-source-photograph-out" in validation["method"]
+    assert card["validation_optimistic"]["optimistic"] is True
+    assert card["reliable"] is False
     assert 0 < validation["accuracy"] <= 1
     # The claim that matters: better than guessing, and stated as such.
     assert validation["accuracy"] > validation["chance_level"]

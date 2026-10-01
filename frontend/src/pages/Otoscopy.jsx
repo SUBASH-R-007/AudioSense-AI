@@ -22,6 +22,7 @@ const MEDIA_TYPES = {
   'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image',
   'video/mp4': 'video', 'video/webm': 'video',
 }
+const IMAGE_EXTENSIONS = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }
 //: The image cap mirrors the backend's own limit (otoscopy_router MAX_BYTES),
 //: so a file this page accepts is never bounced server-side for size. Video
 //: stays client-side, so its cap is only about browser memory.
@@ -39,7 +40,10 @@ const URGENCY_STYLE = {
 }
 
 const CERTAINTY_NOTE = {
-  probable: 'Top class is well separated from the rest.',
+  // "Well separated" describes the model's own scores, not its accuracy: on
+  // unseen photographs most "probable" calls were wrong (the held-out count
+  // is shown beside it when the server provides it).
+  probable: 'Top class is well separated from the rest — which is not the same as being right.',
   provisional: 'Leading class, but not clearly separated — read the differential.',
   uncertain: 'The model cannot separate these patterns. Treat the list as prompts.',
   unreliable: 'Image quality is too poor to interpret. Retake it.',
@@ -56,6 +60,16 @@ function Bar({ value, lead = false }) {
     </div>
   )
 }
+
+// Every reference image is requested under this versioned URL. Browsers that
+// opened the atlas before the API sent CORS and caching headers hold copies
+// stored without Access-Control-Allow-Origin, and with no Cache-Control they
+// treat those as fresh for days — so a crossOrigin <img> on the old URL would
+// fail and show a broken thumbnail. A URL they have never cached cannot hit
+// that copy. Change the version if the image headers ever change again.
+const REFERENCE_IMAGE_VERSION = 'cors1'
+const referenceUrl = (src) =>
+  `${apiUrl(src)}${src.includes('?') ? '&' : '?'}v=${REFERENCE_IMAGE_VERSION}`
 
 function Atlas({ atlas, onPick }) {
   if (!atlas) return null
@@ -78,12 +92,19 @@ function Atlas({ atlas, onPick }) {
                 {c.urgency}
               </span>
             </div>
+            {/* crossOrigin on every reference <img>: the API is another
+                origin in deployment, and a plain <img> request (no Origin
+                header) is answered without Access-Control-Allow-Origin or
+                Vary: Origin. The browser caches that response and hands it to
+                the fetch() in runReference for the same URL, which then fails
+                CORS ("Failed to fetch"). */}
             <div className="mt-2 flex gap-1.5">
               {c.images.slice(0, 3).map((src) => (
                 <button key={src} onClick={() => onPick?.(src)} type="button"
                   className="h-14 w-14 overflow-hidden rounded-lg border border-slate-200 transition hover:ring-2 hover:ring-teal-400"
                   title="Use this reference view as a test image">
-                  <img src={apiUrl(src)} alt="" className="h-full w-full object-cover" />
+                  <img src={referenceUrl(src)} alt="" crossOrigin="anonymous"
+                    className="h-full w-full object-cover" />
                 </button>
               ))}
             </div>
@@ -195,10 +216,25 @@ export default function Otoscopy() {
     setResult(null)
     setMediaError(null)
     try {
-      const blob = await fetch(apiUrl(src)).then((r) => r.blob())
+      // no-store: a cached copy of this URL may come from a request made
+      // without CORS (any plain <img>) and so lack Access-Control-Allow-Origin;
+      // reusing it would fail this fetch.
+      const res = await fetch(referenceUrl(src), { cache: 'no-store' })
+      if (!res.ok) throw new Error(`Reference view unavailable (HTTP ${res.status})`)
+      const blob = await res.blob()
+      // The upload is labelled with the type the server actually sent, and a
+      // filename whose extension agrees with it — the shipped atlas is JPEG,
+      // and a JPEG declared as PNG is a mislabelled clinical upload.
+      const type = blob.type.split(';')[0].trim().toLowerCase()
+      const ext = IMAGE_EXTENSIONS[type]
+      if (!ext) {
+        throw new Error(`Reference view is ${type || 'an unknown type'}, not an image`)
+      }
+      const stem = (src.split('/').pop() || '').replace(/\.[^.]*$/, '') || 'reference'
+      const filename = `${stem}.${ext}`
       setMedia({ url: URL.createObjectURL(blob), name: 'Reference view',
                  size: blob.size, kind: 'image' })
-      setResult(await api.otoscopy(new File([blob], 'reference.png', { type: 'image/png' }),
+      setResult(await api.otoscopy(new File([blob], filename, { type }),
         side, analysis))
     } catch (e) {
       showToast(e.message || 'Could not load that reference view', 'error')
@@ -266,8 +302,16 @@ export default function Otoscopy() {
             exact pattern correct {Math.round(validation.accuracy * 100)}% of the time
             (chance {Math.round(validation.chance_level * 100)}%), correct answer in the
             top three {Math.round(validation.top3_accuracy * 100)}%, urgency band correct{' '}
-            {Math.round(validation.urgency_accuracy * 100)}%. Held out one whole image at
-            a time. Use the ranked list, not the headline.
+            {Math.round(validation.urgency_accuracy * 100)}%
+            {validation.no_information_rate?.urgency != null && (
+              <> (always answering the commonest band scores{' '}
+                {Math.round(validation.no_information_rate.urgency * 100)}%)</>
+            )}
+            . {validation.protocol === 'source_photograph'
+              ? `Held out every view cut from the same source photograph${
+                validation.source_photographs ? ` (${validation.source_photographs} pictures)` : ''}.`
+              : 'Measured view by view, which flatters the model.'}{' '}
+            Use the ranked list, not the headline.
           </p>
         )}
 
@@ -408,7 +452,16 @@ export default function Otoscopy() {
               </div>
               <p className="mt-2 text-[12px] text-slate-500">
                 {CERTAINTY_NOTE[result.prediction.certainty] || ''}
+                {result.prediction.certainty_held_out?.n > 0 && (
+                  <> On unseen photographs, {result.prediction.certainty_held_out.correct} of{' '}
+                    {result.prediction.certainty_held_out.n} calls at this certainty were right.</>
+                )}
               </p>
+              {result.prediction.statement && (
+                <p className="mt-1 text-[12.5px] font-medium text-slate-700">
+                  {result.prediction.statement}
+                </p>
+              )}
               {result.training_set_note && (
                 <p className="mt-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-[12px] leading-relaxed text-slate-700">
                   {result.training_set_note}
@@ -418,6 +471,14 @@ export default function Otoscopy() {
               <h3 className="mt-4 text-[12px] font-semibold uppercase tracking-wider text-slate-400">
                 Differential
               </h3>
+              {/* The percentages are the model's weights, not chances of being
+                  right; the reliability note says how it fared on unseen
+                  photographs. */}
+              {result.reliable === false && result.reliability_note && (
+                <p className="mt-1.5 text-[11.5px] leading-snug text-amber-800">
+                  {result.reliability_note}
+                </p>
+              )}
               <ul className="mt-2 space-y-2.5">
                 {result.ranked.slice(0, 4).map((r, i) => (
                   <li key={r.label}>
@@ -446,7 +507,7 @@ export default function Otoscopy() {
               <div className="mt-3 grid grid-cols-3 gap-3">
                 {result.reference_matches.map((m) => (
                   <figure key={m.image} className="rounded-xl border border-slate-200 p-2">
-                    <img src={apiUrl(m.image)} alt={m.name}
+                    <img src={referenceUrl(m.image)} alt={m.name} crossOrigin="anonymous"
                       className="h-24 w-full rounded-lg object-cover" />
                     <figcaption className="mt-1.5 text-[11px] leading-tight text-slate-600">
                       <span className="font-medium">{m.name}</span>
