@@ -25,6 +25,20 @@ function Cell({ row, mode }) {
   if (!decision?.testable) {
     return <td className="px-1.5 py-1 text-center text-slate-300">—</td>
   }
+  // Rule 2 could not be applied (no bone threshold in the other ear here —
+  // always so at 8 kHz) and the other ear's own air-bone gap says a crossover
+  // is possible: masking cannot be ruled out, which is not "no".
+  if (!decision.required && decision.undetermined) {
+    const note = decision.rules?.find((r) => r.estimated)?.note
+    return (
+      <td className="px-1.5 py-1 text-center">
+        <span title={note ? `Cannot be ruled out: ${note}` : 'Masking cannot be ruled out'}
+          className="inline-block rounded border border-amber-300 px-1.5 py-0.5 text-[10.5px] font-semibold text-amber-800">
+          mask?
+        </span>
+      </td>
+    )
+  }
   if (!decision.required) {
     return (
       <td className="px-1.5 py-1 text-center">
