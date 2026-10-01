@@ -63,10 +63,10 @@ def triage_case(analysis: dict) -> dict:
             reasons.append({"code": "test_validity", "detail": alert["title"]})
 
     # ---- 2. Model uncertainty ------------------------------------------
-    # The classifier is trained only on audiograms that show a loss, so a
-    # normal audiogram legitimately sits outside its distribution. Nobody
-    # classifies the *shape* of normal hearing, so pattern uncertainty is
-    # recorded but does not hold the report when both ears grade normal.
+    # Nobody classifies the *shape* of normal hearing (the classifier gates a
+    # WHO-normal ear to "normal" before the model runs), so pattern
+    # uncertainty is recorded but does not hold the report when both ears
+    # grade normal.
     normal_ears = 0
     graded_ears = 0
     for side in ("right", "left"):
@@ -94,7 +94,22 @@ def triage_case(analysis: dict) -> dict:
                 ),
                 "blocking": not hearing_is_normal,
             })
-        elif m.get("confidence", 1.0) < CONFIDENCE_FLOOR:
+        # An ear the model never classified (too few frequencies) carries a
+        # confidence of 0.0 that is not a model output; its reliability note
+        # says why, and is what the reviewer needs.
+        elif m.get("pattern") is None and m.get("pattern_source") not in (None, "model"):
+            if not hearing_is_normal:
+                priority = min(priority, 3)
+            reasons.append({
+                "code": "unclassified_pattern",
+                "detail": (f"{side} ear: configuration not classified — "
+                           + (m.get("reliability_note") or "insufficient data")),
+                "blocking": not hearing_is_normal,
+            })
+        # A "normal" pattern names no configuration; only a model's stated
+        # confidence can fall below the floor.
+        elif m.get("pattern") != "normal" and m.get("confidence") is not None \
+                and m["confidence"] < CONFIDENCE_FLOOR:
             if not hearing_is_normal:
                 priority = min(priority, 3)
             reasons.append({
@@ -109,15 +124,31 @@ def triage_case(analysis: dict) -> dict:
         ear = rules.get(side) or {}
         if ear.get("provisional"):
             priority = min(priority, 3)
+            # The rules engine says whether bone conduction was missing or
+            # only incomplete; repeat its words rather than guess.
+            caveat = next((c for c in ear.get("caveats") or []
+                           if c.startswith("type provisional")),
+                          "type provisional — bone conduction incomplete")
             reasons.append({
                 "code": "provisional_type",
-                "detail": f"{side} ear: type provisional — bone conduction incomplete",
+                "detail": f"{side} ear: {caveat}",
             })
         if (ear.get("ac_pta") or {}).get("nr_freqs"):
             reasons.append({
                 "code": "no_response",
                 "detail": (f"{side} ear: 'No Response' at "
                            f"{ear['ac_pta']['nr_freqs']} Hz computed as 120 dB HL"),
+            })
+        # Normal hearing with a significant air-bone gap is typed Normal, but
+        # the gap is a middle-ear finding or a bone-conduction artefact
+        # (rules.hearing_type, air_bone_gap_note); either way a "normal"
+        # report should not release without someone looking at it.
+        if ear.get("type") == "Normal" and ear.get("significant_air_bone_gap"):
+            priority = min(priority, 3)
+            reasons.append({
+                "code": "air_bone_gap_normal_hearing",
+                "detail": f"{side} ear: " + (ear.get("air_bone_gap_note")
+                                             or "air-bone gap behind normal hearing"),
             })
 
     # ---- 4. Cross-modal disagreement ------------------------------------
@@ -132,11 +163,16 @@ def triage_case(analysis: dict) -> dict:
     disability = rules.get("disability") or {}
     if disability.get("benchmark_disability"):
         priority = min(priority, 3)
-        reasons.append({
-            "code": "benchmark_disability",
-            "detail": (f"Binaural disability {disability['binaural_pct']:g}% meets the "
-                       "RPwD 40% benchmark — certification consequences require sign-off"),
-        })
+        # A missing "certifiable" key is read as certifiable.
+        if disability.get("certifiable", True) is False:
+            detail = (f"Binaural disability {disability['binaural_pct']:g}% would meet "
+                      "the RPwD 40% benchmark, but the figure is provisional and not "
+                      "certifiable from this test — complete the test before any "
+                      "certification")
+        else:
+            detail = (f"Binaural disability {disability['binaural_pct']:g}% meets the "
+                      "RPwD 40% benchmark — certification consequences require sign-off")
+        reasons.append({"code": "benchmark_disability", "detail": detail})
 
     band = PRIORITIES[priority]
     review_required = priority <= 3
