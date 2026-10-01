@@ -4,8 +4,8 @@ A full explanation of what this project is, how every part works, why each
 design decision was made, and what has actually been measured.
 
 **Scale:** ~16,900 lines of backend Python across 72 modules, ~11,000 lines of
-frontend across 48 files, **947 automated tests**, 14 application pages,
-18 components, 30 test files, 72 API endpoints across 69 paths.
+frontend across 48 files, **2,046 automated tests**, 14 application pages,
+18 components, 44 test files, 72 API endpoints across 69 paths.
 
 ---
 
@@ -30,7 +30,7 @@ frontend across 48 files, **947 automated tests**, 14 application pages,
    - [6k. Tuning forks — a side, a type, and a bracket](#6k-tuning-forks--a-side-a-type-and-a-bracket)
 7. [Machine learning](#7-machine-learning)
 8. [Snap-to-Digitize](#8-snap-to-digitize-photo--audiogram)
-9. [Functional impact: phonemes, SII, hearing age](#9-functional-impact)
+9. [Functional impact: phonemes, SII, age norms (backend only)](#9-functional-impact)
 10. [The Hearing Loss Simulator](#10-the-hearing-loss-simulator)
 11. [The Listening Lab](#11-the-listening-lab)
 12. [In-browser screening](#12-in-browser-screening)
@@ -78,10 +78,13 @@ In-browser screening ───┘        │
 One `POST /api/analyze` returns, in about 670 ms:
 
 - Pure-tone averages, WHO 2021 degree, conductive/sensorineural/mixed type
-- RPwD Act 2016 disability percentage with every intermediate step
+- RPwD Act 2016 disability percentage (Gazette ready reckoner) with every
+  intermediate step and a certifiable flag
 - ML pattern classification with calibrated confidence and OOD flagging
 - Counterfactual explanations and nearest reference cases
-- Phoneme audibility, Speech Intelligibility Index, hearing age
+- Phoneme audibility, Speech Intelligibility Index
+- ISO 7029:2000 age norms (`norms` — returned by the API but not shown on the
+  Results page, which carries no age comparison at NIEPMD's request)
 - Red-flag safety alerts, cross-modal battery reconciliation
 - NAL-R hearing-aid prescription and aided-benefit projection
 - Triage priority and an auto-release-vs-review decision
@@ -119,12 +122,15 @@ by *statistics*.
 
 ## 4. The clinical rules engine
 
-`backend/app/clinical/rules.py` (227 lines)
+`backend/app/clinical/rules.py` (~600 lines)
 
 ### Pure-tone average
 Mean of air-conduction thresholds at 500, 1000, 2000 and 4000 Hz, per the WHO
-World Report on Hearing (2021). Untested frequencies are excluded and flagged;
-"No Response" counts as 120 dB HL and is flagged wherever it propagates.
+World Report on Hearing (2021). Untested frequencies are excluded and flagged.
+"No Response" computes as 120 dB HL and is flagged wherever it propagates, with
+two exceptions, each set by its own standard: the RPwD disability, where the
+Gazette fixes a no-response at 95 dB, and the air-bone gap, where a
+bone-conduction NR makes the gap indeterminate and that frequency is excluded.
 
 ### Degree — WHO 2021
 | Grade | PTA (dB HL) |
@@ -134,66 +140,114 @@ World Report on Hearing (2021). Untested frequencies are excluded and flagged;
 | Moderate | 35 – <50 |
 | Moderately severe | 50 – <65 |
 | Severe | 65 – <80 |
-| Profound | ≥ 80 |
+| Profound | 80 – <95 |
+| Complete or total | ≥ 95 |
 
-Lower bound inclusive: exactly 20.0 grades as Mild. Pinned by tests.
+Lower bound inclusive: exactly 20.0 grades as Mild, exactly 95.0 as complete
+or total. Pinned by tests.
 
 ### Type — air-bone gap
-ABG = mean(AC − BC) over the four PTA frequencies.
+ABG = mean(AC − BC) over the PTA frequencies where both were measured.
 
-- **Conductive:** ABG > 10 dB and BC PTA ≤ 20
-- **Sensorineural:** ABG ≤ 10 dB and AC PTA > 20
-- **Mixed:** ABG > 10 dB and BC PTA > 20
-- **Normal:** otherwise
+- **Normal:** AC PTA < 20 (a gap, if any, is reported separately)
+- **Conductive:** AC PTA ≥ 20, ABG > 10 dB and BC PTA ≤ 20
+- **Mixed:** AC PTA ≥ 20, ABG > 10 dB and BC PTA > 20
+- **Sensorineural:** AC PTA ≥ 20 and ABG ≤ 10 dB
 
-An ABG of *exactly* 10 dB is not significant — it must exceed 10. Pinned.
+An ABG of *exactly* 10 dB is not significant — it must exceed 10. An AC PTA of
+exactly 20 is a loss, because WHO grades it Mild and the type follows the
+grade. Pinned.
+
+Normal air conduction with a gap over 10 dB is typed **Normal**, because a type
+names a hearing loss and there is none — but the gap is not dropped. It is
+reported in `air_bone_gap_note` as a finding to check: bone-vibrator placement
+and masking first, then tympanometry and otoscopy for a middle-ear cause.
 
 **Missing bone conduction is handled explicitly rather than guessed.** If BC
 was not tested, the ear is classified from AC alone and flagged
-`provisional` with the message *"type provisional — BC not tested."*
+`provisional` with the message *"type provisional — BC not tested."* A
+bone-conduction "No Response" is beyond the vibrator's output limit, so the gap
+at that frequency is indeterminate: it is excluded from the average (never
+counted as a negative gap) and the type is provisional.
 
 ### Disability — India RPwD Act 2016
-Per the Gazette notification of 4 January 2018:
+Per the Gazette of India S.O. 76(E), 4 January 2018, Annexure II, paras
+20.2.2–20.2.3:
 
 ```
-monaural %  = 1.5 × (PTA − 25), clamped to [0, 100]
-binaural %  = (5 × better-ear % + worse-ear %) / 6
-benchmark   = ≥ 40%
+PTA per ear  = mean AC at 500/1000/2000/4000 Hz, a no-response taken as 95 dB
+               (a measured threshold above 95 is not capped)
+rounding     = nearest whole dB, halves up (the Gazette's table is in whole dB
+               and it does not say how to enter it with a fraction)
+monaural %   = Gazette ready reckoner:
+                 0–25 dB → 0%     26–33 → 1%      34–59 → PTA − 32
+                 60 → 40%         61–94 → 40 + 1.71 per dB above 60
+                 ≥ 95 → 100%
+binaural %   = (5 × better-ear % + poorer-ear %) / 6
+benchmark    = ≥ 40% — reached exactly when the better ear is 60 dB or more
+certifiable  = false whenever any of the four frequencies is untested
 ```
+
+The jump from 27% at 59 dB to 40% at 60 dB is in the Gazette's own table; it is
+what puts the 40% benchmark exactly at a 60 dB better ear. S.O. 1338(E) of
+12 March 2024 supersedes S.O. 76(E). Secondary sources reproduce the same
+method, but the primary text of its hearing section could not be retrieved, so
+the method is not yet confirmed against the 2024 guidelines.
 
 Every intermediate value is returned as a formatted string so the UI can show
 the working — a disability percentage that decides entitlement should never be
-a black box.
+a black box. A projected percentage (the forecast) or one computed from bare
+PTA values is never marked certifiable.
 
 ---
 
 ## 5. The safety layer
 
-`backend/app/clinical/safety.py` (250 lines)
+`backend/app/clinical/safety.py` (~760 lines)
 
 Some audiograms are not a fitting problem but a medical emergency. Missing
 those is the costliest mistake the system could make, so they outrank
 everything else on the page.
 
-**Sudden SNHL** — ≥30 dB across ≥3 contiguous frequencies within 72 hours.
-Corticosteroids are effective but the window is days. With a prior audiogram
-the drop is measured directly; without one the check uses reported onset and
-returns a *conditional* flag stating exactly what would make it an emergency.
+**Sudden SNHL** — a sensorineural loss of ≥30 dB at ≥3 consecutive
+frequencies within 72 hours (AAO-HNSF guideline; Chandrasekhar et al. 2019).
+Corticosteroids are effective but the window is days. "Sensorineural" is read
+from bone conduction beneath any air-bone gap, so a sudden cochlear loss on a
+mixed or chronically discharging ear counts. With a prior audiogram the drop is
+measured directly. Without one, the loss is measured against the opposite
+ear's sensorineural thresholds, as the guideline does — from 0 dB HL, with that
+assumption stated, where the opposite ear was not tested — and a sensorineural
+PTA of 30 dB HL or more also qualifies, which catches a bilateral sudden loss.
+None of these confirms the 72-hour onset, so without a prior audiogram the
+check relies on reported onset and returns a *conditional* flag stating
+exactly what would make it an emergency.
 
-**Asymmetric loss** — ≥20 dB at one frequency or ≥15 dB at two. Warrants MRI
-to exclude a vestibular schwannoma.
+**Asymmetric loss** — ≥20 dB at one frequency from 0.5 to 4 kHz (UK
+Department of Health protocol) or ≥15 dB at two frequencies, with the poorer
+ear outside normal limits (above 20 dB HL). The comparison is made in air
+**or** bone conduction, as the BAA (2023) onward-referral guidance applies it,
+so a cochlear asymmetry is caught even in the ear that is better by air. MRI to
+exclude a vestibular schwannoma is recommended only when the asymmetry is
+sensorineural or of undetermined type; a conductive asymmetry is referred to
+ENT/otology, with a caveat when the other ear's bone conduction was not
+measured.
 
 **Masking / shadow curve** — when the test-ear AC exceeds the *opposite* ear's
 BC by the interaural attenuation of the transducer (40 dB for supra-aural
 earphones), sound crosses the skull and the other cochlea may be responding.
 A warning is raised only when masking was indicated *and* not recorded.
 
-**Non-organic loss** — SRT substantially better than the pure-tone average
-means the tones are exaggerated. This matters directly for disability
-certification.
+**Non-organic loss** — an SRT more than 10 dB better than both the
+500/1000/2000 Hz average and Fletcher's best-two average means the tones are
+exaggerated. A steep configuration, where the SRT sits near the single best
+threshold, or an audiogram missing any of 500–2000 Hz gives *cannot
+determine*, not a non-organic call. This matters directly for disability
+certification: when the SRT cannot confirm the tones and the RPwD benchmark is
+met, the alert is raised at validity level.
 
 **Rollover** — word recognition that *falls* as level rises (rollover index
-> 0.45) points to retrocochlear pathology.
+> 0.45) points to retrocochlear pathology. An index of exactly 0.45 is
+borderline, not rollover.
 
 Alerts sort strictly by urgency: emergency → urgent → validity → info. An
 early bug where an informational prompt displaced the clinical next step was
@@ -216,7 +270,8 @@ small = wax or a blocked probe). See [6a](#6a-tympanometry-as-an-instrument).
 **Acoustic reflexes** — present / absent / partial, ipsi and contra.
 
 **Otoacoustic emissions** — present when the emission exceeds the noise floor
-by ≥6 dB.
+by ≥6 dB, at an emission level of at least −5 dB SPL, with the noise floor at
+or below −5 dB SPL (BSA 2023); noisier frequencies are inconclusive.
 
 The consistency engine reconciles all of it and names the pattern:
 
@@ -224,16 +279,28 @@ The consistency engine reconciles all of it and names the pattern:
 |---|---|
 | Effusion confirmed | conductive loss + Type B tympanogram |
 | Otosclerosis | conductive + Type As + absent reflexes |
-| **Pre-clinical NIHL** | **absent OAEs with normal thresholds** |
+| **Pre-clinical NIHL** | **absent OAEs with normal thresholds (≤ 20 dB HL) and a confirmed normal middle ear (Type A, no air-bone gap)** |
 | Auditory neuropathy | OAEs present + reflexes absent + poor speech |
 | Non-organic | objective tests better than the audiogram allows |
 
+It also reports, as notes, results the middle ear explains and emission
+frequencies too noisy to judge. A note is raised at validity level — where it
+sets `safety.validity_warning`, puts the case in triage's *Needs review* band
+and can become the verdict's next action — only when it leaves the screening
+question open in an ear the audiogram grades normal or does not grade, or when
+word recognition is poor behind a middle ear that explains the absent
+reflexes. Otherwise it is information only.
+
 **The pre-clinical case is the most valuable thing this project does.** Outer
 hair cells die before thresholds move. Absent emissions with a normal
-audiogram is cochlear damage that has not yet reached the audiogram — the
-point at which the remaining hearing can still be saved. The bundled
-🔬 demo case is a 26-year-old welder with a completely normal audiogram whom
-every conventional screening would send back to the shipyard.
+audiogram is cochlear damage that has not yet reached the audiogram — once
+tympanometry confirms the middle ear is normal, because a middle-ear disorder
+abolishes emissions too — and it is the point at which the remaining hearing
+can still be saved. Without a tympanogram the finding is offered as possible,
+with tympanometry as the next step. The bundled
+🔬 demo case is a 26-year-old welder with a completely normal audiogram and a
+Type A tympanogram in both ears, whom every conventional screening would send
+back to the shipyard.
 
 ### 6a. Tympanometry as an instrument
 
@@ -250,11 +317,20 @@ complete than the five-type Jerger scheme in two ways that change answers.
 | A | +50 to −100 daPa | 0.37–1.66 mmho | Normal peak | Normal function |
 | As | +50 to −100 | < 0.37 | Shallow peak | Otosclerosis, tympanosclerosis, stiff drum |
 | Ad | +50 to −100 | > 1.66 | Deep peak | Flaccid drum, ossicular discontinuity |
-| **Add** | +50 to −100 | Off-scale | Extremely deep peak | Ossicular discontinuity |
+| **Add** | +50 to −100 | Off-scale (compensated) | Extremely deep peak | Ossicular discontinuity |
 | B | No measurable peak | ~0–0.2 | Flat | Effusion, cholesteatoma, cerumen, perforation |
 | C | < −100 | 0.37–1.66 | Negative pressure | Eustachian tube dysfunction |
 | **D** | +50 to −100 | usually 0.37–1.66 | Narrow notched peak | Hypermobile / scarred drum |
 | **E** | +50 to −100 | usually > 1.66 | Wide notched peak | Ossicular disruption |
+
+Off-scale is judged on **compensated** admittance — the peak minus the
++200 daPa tail, the canal's own volume removed — never on the raw reading. A
+perforated ear adds the middle-ear space to the canal, so its flat trace can sit
+at 4–5 ml raw; read raw, that looks like a peak running off the scale, but it is
+Type B with a large volume. A trace with missing points is Add only when both
+limbs climb toward the gap fast enough to pass 3.0 mmho above the tail; a
+dropout away from the peak, or an apex lost while the limbs are still short of
+that height, is not typed.
 
 Children carry their own bands: admittance 0.35–1.25 mmho, canal volume
 0.3–1.0 ml against 0.6–2.0 in adults. The same 0.36 mmho peak is Type As in an
@@ -289,10 +365,12 @@ The **tympanic gradient** is a dimensionless ratio:
 
 where Ytm is the compensated peak admittance and Y±50 the mean 50 daPa either
 side of it. A sharp peak falls away quickly and scores high; a broad, rounded
-peak scores low. Normal is > 0.2, matching the reference table. The
-**tympanometric width** in daPa is the same shape property in the other
-convention (51–114 adults, 60–150 children), and both are shown so the result
-reads against either.
+peak scores low. The reference table gives > 0.2 as normal; no normative study
+was found for that cut-off, so it is reported as a heuristic and never changes
+the type. The **tympanometric width** in daPa is the same shape property in
+the other convention, and the validated one (51–114 adults, Margolis & Heller
+1987; 60–150 children, ASHA 1997); both are shown so the result reads against
+either.
 
 ### Where the criteria genuinely disagree, it says so
 
@@ -316,11 +394,30 @@ Every generated curve is fed back through the classifier as a test: **all eight
 re-classify as their own type**, so the picture and the label cannot drift
 apart.
 
-Two refusals remain: a 226 Hz probe below six months of age, where it can read
-normal over a middle ear full of fluid, and a peak sitting at the edge of the
-sweep, which means the sweep was too short rather than that this is a Type C.
-Summary-only entry still draws a curve, labelled `modelled` rather than
-`measured`.
+Some traces are not typed at all, with the reason stated: a 226 Hz probe — or
+one not recorded — below six months of age, where it can read normal over a
+middle ear full of fluid; a probe other than 226 or 1000 Hz; a peak whose
+pressure was not recorded; a pressure with no admittance; a dropout away from
+the peak; and an apex lost below Type Add height. A peak sitting at the edge of
+a 226 Hz sweep is flagged — the sweep may have been too short rather than this
+being a Type C — but not refused. Summary-only entry still draws a curve,
+labelled `modelled` rather than `measured`.
+
+A **1000 Hz** trace is read by a different method altogether, from recorded
+points only: the Baldwin (2006) / BSA (2024) §11.2 baseline method. A main peak
+above the line joining the sweep's tails is a positive peak, and it passes
+only with at least 0.60 mmho from the −400 daPa tail to that peak (Margolis et
+al. 2003 pass-fail criterion); a smaller positive peak, a flat or
+trough-shaped trace, or no identifiable peak refers. Above 4.3 mmho, the 95th
+percentile, it is not reported as normal. A sweep short of +200 to −400 daPa,
+or one with missing points, is never more than provisional, and ear-canal
+volume, peak pressure, width and gradient are not interpreted at 1000 Hz — so
+an infant trace never yields a cerumen, perforation or otosclerosis verdict.
+
+The test battery (`/api/analyze`) records no probe tone and only whole-year
+ages, so there every patient under 12 months gets the infant probe-tone caveat:
+the tympanogram is provisional or untyped, reflexes are provisional, and a
+validity alert asks for a 1000 Hz probe (JCIH 2019).
 
 ### Typing in ECV, PP, SC and GRAD, and getting the curve they imply
 
@@ -362,8 +459,11 @@ Three judgements that a naive pass/fail gets wrong:
    evidence of hair-cell damage double-counts the audiogram. Those frequencies
    are marked `uninformative`, not `refer`.
 2. **A high noise floor invalidates, it does not fail.** A 3 dB SNR in a quiet
-   booth and in a screaming infant are different measurements. Above 10 dB SPL
-   of noise the frequency is `invalid` and the overall result is `incomplete`.
+   booth and in a screaming infant are different measurements. Above −5 dB SPL
+   of noise (BSA 2023) the frequency is `invalid`, and the overall result is
+   `incomplete` whenever the invalid frequencies could change the pass/refer
+   decision. A response that clears a noisy floor anyway is kept as a possible
+   emission to repeat in quiet — never counted as a pass.
 3. **A missing protocol frequency is incomplete, not a pass.** Two of three
    present with the third never recorded is not a pass.
 
@@ -402,17 +502,26 @@ perforation detector ran.
 
 ### What it honestly achieves
 
-Validated **leave-one-source-image-out**, so no augmented sibling of a test
-image is ever in its own training fold:
+The 62 views are crops cut from **22 source photographs**, so the model is
+validated **leave-one-source-photograph-out**: every view cut from the test
+picture, with all its augmentations, is held out of training, and the scaler,
+PCA and classifier are fit on the training fold alone. From
+`backend/data/otoscopy_model_card.json`:
 
-| Measure | Result | Chance |
+| Measure | Result | Baseline |
 |---|---|---|
-| Exact pattern, top-1 | ~44% | 12.5% |
-| Correct answer in top 3 | ~73% | 37.5% |
-| Urgency band | ~55% | 25% |
+| Exact pattern, top-1 | **27%** (17/62; 95% CI 15–42% by source photograph) | 12.5% chance; 16% for always answering the commonest pattern |
+| Correct answer in top 3 | 52% | 37.5% chance |
+| Urgency band | 44% | 37% for always answering the commonest band |
 
-Several times chance; nowhere near diagnostic. Retraction, with four reference
-views, is not learned at all. **So the interface does not present a label.** It
+About twice chance, with an interval whose lower end barely clears it; nowhere
+near diagnostic. On photographs it has not seen it identified retraction 0/4,
+marginal perforation 0/7, a mass 0/8, central perforation 1/6 and attic
+disease 1/8. Its top probability averaged 75% even when it was wrong, so the
+percentage beside a pattern is not the chance that it is right. The old
+view-level protocol, which held out one crop while its sibling crops of the
+same picture stayed in training, gave ~44%; it is kept in the card only as
+`validation_optimistic`. **So the interface does not present a label.** It
 presents a ranked differential, the three closest labelled reference images
 side by side with the capture, and the measured accuracy printed in the page
 itself. Feed it one of its own reference views and it says so, rather than
@@ -421,20 +530,23 @@ letting a 100% bar look like performance.
 Random forests, extra trees and an RBF SVM were all measured under the same
 protocol; PCA into logistic regression beat them and is what ships.
 
-### The part that does not depend on the classifier
+### Checking the picture against the measurement
 
 Each pattern in the taxonomy records what it **predicts**: the expected
 air-bone gap, the expected tympanogram type, the tests that follow, the
 referral. Comparing those against the measured battery produces a checkable
 result either way:
 
-- Image read as otitis media, measured gap 32.5 dB, Type B trace →
-  **two independent confirmations**.
+- Image read as otitis media, measured gap 32.5 dB, Type B trace → the
+  measurements **agree with the matched pattern**.
 - Image read as normal on the same case → *"conductive loss with a
   normal-looking drum"* and *"tympanogram does not match the appearance"*.
 
-That conflict is informative whichever of the two is wrong, and it is the
-thing a clinician cannot get from the picture or the audiogram alone.
+The comparison uses the classifier's label, so it is not independent of the
+classifier. A conflict is informative whichever of the two is wrong, and it is
+the thing a clinician cannot get from the picture or the audiogram alone; an
+agreement only corroborates a pattern match that is not validated, and the
+app words it as the closest reference pattern, not a confirmation.
 
 Attic disease and mass lesions raise a referral **regardless of the
 audiogram**, because early cholesteatoma is frequently silent on pure tones.
@@ -464,6 +576,16 @@ Two supplied clinical documents, encoded unchanged in substance:
    what makes this useful in an audiology clinic: it says which test to run
    next.
 
+One condition is added from outside them: **sudden sensorineural hearing
+loss**, encoded from the AAO-HNS Clinical Practice Guideline (Chandrasekhar et
+al. 2019) and marked with that source, which makes fifteen conditions in all.
+Specific hearing-loss symptoms — sudden, gradual, fluctuating — count as
+hearing loss everywhere, labelled as implied. The exception is the two
+complaint-guide causes that describe an acute loss (labyrinthitis, traumatic
+perforation): a loss recorded as gradual or fluctuating does not satisfy their
+presentation, whether it was entered as a chip, as free text or through the
+onset field.
+
 ### Free text is matched, not parsed
 
 No language model, and none needed. Patients and clerks use a small, highly
@@ -489,8 +611,8 @@ response reports both components so a clinician can see which did the work.
 Other deliberate behaviours:
 
 - **Absence is evidence.** A disease whose defining feature is missing is
-  demoted, not merely un-promoted. Meniere's without vertigo or fluctuation is
-  a different diagnosis. Bullous myringitis requires bullae — ordinary ear pain
+  demoted, not merely un-promoted, whichever document ranks it. Meniere's
+  without vertigo or fluctuation is a different diagnosis. Bullous myringitis requires bullae — ordinary ear pain
   must not summon it.
 - **Some symptoms argue against.** A real hearing loss lowers CAPD, which is
   defined by normal thresholds.
@@ -501,11 +623,31 @@ Other deliberate behaviours:
   as the source guide frames it.
 - **The battery is ordered by discrimination**, then by the sequence tests are
   actually run in clinic — so it reads as a plan, not an alphabetical list.
+- **Declared ranking adjustments.** Per-condition typical age ranges; a
+  commonness weight, never applied to red-flag conditions and not used to
+  decide whether a leader is clearly separated; an adult-CAPD
+  neurological-history gate that phases in from 18; and one definitional
+  exclusion on a complaint-guide cause (vestibular neuritis with a sudden
+  hearing loss, Bárány Society criteria 2022). All of them are ours, declared
+  in `symptom_kb.py`.
 
 Once thresholds exist, the correlation checks the leading diagnosis against
 them using a **declared** expected type per disease, not keywords sniffed out
 of prose. Free text that reads perfectly to a human ("notch at 3–6 kHz")
 contains none of the words a matcher would need.
+
+When the audiogram contradicts the leader, the history line is re-ranked
+against the measured type of hearing. Only a type determined by bone
+conduction can set a possibility aside — an air-conduction-only or
+bone-conduction no-response (provisional) type cannot. A different possibility
+is named in the leader's place only if the patient stated one of its declared
+distinguishing features (for presbycusis, the age that defines it); otherwise
+both screens say no well-supported possibility fits, which counts as a
+conflict, and when the loss has a conductive component they point to otoscopy
+and tympanometry first. Thresholds within normal limits neither support nor
+rule out a leader that predicts a loss, and an ear the leader does not explain
+is named rather than read as "does not fit". A measured loss places CAPD below
+every possibility the audiogram leaves open.
 
 ---
 
@@ -581,8 +723,11 @@ useful: a Type A trace diagnoses nothing on its own, but it removes most of the
 conductive differential in a single measurement. Type B splits on ear-canal
 volume, and the split changes the differential completely — perforation versus
 fluid behind an intact drum. Reflex patterns add a second axis: absent with a
-conductive loss, absent while emissions are present, or present despite a
-severe loss each carry their own differential.
+conductive loss, absent while emissions are present (applied only when the
+middle ear is not abnormal, with a caveat when it is unknown), or present
+despite a profound loss (PTA above about 80 dB HL — Silman & Gelfand 1981;
+moderate and severe cochlear losses usually keep their reflexes) each carry
+their own differential.
 
 ---
 
@@ -600,7 +745,7 @@ history attached at all. So both of these produce a ranked differential from
 
 Every otoscopic pattern is mapped to the diseases it argues for, with a
 strength, plus the ones it argues against and the named conditions outside the
-fourteen-disease reference. The classifier's **own uncertainty is carried
+disease reference. The classifier's **own uncertainty is carried
 through**: the ranked class probabilities weight the disease scores, so a
 picture the model cannot separate produces a correspondingly spread
 differential instead of a confident answer built on a coin flip.
@@ -623,8 +768,10 @@ arithmetic rather than possibilities.
 ### From the audiogram alone
 
 Each disease carries a **characteristic audiogram** — air and bone conduction
-at the standard frequencies — and the measured curve is matched against all
-fourteen on four independent axes:
+at the standard frequencies — and the measured curve is matched against the
+fourteen conditions that have a characteristic audiogram on four independent
+axes (SSNHL, defined by onset rather than configuration, is never ranked from
+thresholds alone):
 
 | Axis | What it compares |
 |---|---|
@@ -679,7 +826,12 @@ produce a shadow.
 **Bone conduction masks when either the air-bone gap is ≥ 15 dB or the gap
 between the test ear's AC and the unmasked BC is ≥ 15 dB.** Bone conduction
 crosses the skull essentially unattenuated, so an unmasked bone threshold never
-belongs to a known ear on its own.
+belongs to a known ear on its own. The 15 dB trigger is the clinical team's
+choice and is less sensitive than BSA (2018) §8.6.2 Rule 2, which masks from
+10 dB. It is kept because it matches the typing rule — a gap counts as
+significant only above 10 dB, i.e. from 15 dB on 5 dB steps — and masking can
+only raise a bone threshold, so a 10 dB gap cannot change the loss type by
+being masked.
 
 **The transducer is a clinical choice, not a logistical one.** Interaural
 attenuation is a property of how the sound is delivered:
@@ -694,19 +846,44 @@ The reference gives inserts as a range, and **the conservative end is the one
 applied**: a *lower* interaural attenuation means the crossover is reached
 sooner, so masking is called for more often. Taking 60 would let the app skip
 masking on an optimistic assumption, which is the one direction the error must
-not go.
+not go. BSA (2018) §8.6.1 Rule 1 uses 55 dB for inserts — the minimum
+transcranial loss with correctly seated inserts — so 50 masks more often than
+BSA does. It uses **40 dB for circum-aural** earphones as for supra-aural, so
+the 45 dB circumaural figure here masks *less* often than BSA would — the one
+transducer setting that errs in the optimistic direction.
 
 ### The masking dilemma is reported, not papered over
 
 Masking has a floor and a ceiling. The floor is enough noise to cover the
 crossed signal; the ceiling is the level at which the noise itself crosses back
-and shifts the test ear. Both are computed, with the occlusion effect applied to
-bone-conduction minima.
+and shifts the test ear. Both are computed:
+
+```
+AC floor   = AC(TE) − IA + ABG(NTE) + 10      never below AC(NTE) + 10
+BC floor   = AC(NTE) + occlusion effect       no safety factor
+ceiling    = BC(TE) + IA − 5
+```
+
+The air-conduction floor is the formula method after Lidén, Nilsson & Anderson
+(1959) and Studebaker (1964), with Martin's 10 dB safety factor: the crossed
+tone reaches the non-test cochlea at AC(TE) − IA, and the noise reaches that
+cochlea by air, so a conductive gap in the non-test ear attenuates it and is
+added back. When the non-test bone threshold is unknown (untested or a
+no-response) the gap is taken as AC(NTE), so the floor is never lowered by a
+guess. The bone-conduction floor is BSA (2018) §8.8's starting level plus the
+occlusion effect, without the safety factor: adding it would turn ordinary
+bilateral conductive losses on inserts into dilemmas, and whether to plan bone
+masking that conservatively is the clinical team's decision. These are planning
+estimates that decide whether a plateau can exist; they do not replace finding
+one at the audiometer.
 
 **When the floor rises above the ceiling there is no usable level and the
 threshold cannot be masked at all.** This is common in bilateral conductive
 losses with large air-bone gaps, and the app reports it as a *masking dilemma*
-rather than inventing a number. The grid shows `dilemma` in red where that
+rather than inventing a number. On supra-aural earphones a very sensitive
+test-ear bone threshold can also be unmaskable at 250 Hz — the 30 dB occlusion
+effect raises the floor against a ceiling set by the minimum IA — and inserts
+remove this. The grid shows `dilemma` in red where that
 happens and the usable plateau (`min–max`, dB EM) where it does not.
 
 One display detail that matters: the ceiling needs a bone threshold, and bone
@@ -757,12 +934,14 @@ suppressed if the clinician is already using 50 words.
 | Check | Criterion | Why |
 |---|---|---|
 | SDT vs best threshold | tracks the best pure-tone threshold in the speech range | SDT is a detection task |
-| SDT vs SRT | SDT sits 5–10 dB **better** | Chaiklin 1959; ASHA 1988 — a detection threshold poorer than reception is impossible |
-| SRT vs PTA | within ±10 dB | compared against **Fletcher's best-two-of-three** as well as the four-frequency mean, because a steeply sloping loss makes the plain average disagree with the SRT for a purely arithmetic reason |
+| SDT vs SRT | SDT sits 5–10 dB **better** | Chaiklin 1959; ASHA 1988 — a detection threshold poorer than reception is impossible. Gaps of 0–4 or 11–15 dB are reported as atypical (one 5 dB step outside the range); only a gap over 15 dB, or an SDT poorer than the SRT, is flagged |
+| SRT vs PTA | within ±10 dB of the **500/1000/2000 Hz average** or of **Fletcher's best-two average** | ASHA 1988; Fletcher 1950. More than 10 dB better than both means non-organic loss is suspected. This applies to sloping and rising losses alike, because a steep configuration makes the plain average disagree with the SRT for a purely arithmetic reason. In a precipitous configuration (an adjacent-octave step over 20 dB) an SRT within 10 dB of the single best threshold is *indeterminate* — confirm with ABR/ASSR — as is an audiogram missing any of 500–2000 Hz. The four-frequency mean is shown for reference only |
 | WRS level | PB max expected ≥ 30 dB above SRT | a score taken nearer than that measures the presentation level, not the patient — flagged rather than interpreted |
-| Rollover | index > 0.45 | retrocochlear indicator; a rollover the word list is too short to resolve is called out as unresolvable rather than reported |
+| Rollover | index > 0.45 | retrocochlear indicator; exactly 0.45 is borderline, not rollover; an index between 0.45 and 0.46 is rollover with a borderline note; 0.35–0.45 carries an NU-6 word-list caveat (Meyer & Mishler 1985). A rollover the word list is too short to resolve is called out as unresolvable rather than reported |
 
 Speech interaural attenuation is taken as 45 dB for the shadow-response check.
+Word scores are banded after Goetzinger (1978): 90 / 78 / 66 / 54%, a score
+falling in a gap between published bands taking the poorer category.
 
 ---
 
@@ -793,11 +972,14 @@ like "Wave V at 6.6 ms" is meaningless without the level it was recorded at.
 
 `ABR_NORMS` encodes the supplied reference's normative table verbatim — mean,
 standard deviation and *n* for every wave and interwave interval, at eight
-stimulus intensities. Every measured latency is compared against the normative
-row **for the intensity actually used**, expressed in standard deviations, and
-both the **2 SD and 3 SD limits** are reported because clinics differ on which
-they treat as the cut-off. The chart draws the normative mean with its 2 SD band
-behind the recorded trace, so the comparison is visible rather than asserted.
+stimulus intensities. Every absolute latency is compared against the norms
+**for the intensity actually used**, interpolated between table rows and
+expressed in standard deviations: **delayed** beyond 3 SD, **borderline**
+between 2 and 3 SD (ACNS Guideline 9C), with a 0.15 ms allowance on a man's
+later waves, since the table is for women. Under 3 years no adult limit decides
+the result; a value beyond it is reported as indeterminate. The chart draws the
+normative mean with its 2 SD band behind the recorded trace, so the comparison
+is visible rather than asserted.
 
 The encoding was verified by reproducing the reference's own published 2 SD and
 3 SD range table from the stored means and SDs — the numbers regenerate exactly.
@@ -813,18 +995,35 @@ they are abnormal:
 > wave equally and leaves the intervals intact, so a stretched interval points
 > above the cochlea — retrocochlear until excluded.
 
+The intervals are judged against adult clinical limits — I–III 2.5, III–V 2.4,
+I–V 4.5 ms (Chiappa 1979; Misra & Kalita 2008) — and an I–V above the adult 95%
+limit (women 4.34, men 4.46 ms; Lightfoot 1992 / BSA 2019) is reported as
+borderline. A delayed absolute latency is itself an abnormal ABR. It is read as
+the peripheral pattern only when Wave I is itself late and I–V is measured and
+normal; with Wave I on time, or absent, retrocochlear pathology cannot be
+excluded.
+
 Other things the module refuses to get wrong:
 
 - **Insert-earphone delay (0.9 ms).** The reference figures carry it explicitly.
   Forgetting it shifts every wave by almost a millisecond and turns a normal
   trace into a delayed one. It is an input flag, not an assumption.
-- **Interaural Wave V difference** — the classic asymmetry check, significant at
-  0.4 ms.
-- **Cochlear microphonic window (0–1 ms)** — the finding that separates auditory
-  neuropathy spectrum disorder from a simple absent response.
+- **Interaural Wave V difference** — the classic asymmetry check: significant at
+  0.4 ms uncorrected (de Jager); when both 4 kHz thresholds are known it is
+  Selters & Brackmann-corrected and significant above 0.37 ms, borderline from
+  0.2 to 0.37 ms (Lightfoot 1992 / BSA 2019). It is computed only between runs
+  at the same stimulus level, and refused when the click is less than 10 dB
+  above an ear's 4 kHz threshold (BSA 2019 §7.6).
+- **Cochlear microphonic window (0–1 ms)** — a CM with no Wave V is the auditory
+  neuropathy spectrum disorder pattern. Beside an abnormal ABR, ANSD is not
+  excluded until the later waves are shown to repeat and not to invert with
+  polarity; beside a normal ABR the CM is a normal pre-neural potential and is
+  not flagged.
 - **Threshold estimation** walks the intensity series down to the lowest level at
-  which Wave V is still identifiable, and reports it as an *electrophysiological*
-  threshold that approximates the behavioural one and is not a substitute for it.
+  which Wave V is still identifiable, and reports it in dB nHL with de Jager's
+  typical nHL-to-eHL correction (tone burst 20/15/10/10 dB at 0.5/1/2/4 kHz;
+  click 0–5 dB, given as a range) — an *electrophysiological* threshold that
+  approximates the behavioural one and is not a substitute for it.
 
 ### MLR and LLR
 
@@ -836,10 +1035,16 @@ rather than left to the reader.
 
 **LLR** peaks P1–N1–P2–N2 are checked the same way, plus the one genuinely
 clinical use of the LLR: **P1 latency as a cortical-maturation biomarker**.
-`LLR_P1_MATURATION` holds the age-banded expected P1 latency from infancy to
-adulthood, so a recorded P1 is judged against the child's age rather than an
-adult norm — the measure used to decide whether a deaf child is getting adequate
-auditory input through their device.
+The expected P1 latency comes from the Sharma, Dorman & Spahr (2002)
+normal-hearing fit — 155.6 − 32.746 × ln(age in years) ms, with 95% limits of
+±32 ms (`P1_FIT_INTERCEPT_MS`, `P1_FIT_SLOPE_MS`, `P1_CI95_HALF_WIDTH_MS`;
+`expected_p1_latency()`, `p1_maturation_curve()`) — so a recorded P1 is judged
+against the child's age rather than an adult norm, the measure used to decide
+whether a deaf child is getting adequate auditory input through their device.
+The maturation verdict and the cochlear-implant wording apply from 0.1 to 20
+years only; an adult is compared with the curve's 20-year end as a latency
+check. The adult N1/P2/N2 windows and the N1-absent flag are not applied under
+12 years, and a single late LLR component is borderline rather than abnormal.
 
 The LLR is **state-dependent** — attention, arousal and sedation all change it —
 so the panel states that a poor response in a drowsy patient is not a cortical
@@ -862,8 +1067,11 @@ pause in activity.
 
 It measures the level at which a behaviour becomes **visible to an observer**,
 which is far above the level at which the infant can hear. A normal-hearing
-newborn's minimum response level to a warble tone is around **78 dB SPL — some
-75 dB above their actual threshold.**
+newborn's minimum response level to a warble tone is around **78 dB — far above
+their actual threshold.** The Northern & Downs levels are labelled dB SPL, but
+whether they are dB SPL or dB HL (re audiometric zero) is unverified — they are
+often quoted as dB HL — so the module states that with every result
+(`unit_note`) rather than asserting either.
 
 Recording an MRL as a threshold produces an audiogram showing a hearing loss in
 a normal ear. So the panel sits under the pure-tone form — where paediatric
@@ -871,7 +1079,7 @@ audiometry actually starts — and **never offers to transfer a value into the
 threshold grid above it**. `is_threshold` is `False` on every response the
 module returns.
 
-The chart plots the developmental curve across eight age bands (78 → 26 dB SPL
+The chart plots the developmental curve across eight age bands (78 → 26 dB
 warble, with the speech MRL alongside) and drops this observation onto it. The
 caption says what the curve means, which is the opposite of the obvious reading:
 
@@ -955,7 +1163,7 @@ it *uninterpretable* rather than negative.
 
 ### The false-negative Rinne
 
-The most dangerous result in the battery. A severe or profound sensorineural ear
+The most dangerous result in the battery. A severe, profound or total sensorineural ear
 hears nothing at its own meatus, but bone conduction crosses the skull
 essentially unattenuated and is picked up by the **opposite** cochlea. Bone
 therefore appears louder than air, the Rinne reads negative, and an ear with no
@@ -1061,10 +1269,44 @@ air-bone gaps.
 `RandomForestClassifier(300)` wrapped in `CalibratedClassifierCV` (sigmoid,
 5-fold) so `predict_proba` values are trustworthy confidences.
 
+### Rules around the model
+The classifier only ever names a loss configuration, so three rules run before
+its output is used. An ear with a four-frequency average below 20 dB HL (WHO
+2021) and no threshold above 25 dB HL is reported *Within normal limits*
+without consulting the model; the raw model label survives only in
+`model_pattern`. An ear with fewer than 5 of the 6 frequencies, or without
+4 kHz, is *Not classified — insufficient frequencies*. And when the average is
+normal but a threshold or two are raised, the model's label is shown as
+provisional unless those thresholds form the shape it names (a Coles notch, or
+at least two raised thresholds in the configuration's region; flat and corner
+never qualify).
+
+Each ear carries a `reliable` flag and a `reliability_note`: reliable needs
+calibrated confidence of at least 80%, all six frequencies measured, and no
+atypical or outlier flag.
+
 ### Out-of-distribution detection
 An `IsolationForest` fitted on the training features. A case is flagged
 *"atypical — priority human review"* when max calibrated probability < 0.6
 **or** the isolation score falls below the 1st percentile of training scores.
+Plausibility checks also flag it atypical, each with a *retest* note:
+
+- an isolated outlier threshold (*"retest this frequency"*);
+- no response at any frequency;
+- a block of two or more neighbouring frequencies sitting at least 40 dB worse
+  or better than the frequency on each side (50 dB when the block includes
+  4 kHz);
+- a threshold that improves by 50 dB or more within one octave (60 dB from 4 to
+  8 kHz, unless the ear also worsens by 50 dB somewhere);
+- a worsening between adjacent measured octaves steeper than anything in
+  training (limits of 50/50/70/75/60 dB from 250 Hz up, set well above the
+  training maxima).
+
+A "flat" label on thresholds spread over more than 40 dB is not flagged
+atypical, but is never reliable. These are heuristics for prompting a retest,
+not published limits; checked against the data, the step limits flag none of
+the 12,000 training audiograms and none of 288 textbook audiograms. Normal ears
+are gated before the model and are not flagged atypical.
 
 ### Explainability — three complementary mechanisms
 
@@ -1081,7 +1323,12 @@ An `IsolationForest` fitted on the training features. A case is flagged
 ### Deep ensemble
 `deep.py` trains five MLPs (96→48, ReLU, early stopping). Their *disagreement*
 separates aleatoric from epistemic uncertainty — "this is hard" from "I have
-never seen this" — which a single calibrated model cannot express.
+never seen this" — which a single calibrated model cannot express. The
+ensemble's result carries the same `reliable` / `reliability_note` as the
+forest, plus `novelty_reasons`: `novel_input` fires on member disagreement
+*and* on the plausibility checks above (outliers, zig-zags, all-NR), so
+"the networks disagree with each other" is not always the reason — the
+`novelty_reasons` list gives the actual one.
 
 **Benchmarked honestly:**
 
@@ -1154,16 +1401,21 @@ degraded / missed. A word is only "missed" when most of its **consonant** cues
 are gone — an earlier version that struck out "the" for losing /th/ reported
 55% of words missed for a mild notch, which was overstated and was retuned.
 
-### Hearing age — ISO 7029 (`norms.py`)
+### Age norms — ISO 7029:2000 (`norms.py`, backend only)
 Median age-related threshold shift is a quadratic in age:
-`H(age, f, sex) = a(f, sex) × (age − 18)²`. Inverting it gives the most
-intuitive line the system produces:
+`H(age, f, sex) = a(f, sex) × (age − 18)²`. The backend still computes it into
+`analysis.norms` — percentiles and a "hearing age" from inverting the curve —
+but **the Results page shows no age comparison at all** (no peer card, no
+hearing age in the verdict), at NIEPMD's request, and the verdict banner drops
+such a figure if an older server sends one. The method is documented here
+because the API still returns it.
 
-> *"These ears are performing like a typical 55-year-old's — about 29 years
-> older than the patient."*
-
-For the 26-year-old welder that single sentence carries the entire prevention
-argument.
+ISO 7029:2000 covers ages 18–70. Ages 71–80 are extrapolated, ages over 80
+are held at the 80-year value, ages under 18 are compared with the 18-year
+reference, and hearing ages above 70 are extrapolated; each case is flagged in
+the payload. When sex is not recorded as male or female, the mean of the male
+and female curves is used. Thresholds count as within normal limits only below
+20 dB HL (WHO 2021).
 
 **A deliberate correction:** the percentile spread floor is set to **9 dB**,
 wider than the standard's own. Audiometry carries ±5 dB test-retest, and ISO
@@ -1249,7 +1501,15 @@ Verified against simulated listeners at four true thresholds: **mean error
 under 0.6 dB in about 11 trials**.
 
 It flags the dissociation that matters — normal thresholds with poor speech in
-noise, which a booth audiogram cannot show.
+noise, which a booth audiogram cannot show. Two limits travel with every
+result. The normal / insufficient / poor cut-offs (−7.0 / −4.5 dB SNR) are
+**provisional**: published digits-in-noise cut-offs belong to one recording,
+masker, language and delivery route, and none has been validated for this
+browser test. A track with fewer than six reversals is flagged as
+low-reliability. And "clean audiogram" means every threshold from 0.25 to
+8 kHz below 20 dB HL in both ears (Liberman et al. 2016), not just a normal
+PTA: a normal average hiding a notch is reported as a visible loss, not as
+hidden hearing loss.
 
 ### 🔔 Tinnitus
 Pitch and loudness matching, minimum masking level, residual inhibition, then
@@ -1276,23 +1536,31 @@ to nothing.
 **Modified Hughson-Westlake** — down 10 dB after a response, up 5 dB after
 none; threshold at the lowest level heard on 2 of 3 ascending presentations.
 Verified to converge exactly to truth at 0/10/25/40/55/70 dB in 7–11
-presentations, and to return "NR" beyond the ceiling.
+presentations, and to return "NR" only after a tone at the 90 dB maximum goes
+unanswered.
 
 **Bayesian (QUEST/ZEST family)** — maintains a posterior over threshold,
 presents the most informative next level, stops when the 95% credible interval
-narrows to 10 dB. Every threshold arrives **with an error bar**.
+narrows to 10 dB. The reported threshold is the lowest 5-dB step at or above
+the posterior median (the ASHA 2005 definition applied to the posterior), or
+NR when the 90 dB tone goes unanswered. Every threshold arrives **with an error
+bar**.
 
-**Benchmarked over 300 simulated listeners with realistic response noise:**
+**Benchmarked over 1,000 simulated listeners** (12,000 thresholds uniform over
+0–70 dB HL; 4 dB psychometric spread, 3% lapses, 2% false alarms), both
+procedures driven exactly as the screening page drives them and scored against
+each listener's clinical threshold — the lowest 5-dB step they respond to at
+least half the time (ASHA 2005):
 
 | | Presentations | Mean abs error | Bias | Errors > 10 dB |
 |---|---|---|---|---|
-| Bayesian | 9.6 | 2.7 dB | −0.2 dB | 1.3% |
-| Staircase | 11.6 | 3.3 dB | +1.2 dB | 0.3% |
+| Bayesian | 9.3 | 1.8 dB | +0.0 dB | 0.16% |
+| Staircase | 10.6 | 2.2 dB | +0.3 dB | 0.03% |
 
 An earlier draft claimed it "halves the presentations". That was wrong; the
 copy now states the measured numbers *including* the downside — the Bayesian
-procedure produces more occasional large misses. Its real advantage is
-calibrated uncertainty, not raw speed.
+procedure produces slightly more occasional large misses, though the margin is
+small. Its real advantage is calibrated uncertainty, not raw speed.
 
 Calibration anchors 40 dB HL to the user's headphones; ISO 389-1 RETSPL
 offsets correct for 0 dB HL being a different sound pressure at every
@@ -1311,7 +1579,22 @@ A clause library keyed on pattern, degree, type and occupation fills every
 section — Findings, Pattern & Likely Etiologies, Degree/Type, Disability,
 Functional Impact, Recommendations, plus the fixed disclaimer. A noise notch
 in a factory worker produces an occupational-NIHL etiology paragraph naming
-the occupation.
+the occupation — but only when the notch label is reliable (confidence ≥ 80%,
+all six frequencies measured, no atypical or outlier flag). An early notch with
+a normal average still qualifies when it meets the Coles et al. (2000) rule
+with 4 kHz above 25 dB HL. Otherwise the report calls the configuration
+provisional, gives the reason and suggests no etiology. Noisy occupations come
+from the sourced, word-boundary list in `symptom_kb.py`, so "weaver" and
+"industrial" qualify while "driver" does not, and "examiner" is not read as
+"miner".
+
+Cochlear-implant wording follows thresholds, never the pattern label: a
+referral for implant candidacy is made only when both ears have 80 dB HL or
+worse at two or more of 0.5–4 kHz (NICE TA566), and the text says aided speech
+testing decides. When one ear meets this and the other is shown not to, the
+text says the criterion is not met; when the other ear lacks the data, it says
+the criterion cannot be assessed and asks for that ear to be tested. Either
+way the affected ear is referred for ENT assessment.
 
 A **deterministic verifier** then re-derives every number from the structured
 JSON and confirms it appears in the draft. The "verified ✓" badge is earned,
@@ -1360,11 +1643,14 @@ hearing first within a band.
 **89 cases per minute**, 2 flagged for review, **6 of 8 drafts (75%)
 auto-releasable**.
 
-**A deliberate judgement call:** normal audiograms no longer route to review
-for pattern uncertainty. The classifier is trained only on losses, so normal
-hearing is genuinely out-of-distribution — but nobody classifies the shape of
-a normal audiogram, and in a camp normals are the bulk of the queue.
-Everything else atypical still routes to a human.
+**A deliberate judgement call:** normal audiograms do not route to review for
+pattern uncertainty. The classifier is trained only on losses, so normal ears
+are gated to *Within normal limits* before its output is used and carry no
+out-of-distribution flag — nobody classifies the shape of a normal audiogram,
+and in a camp normals are the bulk of the queue. Everything else atypical
+still routes to a human, as does an ear typed Normal that carries a
+significant air-bone gap, and an unclassified ear gives its reliability note
+as the reason.
 
 ---
 
@@ -1382,24 +1668,47 @@ accuracy, and the README no longer presents it as such.
 the way a clinical validation study would — accuracy **and Cohen's kappa**,
 with confusion matrices and every disagreement listed.
 
-On the bundled 12-case labelled set:
+**It has not yet been run on clinical data.** The bundled set,
+`samples/validation_labelled.csv`, is 12 cases written by the project team, not
+drawn from clinical practice, so it demonstrates the method; it does not
+measure accuracy. On it:
 
-| Measure | Agreement | Kappa |
-|---|---|---|
-| Degree (rules) | **100%** | **1.00** |
-| Type (rules) | **100%** | **1.00** |
-| Disability (rules) | 0.00% mean error | — |
-| **Pattern (ML)** | **83.3%** | **0.795** ("substantial") |
+| Measure | Agreement | Kappa | 95% CI |
+|---|---|---|---|
+| Degree (rules) | 12/12 | 1.00 | — |
+| Type (rules) | 12/12 | 1.00 | — |
+| Disability (rules) | 0.00% mean error | — | — |
+| **Pattern (ML)** | **11/12 (91.7%)** | **0.90** | 65–99% (Wilson) |
 
-That split is the strongest part of the answer. The rules score perfectly not
-because a model is good but because they are deterministic implementations of
-published guidelines — provable by conformance. Only the pattern classifier
-needs empirical validation, and it honestly scores *substantial*, not perfect.
+Read those carefully. The rules agree perfectly because the expected degree,
+type and disability were computed by the project team from the same published
+tables — WHO 2021 and the Gazette ready reckoner — so agreement shows the rules
+reproduce their own guidelines, which the conformance sweeps below prove far
+more thoroughly. The pattern row is the only one that tests a model, and twelve
+cases cannot pin it down: the interval runs from 65 to 99%. Two of the twelve
+are normal audiograms decided by the rule gate before the model runs, so the
+model itself named 9 of 10 loss configurations; the one miss is a sloping loss
+read as a noise notch.
 
-**Stated limitation:** those 12 cases were authored for this project, not
-drawn from clinical practice. The harness demonstrates the method and
-validates the rules; the ML figure must be re-measured on real
-expert-labelled audiograms before being quoted anywhere.
+Two pattern labels were corrected. Cases 04 and 08 named a loss configuration
+("flat", "noise notch") on audiograms that the same rows grade as *Normal
+hearing* and type as *Normal*, which contradicts the rows' own columns; they
+are now labelled `normal`. Against the original labels the same build scores
+9/12 (κ 0.71). The disability labels were also recomputed from the Gazette
+ready reckoner after the superseded 1.5 × (PTA − 25) formula was replaced, and
+Case 05 is now labelled *Complete or total*.
+
+The harness matches free-text expert labels conservatively. Grade labels match
+a whole word or its "-ly" adverb ("profoundly deaf" → Profound, "totally deaf"
+→ Complete or total); "complete" and "total" name that grade only when they
+qualify the loss itself or stand alone. Type labels match at word starts, and
+whole-label "normal", "within normal limits" or "WNL" maps to pattern `normal`.
+Unrecognised or qualified labels — "incomplete", "subtotal", "near-total",
+"almost completely deaf", "abnormal" — are kept as written and counted as
+disagreements, never mapped onto a grade.
+
+**Stated limitation:** the ML figure must be measured on real expert-labelled
+audiograms before any accuracy is quoted anywhere.
 
 ### Conformance instead of statistics, where possible
 `tests/test_conformance.py` sweeps the entire input space against the
@@ -1420,12 +1729,26 @@ That is what "consistent diagnostic decision-making" means concretely.
 - **SQLite patient records** — multi-visit history with trend lines, so
   hearing conservation stops being a two-point comparison
 - **Camp dashboard** — prevalence by age band, noise-notch rate, benchmark
-  disability counts. On the sample: *"38% of this cohort shows a 4 kHz noise
-  notch."*
+  disability counts (only certifiable rows count toward the benchmark; the
+  rest are listed as not certifiable). On the sample: *"25% of this cohort
+  shows a 4 kHz noise notch with hearing loss at 4 kHz (Coles et al. 2000
+  criteria)"* — counted from the thresholds (a Coles notch with 4 kHz above
+  25 dB HL), not from the ML label
 - **Bulk paper ingestion** — a folder of photographed audiograms becomes a
   triaged worklist (2 photos digitised, interpreted and ranked in 0.79 s)
 - **Noise-dose calculator** — OSHA (90 dBA, 5 dB exchange) and NIOSH (85 dBA,
-  3 dB exchange) with NRR derating as (NRR − 7)/2
+  3 dB exchange) with NRR derating as (NRR − 7)/2. The OSHA PEL dose counts
+  only sound at or above 90 dBA and is exceeded only above 100%; the
+  action-level dose counts sound from 80 dBA, and a hearing conservation
+  programme is required from 50%; NIOSH counts sound from 80 dBA. Doses are
+  shown rounded up to 0.1% and judged on the figure shown. The displayed
+  "OSHA dose" (`osha_dose_pct`) is the action-level dose, so it can exceed
+  100% beside a verdict that the PEL is not exceeded
+- **Progression** — OSHA 1910.95(g)(10) standard threshold shift on
+  2/3/4 kHz when 3000 Hz is supplied, otherwise on a labelled 2k/4k proxy that
+  states the 3000 Hz shift that would change the result; OSHA 300 Log
+  recordability per 29 CFR 1904.10(a), reported as settled only when the
+  frequencies tested decide it
 - **Population atlas** — PCA projection of the training set with the patient
   plotted, making the OOD flag visual
 - **5-year forecast** — continued exposure vs effective protection, with an
@@ -1466,11 +1789,11 @@ entry, simulation and screening keep working with no connectivity.
 
 ## 18. Testing strategy
 
-**947 tests across 30 files**, all passing.
+**2,046 tests across 44 files**, all passing at the last full run.
 
 | Kind | What it proves |
 |---|---|
-| Boundary tests | PTA exactly 20/35/50/65/80, ABG exactly 10, RPwD clamps |
+| Boundary tests | PTA exactly 20/35/50/65/80/95, ABG exactly 10, RPwD ready-reckoner rows including the 59→60 dB step (27% → 40%) |
 | Conformance sweeps | the guideline holds across the entire input space |
 | Reproducibility | identical input → byte-identical output, 50× |
 | Safety logic | every red flag fires and sorts correctly |
@@ -1605,26 +1928,34 @@ admits what it cannot do:
    it is linear extrapolation from two measurements.
 4. **SII measures audibility, not comprehension.** Sensorineural distortion
    reduces understanding further.
-5. **ISO 7029 percentiles are indicative.** They use a normal approximation to
-   the standard's spread, and the standard describes otologically screened
-   populations.
+5. **ISO 7029:2000 percentiles are indicative**, and are no longer shown on the
+   Results page. They use a normal approximation to the standard's spread, the
+   standard describes otologically screened populations, and it covers ages
+   18–70 only: ages 71–80 are extrapolated, over 80 are held at the 80-year
+   value, and hearing ages above 70 are extrapolated, all flagged in the
+   payload.
 6. **Tinnitus matching is subjective** and repeat matches vary.
 7. **The digitizer assumes** a reasonably clean, roughly axis-aligned chart
    with conventional colours.
-8. **The otoscopy classifier is trained on 62 images.** Leave-one-source-image-out
-   it identifies the exact pattern well under half the time — several times
-   chance, far from diagnostic — and it does not detect retraction at all,
-   having only four reference views of it. The interface therefore shows a
+8. **The otoscopy classifier is trained on 62 views cut from 22 photographs.**
+   With every view of the source photograph held out, it identifies the exact
+   pattern 27% of the time (17/62, 95% CI 15–42%) — about twice chance, far
+   from diagnostic. On photographs it has not seen it identified retraction
+   0/4, marginal perforation 0/7, a mass 0/8 and attic disease 1/8, so a
+   result that does not name them does not exclude them. The interface therefore shows a
    ranked differential with the closest labelled reference images, and prints
    the measured accuracy on the page. A photograph also cannot exclude disease
    behind wax, blood or a partly visible membrane. The training pipeline
    accepts the public Kaggle otoscope dataset with one command and no code
    change; that dataset is not redistributable and so is not committed here.
-9. **Symptom assessment ranks, it does not diagnose**, and it knows only the
-   fourteen diseases and four presenting complaints in the supplied reference
-   documents. The weights attached to each symptom are ours, not the
-   documents' — they are declared in `symptom_kb.py` so they can be argued
-   with rather than hidden.
+9. **Symptom assessment ranks, it does not diagnose**, and it knows only
+   fifteen conditions — the fourteen in the supplied reference documents plus
+   sudden sensorineural hearing loss from the AAO-HNS 2019 guideline — and four
+   presenting complaints. The symptom weights, typical age ranges, commonness
+   weights, the adult-CAPD gate, the vestibular-neuritis exclusion, the two
+   acute guide causes and the per-condition distinguishing features are ours,
+   not the documents' — they are declared in `symptom_kb.py` so they can be
+   argued with rather than hidden.
 10. **A modelled tympanogram curve is a drawing of the entered numbers**, not a
     recorded sweep, and is labelled as such in the response and on screen. When
     ECV, PP, SC and GRAD are typed in from a machine printout, the curve is
@@ -1633,15 +1964,21 @@ admits what it cannot do:
     because such a broad peak has not returned to baseline by the +200 daPa end
     of a standard sweep. The drift is one-directional and never lifts an
     abnormal gradient above the 0.2 threshold, and it is stated in the response.
-11. **The evoked-potential norms are one published table.** ABR latencies are
-    compared against the supplied reference's normative data for normal-hearing
-    females aged 20–30. Age, sex, body temperature and stimulus polarity all
+11. **The evoked-potential norms are one published table.** ABR absolute
+    latencies are compared against the supplied reference's normative data for
+    normal-hearing females aged 20–30, with a 0.15 ms allowance on a man's later
+    waves; interpeak intervals use adult clinical limits and the Lightfoot / BSA
+    I–V 95% limit; under 3 years no adult limit decides the result
+    (indeterminate). Age, sex, body temperature and stimulus polarity all
     move ABR latencies, and a clinic should compare against its own norms.
     The MLR is unreliable in young children, where the response is still
     maturing; the LLR is state-dependent, so a poor response in a drowsy or
     sedated patient is not a cortical finding. All three are entered from a
     recording — the app interprets waveform measurements, it does not acquire
-    or peak-pick them.
+    or peak-pick them — and they reach the Results page only after the
+    clinician attaches entered values. The page's worked examples are
+    examples: editing one value clears the rest of that example, so an example
+    cannot be edited into a patient record.
 12. **BOA yields minimum response levels, never thresholds.** They run tens of
     decibels above true threshold, they are neither ear- nor frequency-specific,
     and reflexive responses habituate within a session. The app refuses to

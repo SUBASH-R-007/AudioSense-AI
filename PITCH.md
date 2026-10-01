@@ -37,17 +37,20 @@ AudioSense opens with:
 > **"Hearing thresholds are still normal, but the cochlea is already being
 > damaged — this loss is still preventable."**
 >
-> Hearing age **55**. Actual age **26**.
+> Tympanogram Type A — the middle ear is normal, so it is not what silenced
+> the emissions.
 > Otoacoustic emissions absent at 4 kHz and 8 kHz.
 > **Next step: enforce hearing protection now and re-screen in 6 months.**
 
 *"Outer hair cells die before thresholds move. This is the only window in
 which the hearing can still be saved — and it is invisible on the audiogram."*
 
-Then load **🚨 Sudden Asymmetric Loss**. Four alerts, in priority order:
+Then load **🚨 Sudden Asymmetric Loss**. Five alerts, in priority order:
 possible sudden sensorineural hearing loss (**an emergency — steroids work,
-but the window is days**), asymmetry warranting MRI, retrocochlear rollover,
-and a masking validity warning.
+but the window is days**), an asymmetric sensorineural loss warranting MRI,
+speech findings suggesting retrocochlear pathology, asymmetric word
+recognition, and a validity warning that speech masking was indicated but
+not recorded.
 
 *"Most tools would have called this 'moderate sensorineural loss' and booked
 a hearing-aid fitting."*
@@ -66,7 +69,7 @@ work went.
 | "high-patient-volume" | Triage worklist by clinical priority | 8 cases in 5.4 s → 2 flagged, **75% auto-releasable** |
 | "audiologist availability" | Explicit review-vs-release routing, with reasons | Conservative by design |
 | "more consistent" | Guideline conformance across the whole input space | **261 + 323 + 625** checks, **50×** identical output |
-| Accuracy | Validation against expert labels | Rules **100% (κ=1.0)**, ML **83.3% (κ=0.795)** |
+| Accuracy | Validation harness, run so far only on 12 cases our team wrote | ML pattern **11/12 (95% CI 65–99%)**; rules 12/12, a consistency check — **not yet measured on clinical data** |
 
 ---
 
@@ -85,15 +88,23 @@ What replaced it is a **validation harness** that scores the system against
 expert-labelled audiograms using accuracy *and Cohen's kappa*, listing every
 disagreement.
 
-And the result is more interesting than 99.9%:
+It has not yet been run on a clinic's labelled audiograms. The bundled set is
+**12 cases our own team wrote**, so it shows the harness works; it does not
+measure clinical accuracy:
 
-- **Degree, type, disability: 100% agreement, κ = 1.00**
-- **Pattern classification: 83.3%, κ = 0.795 — "substantial"**
+- **Pattern classification: 11 of 12 (91.7%, κ = 0.90) — 95% CI 65–99%.**
+  Two of the twelve are normal audiograms decided by a rule before the model
+  runs, so the model itself named 9 of 10 loss configurations. Two labels
+  were corrected to "normal" to match their own grade and type columns;
+  against the original labels the same build scores 9 of 12.
+- **Degree, type, disability: 12 of 12, 0.00% disability error.** Expected,
+  because those labels were computed from the same published tables.
 
-The rules score perfectly not because a model is good, but because they are
-**deterministic implementations of WHO 2021 and the RPwD Act 2016** — provable
-by conformance, not statistics. Only the ML needs empirical validation, and it
-honestly scores *substantial*, not perfect.
+The rules are **deterministic implementations of WHO 2021 and the RPwD
+Gazette ready reckoner (S.O. 76(E), 2018)**, so they are proven by
+conformance sweeps, not by agreement on twelve cases. The ML needs real
+empirical validation, and twelve cases cannot give it: with an interval that
+wide, the honest headline is "not yet measured".
 
 *We would rather show you the number we can defend than the one that sounds
 better.*
@@ -128,8 +139,12 @@ cue is destroyed. *This is why he steps into traffic.*
 **"I can't follow speech in a crowd."** An adaptive digit-triplet test — the
 instrument behind national screening programmes. Because only the *ratio* of
 speech to noise matters, it stays valid on uncalibrated laptop audio where
-tone screening does not. It catches the patient with a clean audiogram and
-real disability.
+tone screening does not. It flags the patient with a clean audiogram — every
+threshold from 0.25 to 8 kHz below 20 dB HL in both ears — who still
+struggles in noise. Its normal / insufficient / poor cut-offs (−7.0 / −4.5 dB
+SNR) are provisional: published cut-offs belong to each test version, and
+none has been validated for this browser test. A track with fewer than six
+reversals is flagged as low-reliability.
 
 **"There's a ringing that never stops."** Pitch and loudness matching, then a
 notched masker generated live — a **92-unit dip** carved at exactly the
@@ -147,16 +162,18 @@ matched pitch while neighbouring bands are preserved.
 - **Six languages** — English, Tamil, Hindi, Telugu, Kannada, Malayalam — read
   aloud, or handed over as a **QR the patient scans onto their own phone**.
 - **Installable PWA** that works offline in a village camp.
-- **Statutory output**: RPwD Act 2016 disability with every step of the
-  formula shown, because a percentage that decides entitlement should never be
-  a black box.
+- **Statutory output**: RPwD Act 2016 disability from the Gazette ready
+  reckoner (S.O. 76(E), 2018), with every step shown and a *not certifiable*
+  flag whenever one of the four frequencies is missing, because a percentage
+  that decides entitlement should never be a black box.
 
 ---
 
 ## Technical credibility, briefly
 
-- **316 automated tests**, including boundary values (PTA exactly 20/35/50,
-  ABG exactly 10) and full input-space conformance sweeps
+- **2,046 automated tests**, including boundary values (PTA exactly
+  20/35/50/65/80/95, ABG exactly 10, the RPwD ready reckoner's 59→60 dB
+  step) and full input-space conformance sweeps
 - **Calibrated** RandomForest with **IsolationForest** out-of-distribution
   flagging — the model can say *"atypical, priority human review"*
 - **Counterfactual explanations**: *"If 4 kHz were 10 dB better, this would
@@ -177,14 +194,14 @@ matched pitch while neighbouring bands are preserved.
 | Time | Action | The line |
 |---|---|---|
 | 0:00 | 🩺 Signs & Symptoms — same complaint, two ages | *"Water from the ear at 34 is chronic otitis media. At 72 with diabetes it's a skull-base infection. The age is the diagnosis."* |
-| 0:25 | 🔬 Pre-clinical case | *"Normal audiogram. Hearing age 55 at age 26. Every other tool sends him back to work."* |
+| 0:25 | 🔬 Pre-clinical case | *"Normal audiogram, normal middle ear, emissions gone at 4 and 8 kHz. Every other tool sends him back to work."* |
 | 0:50 | 🚨 Sudden asymmetric | *"This one is an emergency, and it sorts above everything else."* |
 | 1:05 | Snap a paper audiogram | *"Paper to interpretation, offline, human confirms before anything is issued."* |
-| 1:20 | 👁 Otoscopy — normal drum on a conductive case | *"Four links, and two of them go amber. The picture argues with the history AND with the measurement. Neither conflict needs the classifier to be right."* |
-| 1:40 | 📉 Immittance — early effusion | *"Normal peak height. Gradient 208 against a ceiling of 114. Three numbers call this normal; the curve doesn't."* |
+| 1:20 | 👁 Otoscopy — normal drum on a conductive case | *"Four links, and two of them go amber. The picture argues with the history AND with the measurement. A conflict is worth a look whichever side is wrong — an agreement would only back a pattern match we have not validated."* |
+| 1:40 | 📉 Immittance — early effusion | *"Normal peak height. Width 199 daPa against a ceiling of 114. Three numbers call this normal; the curve's width flags it."* |
 | 1:55 | 🎧 Simulator | Normal → patient → aided → cheap amplifier → smoke alarm |
 | 2:20 | 🧭 Listening Lab | *"With his ears, everything sounds like it's on the right."* |
-| 2:40 | Batch + Validate | *"89 a minute. 75% auto-releasable. And here's our accuracy against experts — 83.3%, not 99.9%."* |
+| 2:40 | Batch + Validate | *"89 a minute. 75% auto-releasable. And here's the harness on twelve cases we wrote — 11 of 12, with an interval from 65 to 99%. That proves the harness, not the model: the real number comes from a clinic's labelled audiograms, and it will not be 99.9%."* |
 | 2:55 | Close | *"Deterministic clinical core. Calibrated AI that admits doubt. Empathy you can hear."* |
 
 ---
@@ -196,21 +213,26 @@ We will say this before you have to ask:
 1. **The ML is validated on synthetic data.** Real expert-labelled audiograms
    are needed before quoting clinical accuracy. The harness is built and
    waiting.
-2. **The otoscopy classifier is trained on 62 images and it shows.** Validated
-   leave-one-source-image-out, it gets the exact pattern right well under half
-   the time — several times chance, nowhere near diagnostic. So the screen
-   leads with a **ranked differential and the three closest labelled reference
-   views**, not a label, and prints the measured accuracy in the interface
-   itself. It cannot currently detect retraction at all, and we say so on the
-   page. The training pipeline takes the public Kaggle otoscope dataset with
-   one command and no code change; we could not redistribute it here, so we
-   shipped the model that the data we *do* have honestly supports.
-   **The audiogram cross-check is the part that does not depend on the
-   classifier** — it compares what the appearance predicts against what was
-   measured, and a conflict is informative either way.
-3. **Symptom assessment ranks; it does not diagnose.** It knows the fourteen
-   diseases and four presenting complaints in the supplied reference
-   documents, and nothing else. Free text is matched by synonym table — words
+2. **The otoscopy classifier is trained on 62 views cut from 22 photographs,
+   and it shows.** With every view of the test photograph held out of
+   training, it names the exact pattern **27% of the time** (17 of 62, 95% CI
+   15–42%) — about twice chance (12.5%), nowhere near diagnostic. So the
+   screen leads with a **ranked differential and the three closest labelled
+   reference views**, not a label, and prints the measured accuracy in the
+   interface itself. On photographs it has not seen it does not identify
+   retraction, marginal perforation or masses at all, and almost never attic
+   disease — and we say so on the page. The training pipeline takes the public
+   Kaggle otoscope dataset with one command and no code change; we could not
+   redistribute it here, so we shipped the model that the data we *do* have
+   honestly supports.
+   **The audiogram cross-check** compares what the matched pattern predicts
+   against what was measured. It uses the classifier's label, so a conflict
+   is informative either way, but an agreement only corroborates a pattern
+   match that is not validated.
+3. **Symptom assessment ranks; it does not diagnose.** It knows fifteen
+   conditions (the fourteen in the supplied reference documents plus sudden
+   sensorineural hearing loss from the AAO-HNS 2019 guideline) and four
+   presenting complaints, and nothing else. Free text is matched by synonym table — words
    it does not recognise are shown back rather than silently dropped.
 4. **Browser screening is a screening**, not a diagnostic audiogram —
    consumer headphones are not ISO 389 calibrated.
@@ -231,7 +253,8 @@ that admits what it cannot know.
 Most entries will show you a model that classifies audiograms.
 
 We built a **clinical instrument**: a deterministic core that provably
-conforms to WHO and Indian statute, an AI layer that knows when to defer to a
+conforms to the WHO 2021 grades and the 2018 Gazette disability table (still
+to be checked against the 2024 guidelines that superseded it), an AI layer that knows when to defer to a
 human, a queue that puts the emergency first, a validation harness that
 reports our real accuracy rather than our flattering one — and a demonstration
 that lets a jury **hear**, in four seconds, what a factory worker has lost.
