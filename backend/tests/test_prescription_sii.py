@@ -35,11 +35,16 @@ def test_gain_is_greater_where_loss_is_greater():
     assert gains[4000] > gains[1000] > gains[250]
 
 
-def test_bands_within_normal_limits_get_no_gain():
-    # Ski-slope: normal lows must stay unamplified, highs get gain.
+def test_nal_r_prescribes_at_normal_bands_of_an_impaired_ear():
+    # Ski-slope: NAL-R applies at every band of an impaired ear — the X term
+    # carries gain into bands that are themselves within normal limits — and
+    # only a NEGATIVE target is set to zero (Byrne & Dillon 1986).
+    # X = 0.05 * (15 + 20 + 45) = 4.0
     ac = {250: 10, 500: 15, 1000: 20, 2000: 45, 4000: 70, 8000: 75}
     gains = nal_r_gains(ac)
-    assert gains[250] == gains[500] == gains[1000] == 0.0  # 20 dB = normal limit
+    assert gains[250] == 0.0                                  # 4 + 3.1 - 17 < 0
+    assert gains[500] == pytest.approx(4.0 + 4.65 - 8, abs=0.05)   # 0.65
+    assert gains[1000] == pytest.approx(4.0 + 6.2 + 1, abs=0.05)   # 11.2
     assert gains[2000] > 0 and gains[4000] > 0
 
 

@@ -22,8 +22,12 @@ def test_permissible_hours_matches_osha_table():
 def test_eight_hours_at_criterion_is_full_dose():
     d = compute_dose([{"level_dba": 90, "hours": 8, "label": "shift"}])
     assert d["osha_dose_pct"] == pytest.approx(100.0, abs=0.1)
+    assert d["osha_pel_dose_pct"] == pytest.approx(100.0, abs=0.1)
     assert d["twa_dba"] == pytest.approx(90.0, abs=0.2)
-    assert d["risk"] == "high"
+    # Exactly 100% is AT the PEL, not over it: Table G-16 note 1 counts the
+    # limit as exceeded only when the dose "exceeds unity".
+    assert d["risk"] == "action"
+    assert "exceeds" not in d["verdict"].lower()
 
 
 def test_action_level_detected_at_85dba():

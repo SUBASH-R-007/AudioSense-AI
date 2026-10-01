@@ -155,11 +155,16 @@ export const api = {
       body: JSON.stringify(analysis),
     }).then(json),
 
-  progression: (baseline, current) =>
+  // thresholds_3000: optional {baseline: {right, left}, current: {right, left}}
+  // in dB HL or 'NR' (null = not tested), for OSHA's 2/3/4 kHz average.
+  progression: (baseline, current, thresholds_3000) =>
     http('/api/progression', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ baseline, current }),
+      body: JSON.stringify({
+        baseline, current,
+        ...(thresholds_3000 ? { thresholds_3000 } : {}),
+      }),
     }).then(json),
 
   batch: (file) => {
@@ -363,11 +368,17 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }).then(json),
-  abrThreshold: (series) =>
+  // stimulus: 'click' (server default) | 'tone_burst' | 'nb_chirp' | 'ce_chirp';
+  // frequency_hz is needed for the tone-burst / chirp eHL corrections.
+  abrThreshold: (series, { stimulus, frequency_hz } = {}) =>
     http('/api/aep/abr/threshold', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ series }),
+      body: JSON.stringify({
+        series,
+        ...(stimulus ? { stimulus } : {}),
+        ...(frequency_hz != null ? { frequency_hz } : {}),
+      }),
     }).then(json),
   mlr: (payload) =>
     http('/api/aep/mlr', {

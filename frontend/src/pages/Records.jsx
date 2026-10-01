@@ -79,6 +79,7 @@ function PatientHistory({ id }) {
               <th className="py-1.5 font-semibold">Left PTA</th>
               <th className="py-1.5 font-semibold">Grade</th>
               <th className="py-1.5 font-semibold">Pattern</th>
+              <th className="py-1.5 font-semibold">Disability</th>
             </tr>
           </thead>
           <tbody>
@@ -89,6 +90,20 @@ function PatientHistory({ id }) {
                 <td className="py-1.5">{v.left_pta ?? '—'}</td>
                 <td className="py-1.5">{v.grade || '—'}</td>
                 <td className="py-1.5 text-slate-500">{v.pattern || '—'}</td>
+                {/* Re-derived on the server from the visit's stored thresholds
+                    by the current Gazette method; a figure saved under a
+                    superseded formula is never shown as the visit's value. */}
+                <td className="py-1.5" title={v.disability_note || undefined}>
+                  {v.disability_pct != null ? `${v.disability_pct}%` : '—'}
+                  {v.disability_certifiable === false && (
+                    <span className="ml-1 text-[10px] font-semibold uppercase text-amber-700">provisional</span>
+                  )}
+                  {v.disability_superseded && (
+                    <span className="ml-1 text-[10px] font-semibold uppercase text-amber-700">
+                      recomputed{v.disability_pct_as_stored != null ? ` (was ${v.disability_pct_as_stored}%)` : ''}
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -176,17 +191,36 @@ function NoiseDose() {
       {result?.available && (
         <div className={`mt-3 rounded-xl border p-3 ${riskColor}`}>
           <div className="flex flex-wrap items-baseline gap-4">
+            {/* OSHA 29 CFR 1910.95 has two doses: the PEL dose integrates
+                sound from 90 dBA, the action-level dose from 80 dBA. Risk
+                "high" is the PEL dose over 100%. */}
+            {result.osha_pel_dose_pct != null && (
+              <div>
+                <div className="text-[10.5px] font-semibold uppercase tracking-wider opacity-70">OSHA PEL dose</div>
+                <div className="text-2xl font-bold">{result.osha_pel_dose_pct}%</div>
+              </div>
+            )}
             <div>
-              <div className="text-[10.5px] font-semibold uppercase tracking-wider opacity-70">OSHA dose</div>
-              <div className="text-2xl font-bold">{result.osha_dose_pct}%</div>
+              <div className="text-[10.5px] font-semibold uppercase tracking-wider opacity-70">
+                OSHA action-level dose
+              </div>
+              <div className={result.osha_pel_dose_pct != null ? 'text-xl font-bold' : 'text-2xl font-bold'}>
+                {result.osha_dose_pct}%
+              </div>
             </div>
             <div>
               <div className="text-[10.5px] font-semibold uppercase tracking-wider opacity-70">NIOSH dose</div>
               <div className="text-xl font-bold">{result.niosh_dose_pct}%</div>
             </div>
+            {result.pel_twa_dba != null && (
+              <div>
+                <div className="text-[10.5px] font-semibold uppercase tracking-wider opacity-70">8-h TWA (PEL)</div>
+                <div className="text-xl font-bold">{result.pel_twa_dba} dBA</div>
+              </div>
+            )}
             {result.twa_dba != null && (
               <div>
-                <div className="text-[10.5px] font-semibold uppercase tracking-wider opacity-70">8-h TWA</div>
+                <div className="text-[10.5px] font-semibold uppercase tracking-wider opacity-70">8-h TWA (action level)</div>
                 <div className="text-xl font-bold">{result.twa_dba} dBA</div>
               </div>
             )}
