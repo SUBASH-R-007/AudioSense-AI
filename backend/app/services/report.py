@@ -17,8 +17,19 @@ from __future__ import annotations
 
 import json
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
+from app.clinical.symptoms import occupation_prompt
+from app.ml.classifier import RELIABLE_CONFIDENCE
+from app.ml.features import (
+    NORMAL_PTA_LIMIT,
+    NR_VALUE,
+    PTA_FREQS,
+    normal_average_caveat,
+    notch_retest_note,
+    plausibility_reasons,
+    within_normal_limits,
+)
 from app.services import llm_provider
 from app.services.ai_config import get_config
 from app.services.languages import (
@@ -38,11 +49,15 @@ DISCLAIMER = (
     "AI-assisted interpretation; final diagnosis requires a qualified audiologist."
 )
 
-NOISE_OCCUPATIONS = (
-    "factory", "construction", "military", "army", "navy", "mill", "machin",
-    "industrial", "welder", "carpenter", "driver", "musician", "dj", "mining",
-    "miner", "airport", "drill", "textile", "loom",
-)
+def _noisy_occupation(occupation: Optional[str]) -> bool:
+    """Whether the recorded occupation is in a high-noise sector.
+
+    One sourced list for every screen (symptom_kb.NOISY_OCCUPATIONS, matched
+    on word boundaries by symptoms.occupation_prompt), so the report, the
+    history page and the diagnostic picture name the same jobs — "weaver" is
+    caught, and "examiner" is not read as "miner".
+    """
+    return bool(occupation_prompt(occupation, ()))
 
 
 # ------------------------------------------------------------ helpers ------
@@ -64,15 +79,117 @@ def _ear_summary(ear: dict, side: str) -> str:
     abg = ear.get("abg")
     if abg:
         text += f" Air-bone gap averages {abg['value']:g} dB."
+    if ear.get("air_bone_gap_note"):
+        text += f" {ear['air_bone_gap_note']}"
     return text
 
 
+def _numeric_ac(analysis: dict, side: str) -> Dict[int, float]:
+    """Measured AC thresholds for one ear from the analysis payload.
+
+    The payload arrives as JSON, so frequency keys are strings and NR is a
+    string; NR maps to the audiometer maximum as everywhere else.
+    """
+    raw = (((analysis.get("thresholds") or {}).get(side) or {}).get("ac")) or {}
+    out: Dict[int, float] = {}
+    for k, v in raw.items():
+        try:
+            f = int(k)
+        except (TypeError, ValueError):
+            continue
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip().upper() == "NR":
+            out[f] = NR_VALUE
+            continue
+        try:
+            out[f] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _ml_reliable(ml: dict) -> bool:
+    """Whether a pattern label may drive etiology wording or advice.
+
+    Uses the classifier's own ``reliable`` verdict; an analysis produced
+    before that field existed falls back to the same confidence bar, and is
+    never reliable when flagged atypical or when the label is not a loss
+    configuration.
+    """
+    if "reliable" in ml:
+        return bool(ml["reliable"])
+    return (
+        ml.get("pattern") not in (None, "normal")
+        and not ml.get("ood")
+        and (ml.get("confidence") or 0) >= RELIABLE_CONFIDENCE
+    )
+
+
+def _ear_within_normal_limits(analysis: dict, side: str, ml: Optional[dict]) -> bool:
+    if ml and ml.get("pattern") == "normal":
+        return True
+    thresholds = _numeric_ac(analysis, side)
+    return bool(thresholds) and within_normal_limits(thresholds)
+
+
+def _normal_average_caveat(analysis: dict, side: str, pattern: Optional[str]) -> Optional[str]:
+    """Why a label cannot be read as a loss configuration in an ear graded
+    Normal hearing by its four-frequency average (WHO 2021).
+
+    Re-derived here from the measured thresholds, not taken from the
+    classifier's ``reliable`` alone, because stored analyses are re-reported
+    and the rule must hold whichever classifier produced them. Without
+    thresholds in the payload the rules engine's PTA decides, and no label
+    can then be corroborated.
+    """
+    thresholds = _numeric_ac(analysis, side)
+    if thresholds:
+        return normal_average_caveat(thresholds, pattern)
+    pta = (((analysis.get("rules") or {}).get(side) or {}).get("ac_pta") or {}).get("value")
+    if pattern not in (None, "normal") and pta is not None and pta < NORMAL_PTA_LIMIT:
+        return (f"the four-frequency average ({pta:g} dB HL) is within WHO 2021 "
+                "normal limits and the thresholds that would show which "
+                "frequencies carry the configuration are not in this record")
+    return None
+
+
+def _label_usable(analysis: dict, side: str, ml: dict) -> Tuple[bool, Optional[str]]:
+    """Whether an ear's pattern label may drive etiology wording or advice,
+    and the reason when it may not.
+
+    The plausibility checks are re-run on the stored thresholds for the same
+    reason as the normal-average rule: an analysis stored before a check
+    existed still carries the reliable flag it was given then.
+    """
+    if not _ml_reliable(ml):
+        return False, ml.get("reliability_note") or "flagged for review"
+    caveat = _normal_average_caveat(analysis, side, ml.get("pattern"))
+    if caveat:
+        return False, caveat[0].upper() + caveat[1:]
+    thresholds = _numeric_ac(analysis, side)
+    implausible = (plausibility_reasons(thresholds, ml.get("pattern"))
+                   if thresholds else [])
+    if implausible:
+        note = "; ".join(implausible)
+        return False, note[0].upper() + note[1:]
+    return True, None
+
+
 def _etiology(analysis: dict) -> List[str]:
-    """Occupation- and age-aware likely etiologies per detected pattern."""
+    """Occupation- and age-aware likely etiologies per detected pattern.
+
+    An etiology is suggested only from a reliable loss configuration. A
+    normal ear has no configuration, an unclassified ear has too little
+    data, and an unreliable label is described as provisional — each with
+    the reason — so that no differential is built on a label the classifier
+    itself does not stand behind. An ear graded Normal hearing by its
+    average with a threshold or two above 20 dB HL counts as unreliable
+    unless those thresholds form the configuration named.
+    """
     patient = analysis.get("patient") or {}
-    occupation = (patient.get("occupation") or "").lower()
     age = patient.get("age") or 0
-    noisy_job = any(k in occupation for k in NOISE_OCCUPATIONS)
+    noisy_job = _noisy_occupation(patient.get("occupation"))
     out: List[str] = []
 
     for side in ("right", "left"):
@@ -80,9 +197,33 @@ def _etiology(analysis: dict) -> List[str]:
         ear = (analysis.get("rules") or {}).get(side, {})
         if not ml:
             continue
-        p = ml["pattern"]
-        label = ml["pattern_label"]
-        prefix = f"{side.capitalize()} ear — {label} configuration"
+        p = ml.get("pattern")
+        label = ml.get("pattern_label") or str(p)
+        side_word = side.capitalize()
+        if p is None:
+            out.append(
+                f"{side_word} ear — configuration not classified "
+                f"({ml.get('reliability_note') or 'insufficient data'}). "
+                "Interpret the audiogram directly; no etiology is inferred."
+            )
+            continue
+        if p == "normal" or _ear_within_normal_limits(analysis, side, ml):
+            out.append(
+                f"{side_word} ear — thresholds within normal limits; there is no "
+                "loss configuration to classify and no etiology is inferred."
+            )
+            continue
+        usable, note = _label_usable(analysis, side, ml)
+        if not usable:
+            out.append(
+                f"{side_word} ear — the configuration provisionally reads as "
+                f"{label} ({(ml.get('confidence') or 0):.0%}), which is not "
+                f"reliable enough to suggest an etiology: {note}. Interpret the "
+                "audiogram directly."
+            )
+            continue
+        prefix = f"{side_word} ear — {label} configuration"
+        ear_type = (ear.get("type") or "").lower()
         if p == "noise_notch_4k":
             if noisy_job:
                 out.append(
@@ -120,7 +261,7 @@ def _etiology(analysis: dict) -> List[str]:
                 "frequency-lowering features may help."
             )
         elif p == "rising":
-            if "conductive" in ear.get("type", "").lower():
+            if "conductive" in ear_type:
                 out.append(
                     f"{prefix} with conductive component: low-frequency conductive "
                     "loss suggests middle-ear pathology — otitis media with "
@@ -140,13 +281,16 @@ def _etiology(analysis: dict) -> List[str]:
                 "audiometric screening is advisable."
             )
         elif p == "corner_audiogram":
+            # Implant candidacy is never read off a configuration label: it
+            # follows the measured degree of loss and aided speech testing,
+            # and is handled in _recommendations from the thresholds.
             out.append(
-                f"{prefix}: only low-frequency residual hearing remains. "
-                "Candidacy for cochlear implantation should be evaluated; "
-                "power hearing aids provide limited benefit."
+                f"{prefix}: residual hearing only at the low frequencies. "
+                "Management follows the measured degree of loss and aided "
+                "speech-recognition testing, not this configuration label."
             )
         elif p == "flat":
-            if "conductive" in ear.get("type", "").lower():
+            if "conductive" in ear_type:
                 out.append(
                     f"{prefix} with conductive mechanism: consistent with "
                     "middle-ear effusion, ossicular fixation or tympanic "
@@ -158,12 +302,146 @@ def _etiology(analysis: dict) -> List[str]:
                     "disease, sudden SNHL (treat urgently if recent), and some "
                     "genetic etiologies."
                 )
-        if ml.get("ood"):
-            out.append(
-                f"{side.capitalize()} ear: {ml['ood_message']} — the measured shape "
-                "is atypical for all trained patterns; manual review advised."
-            )
+        # An atypical (out-of-distribution) label is never reliable, so its
+        # review reason was already given in the provisional sentence above.
     return out or ["No pattern classification available."]
+
+
+#: NICE TA566 (2019): severe to profound deafness is hearing only sounds
+#: louder than 80 dB HL at two or more of 500, 1000, 2000, 3000 and 4000 Hz,
+#: bilaterally, without hearing aids. 3 kHz is not tested in this app, so the
+#: count runs over 0.5/1/2/4 kHz; NR counts as beyond 80 dB HL.
+CI_THRESHOLD_DB = 80.0
+CI_MIN_FREQS = 2
+
+
+def _severe_to_profound_ears(analysis: dict) -> Dict[str, str]:
+    """Ears meeting the NICE TA566 audiometric criterion, mapped to the basis
+    of that call.
+
+    "thresholds": 80 dB HL or worse at CI_MIN_FREQS or more of 0.5/1/2/4 kHz.
+    "pta": the record carries no thresholds at the PTA frequencies for that
+    ear, so only the rules engine's average (80 dB HL or worse) is available
+    and the per-frequency criterion could not be checked. An average is
+    never used when the thresholds are present: one NR at 4 kHz lifts the
+    average past 80 without meeting the criterion.
+    """
+    rules = analysis.get("rules") or {}
+    ears: Dict[str, str] = {}
+    for side in ("right", "left"):
+        thresholds = _numeric_ac(analysis, side)
+        measured = [thresholds[f] for f in PTA_FREQS if thresholds.get(f) is not None]
+        if measured:
+            if sum(1 for v in measured if v >= CI_THRESHOLD_DB) >= CI_MIN_FREQS:
+                ears[side] = "thresholds"
+            continue
+        pta = ((rules.get(side) or {}).get("ac_pta") or {}).get("value")
+        if pta is not None and pta >= CI_THRESHOLD_DB:
+            ears[side] = "pta"
+    return ears
+
+
+def _ci_unassessable(analysis: dict, side: str) -> Optional[str]:
+    """Why the NICE TA566 criterion cannot be decided for an ear that does not
+    meet it on the data present; None when the data show it is not met.
+
+    The criterion is bilateral, so the second ear decides between "not met"
+    and "cannot be assessed". It is undecided when the 0.5/1/2/4 kHz
+    thresholds it lacks could still give it CI_MIN_FREQS at 80 dB HL or
+    worse — an ear not tested at all is the extreme case — or when the record
+    holds only its average, which can sit below 80 dB HL with two
+    frequencies beyond it.
+    """
+    thresholds = _numeric_ac(analysis, side)
+    measured = {f: thresholds[f] for f in PTA_FREQS if thresholds.get(f) is not None}
+    if measured:
+        missing = [f for f in PTA_FREQS if f not in measured]
+        beyond = sum(1 for v in measured.values() if v >= CI_THRESHOLD_DB)
+        if missing and beyond + len(missing) >= CI_MIN_FREQS:
+            return "was not tested at " + ", ".join(f"{f} Hz" for f in missing)
+        return None
+    if thresholds:
+        return "was not tested at 500, 1000, 2000 or 4000 Hz"
+    pta = (((analysis.get("rules") or {}).get(side) or {}).get("ac_pta") or {}).get("value")
+    if pta is not None:
+        return ("has only its four-frequency average in this record, not the "
+                "per-frequency thresholds")
+    return "was not tested"
+
+
+_CI_BASIS = {
+    "thresholds": ("80 dB HL or worse at two or more of 0.5/1/2/4 kHz, the NICE "
+                   "TA566 audiometric criterion"),
+    "pta": ("a four-frequency average of 80 dB HL or worse; the per-frequency "
+            "thresholds are not in this record, so the NICE TA566 criterion of "
+            "80 dB HL or worse at two or more of 0.5/1/2/4 kHz is still to be "
+            "confirmed"),
+}
+
+
+def _implant_recommendation(ci_ears: Dict[str, str],
+                            unassessed: Optional[Dict[str, str]] = None) -> str:
+    """Cochlear-implant wording from the measured degree of loss only.
+
+    NICE TA566 applies its audiometric criterion to both ears, so a referral
+    for implant candidacy is made when both meet it. When one ear meets it,
+    the other decides the wording: shown not to meet it, the criterion is
+    stated not met; missing the data to decide (``unassessed``, from
+    ``_ci_unassessable``), the criterion is stated not assessable and that
+    ear's testing is asked for. Either way the affected ear is referred for
+    ENT assessment, and candidacy is decided by aided speech testing, never
+    by the audiogram.
+    """
+    unassessed = unassessed or {}
+    bases = set(ci_ears.values())
+    if len(bases) == 1:
+        basis = _CI_BASIS[bases.pop()]
+    else:
+        basis = "; ".join(f"{s}: {_CI_BASIS[b]}" for s, b in ci_ears.items())
+    if len(ci_ears) == 2:
+        return (f"Severe-to-profound loss in both ears ({basis}): refer for "
+                "cochlear-implant candidacy assessment. Candidacy is decided by "
+                "aided speech-recognition testing with appropriately fitted "
+                "hearing aids, not by the audiogram or its configuration label.")
+    side = next(iter(ci_ears))
+    other = "left" if side == "right" else "right"
+    if other in unassessed:
+        return (f"Severe-to-profound loss in the {side} ear ({basis}). The "
+                f"{other} ear {unassessed[other]}, so whether the NICE TA566 "
+                "implant criterion, which requires this in both ears, is met "
+                f"cannot be assessed; complete the {other} ear's thresholds and "
+                f"refer for ENT assessment of the {side} ear. Options for a "
+                "severely affected ear, including any implant, are decided by "
+                "aided speech-recognition testing, not by the audiogram or its "
+                "configuration label.")
+    return (f"Severe-to-profound loss in the {side} ear only ({basis}). NICE "
+            "TA566 requires this in both ears, so its implant criterion is not "
+            f"met; refer for ENT assessment of the {side} ear. Options for a "
+            "single severely affected ear, including any implant, are decided "
+            "by aided speech-recognition testing, not by the audiogram or its "
+            "configuration label.")
+
+
+#: Keys under which the rules engine may explain why a disability percentage
+#: cannot be certified (``rules.disability.certifiable``).
+_CERTIFIABLE_REASON_KEYS = (
+    "certifiable_reason", "certifiable_reasons", "certification_note",
+    "not_certifiable_reason", "certifiable_note",
+)
+
+
+def _certification_caveat(disability: dict) -> str:
+    """Why the percentage cannot be certified, without a leading verdict
+    phrase (callers supply their own)."""
+    for key in _CERTIFIABLE_REASON_KEYS:
+        reason = disability.get(key)
+        if reason:
+            text = reason if isinstance(reason, str) else "; ".join(map(str, reason))
+            text = re.sub(r"^\s*not certifiable\s*[:\-—–]\s*", "", text, flags=re.I)
+            return text.rstrip(".") + "."
+    return ("the measurements behind the percentage do not meet the requirements "
+            "for certification under the RPwD Act 2016 guidelines; complete them "
+            "before certifying.")
 
 
 def _recommendations(analysis: dict) -> List[str]:
@@ -180,12 +458,21 @@ def _recommendations(analysis: dict) -> List[str]:
     worst = max(
         (rules.get(s, {}).get("ac_pta") or {}).get("value", 0) for s in ("right", "left")
     )
-    types = {rules.get(s, {}).get("type", "") for s in ("right", "left")}
+    types = {(rules.get(s) or {}).get("type") or "" for s in ("right", "left")}
+    # rules.hearing_type types an ear within normal limits Normal even with an
+    # air-bone gap over 10 dB; the gap is still a conductive component.
+    gap_only = [s for s in ("right", "left")
+                if (rules.get(s) or {}).get("type") == "Normal"
+                and (rules.get(s) or {}).get("significant_air_bone_gap")]
 
-    if any("Conductive" in t or "Mixed" in t for t in types):
+    if any("Conductive" in t or "Mixed" in t for t in types) or gap_only:
         recs.append("ENT referral for the conductive component (tympanometry, "
                     "otoscopy); many conductive losses are medically or "
                     "surgically treatable.")
+    for s in gap_only:
+        note = (rules.get(s) or {}).get("air_bone_gap_note")
+        if note:
+            recs.append(f"{s.capitalize()} ear: {note}")
     if worst >= 35:
         sii = (analysis.get("sii") or {}).get("better") or (analysis.get("sii") or {}).get("right")
         if sii and sii.get("aided_quiet") and sii.get("aided_gain_quiet", 0) > 5:
@@ -197,19 +484,56 @@ def _recommendations(analysis: dict) -> List[str]:
             )
         else:
             recs.append("Hearing-aid evaluation and fitting for the affected ear(s).")
-    if worst >= 80:
-        recs.append("Cochlear implant candidacy assessment.")
-    if any((analysis.get("ml") or {}).get(s, {}).get("pattern") == "noise_notch_4k"
-           for s in ("right", "left") if (analysis.get("ml") or {}).get(s)):
+    ci_ears = _severe_to_profound_ears(analysis)
+    if ci_ears:
+        unassessed: Dict[str, str] = {}
+        for s in ("right", "left"):
+            reason = None if s in ci_ears else _ci_unassessable(analysis, s)
+            if reason:
+                unassessed[s] = reason
+        recs.append(_implant_recommendation(ci_ears, unassessed))
+    ml_all = analysis.get("ml") or {}
+    notch_sides = [s for s in ("right", "left")
+                   if ml_all.get(s) and ml_all[s].get("pattern") == "noise_notch_4k"
+                   and _label_usable(analysis, s, ml_all[s])[0]]
+    if notch_sides:
         recs.append("Mandatory hearing protection in noise; annual audiometric "
                     "monitoring per hearing-conservation guidelines.")
-    if disability.get("benchmark_disability"):
+    # A deep 4 kHz notch keeps its label and the advice above, but a single
+    # keying slip draws the same shape, so the 4 kHz threshold is confirmed.
+    for s in notch_sides:
+        thresholds = _numeric_ac(analysis, s)
+        retest = notch_retest_note(thresholds, "noise_notch_4k") if thresholds else None
+        if retest:
+            recs.append(f"{s.capitalize()} ear: {retest}.")
+    certifiable = disability.get("certifiable", True) if disability else True
+    if disability and not certifiable:
+        recs.append(
+            "The disability percentage cannot be certified from this test: "
+            + _certification_caveat(disability)
+        )
+    elif disability.get("benchmark_disability"):
         recs.append("Patient meets the RPwD Act 2016 benchmark (≥40%); assist "
                     "with disability certification for entitled benefits.")
-    provisional = any(rules.get(s, {}).get("provisional") for s in ("right", "left"))
+    provisional = [s for s in ("right", "left")
+                   if (rules.get(s) or {}).get("provisional")]
     if provisional:
-        recs.append("Complete bone-conduction testing to confirm the type of loss "
-                    "(current typing is provisional).")
+        # A bone-conduction "No Response" is a measurement at the vibrator's
+        # output limit, not a test left undone: repeating it cannot settle the
+        # gap, and the recommendation says so.
+        bc_nr = [s for s in provisional if (rules.get(s) or {}).get("bc_nr_freqs")]
+        untested = [s for s in provisional if s not in bc_nr]
+        if untested:
+            recs.append("Complete bone-conduction testing to confirm the type of loss "
+                        "(current typing is provisional).")
+        for s in bc_nr:
+            freqs = ", ".join(str(f) for f in rules[s]["bc_nr_freqs"])
+            recs.append(
+                f"{s.capitalize()} ear: bone conduction gave no response at {freqs} Hz "
+                "within the vibrator's output limit, so the air-bone gap there is "
+                "indeterminate and the type is provisional — a conductive component "
+                "cannot be excluded; tympanometry (and otoscopy) can show whether "
+                "the middle ear contributes.")
     recs.append("Repeat pure-tone audiometry in 6–12 months to monitor stability.")
     return recs
 
@@ -256,12 +580,23 @@ def generate_offline(analysis: dict) -> dict:
 
     if disability:
         dis_lines = [
-            f"Right ear monaural impairment: {disability['right']['formula']}",
-            f"Left ear monaural impairment: {disability['left']['formula']}",
-            f"Binaural: {disability['binaural_formula']}",
-            ("MEETS" if disability["benchmark_disability"] else "Does not meet")
+            f"Right ear monaural impairment: {(disability.get('right') or {}).get('formula')}",
+            f"Left ear monaural impairment: {(disability.get('left') or {}).get('formula')}",
+            f"Binaural: {disability.get('binaural_formula')}",
+            ("MEETS" if disability.get("benchmark_disability") else "Does not meet")
             + " the RPwD Act 2016 benchmark-disability threshold (40%).",
         ]
+        # A percentage computed from incomplete or provisional measurements
+        # must never read as a certifiable figure — it reaches a government
+        # disability certificate.
+        if not disability.get("certifiable", True):
+            dis_lines.append(
+                "NOT CERTIFIABLE as it stands: " + _certification_caveat(disability)
+            )
+        elif disability.get("guideline_note"):
+            # The method is the 2018 Gazette's, which S.O. 1338(E) (2024)
+            # superseded; a certifiable figure carries that beside it.
+            dis_lines.append(disability["guideline_note"])
     else:
         dis_lines = ["Disability percentage not computable (incomplete PTA data)."]
 
@@ -375,7 +710,10 @@ def counseling_sheet(analysis: dict) -> dict:
                         side=SIDE_WORD[lang][side], grade=grade_word))
         if hearing_aid:
             summary.append(HEARING_AID[lang])
-        if disability and disability["benchmark_disability"]:
+        # Telling a patient they qualify for benefits on a figure that cannot
+        # be certified sets up a refused application.
+        if (disability and disability.get("benchmark_disability")
+                and disability.get("certifiable", True)):
             summary.append(BENCHMARK[lang].format(pct=f"{disability['binaural_pct']:g}"))
 
         sheet[lang] = {
@@ -402,6 +740,26 @@ classifier and a phoneme audibility model. Use ONLY numbers present in the
 JSON — never invent values. Tie likely etiologies to the patient's
 occupation and age where relevant (e.g. a 4 kHz noise notch in a factory
 worker suggests occupational noise-induced hearing loss).
+
+Rules for the ML pattern of each ear (ml.right / ml.left):
+- Suggest an etiology ONLY when that ear's "reliable" is true. If it is
+  false, call the configuration provisional, quote its "reliability_note",
+  and suggest no etiology.
+- "pattern": "normal" means thresholds within normal limits: state that and
+  suggest no etiology. "pattern": null means too few frequencies were tested.
+- An ear whose four-frequency average is below 20 dB HL has normal hearing
+  by WHO 2021 grade; never describe it as having a loss configuration
+  unless that ear's "reliable" is true.
+- Never derive cochlear-implant candidacy from a pattern label; base it only
+  on thresholds (80 dB HL or worse at two or more of 0.5-4 kHz, in BOTH ears
+  for the NICE TA566 criterion; one ear alone does not meet it, and when the
+  other ear lacks the thresholds to decide, say the criterion cannot be
+  assessed) and say that aided speech testing decides candidacy.
+- If rules.disability.certifiable is false, say the disability percentage
+  cannot be certified from this test.
+- Never state a "hearing age", and never compare the thresholds with
+  age-expected (ISO 7029) values; that comparison is not part of this report.
+  The patient's age may still inform the likely etiology.
 
 Return STRICT JSON only:
 {
@@ -460,9 +818,29 @@ def generate_report(analysis: dict) -> dict:
         return result
 
 
+#: Analysis keys never sent to the LLM. "phonemes" is replaced by a slim
+#: summary below. "norms" carries the ISO 7029 hearing-age comparison, which
+#: was withdrawn from the Results page at NIEPMD's request (see
+#: verdict.build_verdict); the offline report never states it, so the AI
+#: report must not be given it to restate.
+_LLM_EXCLUDED_KEYS = ("phonemes", "norms")
+
+
 def _slim(analysis: dict) -> dict:
-    """Strip bulky per-phoneme detail before sending to the LLM."""
-    slim = {k: v for k, v in analysis.items() if k != "phonemes"}
+    """Strip bulky per-phoneme detail and the withdrawn age comparison before
+    sending to the LLM, and give it the same per-ear reliability verdict the
+    offline engine acts on."""
+    slim = {k: v for k, v in analysis.items() if k not in _LLM_EXCLUDED_KEYS}
+    ml = analysis.get("ml") or {}
+    if isinstance(ml, dict):
+        slim_ml = dict(ml)
+        for side in ("right", "left"):
+            m = ml.get(side)
+            if isinstance(m, dict) and m.get("pattern") not in (None, "normal"):
+                usable, note = _label_usable(analysis, side, m)
+                slim_ml[side] = {**m, "reliable": usable,
+                                 "reliability_note": note or m.get("reliability_note")}
+        slim["ml"] = slim_ml
     phonemes = analysis.get("phonemes") or {}
     slim["phonemes"] = {
         side: {
