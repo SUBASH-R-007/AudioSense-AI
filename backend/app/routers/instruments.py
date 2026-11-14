@@ -44,6 +44,10 @@ class TympanometryRequest(BaseModel):
     gradient: Optional[float] = Field(default=None, ge=0, le=1)
     reflexes: Dict[str, Optional[float]] = Field(default_factory=dict)
     pta: Optional[float] = None
+    #: A tympanogram type recorded straight off a printout, used when neither
+    #: a sweep nor the summary values are available. See
+    #: ``tympanometry.analyze`` for what the type alone can and cannot give.
+    recorded_type: Optional[str] = None
 
 
 class OAERequest(BaseModel):
@@ -54,6 +58,17 @@ class OAERequest(BaseModel):
     #: Air-conduction thresholds, so absent emissions above the OAE ceiling
     #: can be marked uninformative instead of counted as damage.
     ac: Dict[int, Optional[float]] = Field(default_factory=dict)
+    #: How many of the tested frequencies must pass. Honoured only for the
+    #: ``custom`` protocol — a published protocol's pass count is part of its
+    #: criterion, and overriding it would put a standard's name on a decision
+    #: it did not make (see ``dpoae.resolve_protocol``).
+    required: Optional[int] = Field(default=None, ge=0, le=32)
+    #: Outcome-only entry: the one word a screening instrument prints, used
+    #: when no per-frequency points were recorded.
+    recorded_outcome: Optional[str] = None
+    outcome_note: str = Field(default="", max_length=500)
+    #: Which frequencies an outcome-only screen covered, where known.
+    freqs: List[int] = Field(default_factory=list)
 
 
 @router.get("/tympanometry/reference")
@@ -133,6 +148,7 @@ def tympanometry_analyze(req: TympanometryRequest):
         age_years=req.age_years,
         probe_hz=req.probe_hz,
         gradient=req.gradient,
+        recorded_type=req.recorded_type,
     )
 
 
@@ -143,6 +159,12 @@ def oae_reference():
         "frequencies": dpoae.DP_FREQS,
         "protocols": [{"key": k, **v} for k, v in dpoae.PROTOCOLS.items()],
         "cochlear_regions": dpoae.COCHLEAR_REGION,
+        #: Frequencies a clinic may reasonably add to the standard set. The
+        #: set is not a limit — any frequency gets a cochlear place from the
+        #: Greenwood map — these are just the ones worth offering as chips.
+        "extra_frequencies": [500, 750, 1250, 5000, 7000, 10000, 12000],
+        "custom_protocols": sorted(dpoae.CUSTOM_PROTOCOLS),
+        "outcomes": sorted(set(dpoae.OUTCOME_ALIASES.values())),
         "noise_floor_ceiling": dpoae.NOISE_FLOOR_CEILING_DB,
         "ceiling_db_hl": dpoae.OAE_CEILING_DB_HL,
         "note": ("Emissions disappear above about "
@@ -153,11 +175,22 @@ def oae_reference():
 
 @router.post("/oae/analyze")
 def oae_analyze(req: OAERequest):
-    """DP-gram, pass/refer against the chosen protocol, and cochlear profile."""
+    """DP-gram, pass/refer against the chosen protocol, and cochlear profile.
+
+    Two entry modes. With ``points``, the full gram: per-frequency verdicts,
+    the cochlear place of each dropout and the comparison against the
+    audiogram. With ``recorded_outcome`` alone, the screening decision as the
+    instrument printed it — recorded faithfully, and explicitly not carrying
+    the per-frequency inferences it cannot support.
+    """
     return dpoae.analyze(
         ear=req.ear,
         points=[p.model_dump() for p in req.points],
         protocol=req.protocol,
         ac_numeric={int(k): v for k, v in (req.ac or {}).items()},
         kind=req.kind,
+        required=req.required,
+        recorded_outcome=req.recorded_outcome,
+        outcome_note=req.outcome_note,
+        freqs=req.freqs,
     )

@@ -600,19 +600,46 @@ def generate_offline(analysis: dict) -> dict:
     else:
         dis_lines = ["Disability percentage not computable (incomplete PTA data)."]
 
+    # FUNCTIONAL IMPACT, KEPT TO WHAT CHANGES THE CONVERSATION.
+    #
+    # This section used to run to nine sentences: an audibility percentage per
+    # ear with the full list of inaudible phonemes spelled out, then up to five
+    # graded impact statements, then the SII, then the misheard words. Most of
+    # it restated the rest in different words, and the one line a patient
+    # actually needs was somewhere in the middle. The per-phoneme detail is on
+    # the results page, where the phoneme map draws it properly; a report is
+    # read aloud to a patient and has to say the useful thing first.
     impact = []
-    for side in ("right", "left"):
-        ph = phonemes.get(side)
-        if ph:
-            impact.append(
-                f"{side.capitalize()} ear hears {ph['audibility_pct']:g}% of "
-                f"conversational phonemes"
-                + (f"; inaudible: {', '.join('/' + s + '/' for s in ph['inaudible'])}."
-                   if ph["inaudible"] else "; all speech sounds audible.")
-            )
-    combined = phonemes.get("better") or phonemes.get("right")
+    ears = {side: phonemes.get(side) for side in ("right", "left")}
+    if ears["right"] and ears["left"]:
+        # One sentence for both ears. The percentages are the point; the
+        # phoneme inventory is not, and listing it twice least of all.
+        impact.append(
+            f"Right ear hears {ears['right']['audibility_pct']:g}% of "
+            f"conversational speech sounds, left ear "
+            f"{ears['left']['audibility_pct']:g}%."
+        )
+    else:
+        for side, ph in ears.items():
+            if ph:
+                impact.append(
+                    f"{side.capitalize()} ear hears {ph['audibility_pct']:g}% of "
+                    "conversational speech sounds."
+                )
+    # Which sounds are missing, once, for the ear the patient listens with.
+    combined = phonemes.get("better") or phonemes.get("right") or phonemes.get("left")
+    if combined and combined["inaudible"]:
+        shown = combined["inaudible"][:6]
+        more = len(combined["inaudible"]) - len(shown)
+        impact.append(
+            "Sounds below threshold: "
+            + ", ".join("/" + s + "/" for s in shown)
+            + (f" and {more} more." if more > 0 else ".")
+        )
     if combined:
-        impact.extend(combined["impact"])
+        # Already graded so that a dominant finding suppresses the ones it
+        # subsumes (see ``phonemes.functional_impact``); two sentences at most.
+        impact.extend(combined["impact"][:2])
 
     sii = (analysis.get("sii") or {}).get("better") or (analysis.get("sii") or {}).get("right")
     if sii:

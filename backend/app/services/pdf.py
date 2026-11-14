@@ -1,9 +1,25 @@
-"""PDF report: audiogram chart + AI report + counseling sheet + QR
-verification hash + signature line (reportlab).
+"""PDF report: audiogram chart + AI report + QR to the clinical report +
+signature line (reportlab).
 
-Tamil text renders with the Windows "Nirmala UI" font when available;
-otherwise the Tamil section is replaced by a note (Helvetica lacks Tamil
-glyphs).
+TWO DOCUMENTS, TWO AUDIENCES, AND THEY DO NOT BELONG IN ONE FILE.
+
+This PDF is the CLINICAL report. It is read by an audiologist, countersigned,
+filed, and sent to a referring doctor. The patient counselling sheet is a
+different document for a different reader: plain language, in the patient's
+own language, written to be read at home and shown to family.
+
+They used to be printed together, which served neither. A clinician filing a
+report does not want two pages of counselling in the middle of it; a patient
+handed the same file gets their summary wrapped in air-bone gaps and an RPwD
+percentage. So the counselling sheet is no longer in the PDF — it is issued on
+its own, as the QR handout that puts it on the patient's phone
+(``routers/handout.py``), which is where it was always most useful.
+
+The QR on this page opens the CLINICAL report, not the counselling sheet: a
+clinician scanning their own printout wants the document they are holding,
+readable on a phone and with every number intact.
+
+Tamil text renders with the Windows "Nirmala UI" font when available.
 """
 from __future__ import annotations
 
@@ -39,6 +55,18 @@ from app.services.state_paths import state_dir
 DATA_DIR = state_dir()
 VERIFY_STORE = DATA_DIR / "verify_store.json"
 
+#: Sections of the clinical report, in the order they are printed and the
+#: order the web view shows them. One list, so the page a QR opens cannot
+#: drift out of step with the page it was printed from.
+REPORT_SECTIONS = (
+    ("Findings", "findings"),
+    ("Pattern & Likely Etiologies", "pattern_etiology"),
+    ("Degree & Type", "degree_type"),
+    ("Disability Assessment (RPwD Act 2016)", "disability"),
+    ("Functional Impact", "functional_impact"),
+    ("Recommendations", "recommendations"),
+)
+
 TEAL = colors.HexColor("#0d9488")
 SLATE = colors.HexColor("#334155")
 
@@ -59,19 +87,55 @@ def result_hash(analysis: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def register_hash(h: str, patient_name: str) -> None:
+def register_hash(h: str, patient_name: str, report: dict | None = None,
+                  patient: dict | None = None, engine: str | None = None,
+                  verified: bool | None = None) -> None:
+    """Record a hash, and the report it belongs to, against that hash.
+
+    The report content is stored so the QR on the printed page can OPEN the
+    clinical report rather than merely confirm that a hash is known. What is
+    kept is the report's own prose sections and the patient header — not the
+    whole analysis payload — so the stored copy is the document, and no more
+    of it than the document itself shows.
+    """
     store = {}
     if VERIFY_STORE.exists():
         try:
             store = json.loads(VERIFY_STORE.read_text(encoding="utf-8"))
         except Exception:
             store = {}
-    store[h] = {
+    entry = {
         "created": datetime.now(timezone.utc).isoformat(),
         "patient": patient_name,
     }
+    # Preserve anything an earlier build recorded for this hash: the same
+    # analysis regenerated gives the same hash, and a second PDF without a
+    # chart or an engine should not blank what the first one stored.
+    previous = store.get(h) if isinstance(store.get(h), dict) else {}
+    if report is not None:
+        entry["report"] = {key: list(report.get(key) or [])
+                           for _, key in REPORT_SECTIONS}
+        entry["disclaimer"] = report.get("disclaimer", "")
+    elif previous.get("report"):
+        entry["report"] = previous["report"]
+        entry["disclaimer"] = previous.get("disclaimer", "")
+    if patient is not None:
+        entry["patient_header"] = {
+            "name": patient.get("name") or "",
+            "age": patient.get("age"),
+            "sex": patient.get("sex") or "",
+            "test_date": str(patient.get("test_date") or ""),
+        }
+    elif previous.get("patient_header"):
+        entry["patient_header"] = previous["patient_header"]
+    if engine is not None:
+        entry["engine"] = engine
+    if verified is not None:
+        entry["verified"] = bool(verified)
+    store[h] = entry
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    VERIFY_STORE.write_text(json.dumps(store, indent=2), encoding="utf-8")
+    VERIFY_STORE.write_text(json.dumps(store, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
 
 
 def lookup_hash(h: str) -> dict | None:
@@ -94,7 +158,13 @@ def build_pdf(payload: dict, verify_url_base: str = "http://localhost:8000") -> 
     counseling = bundle.get("counseling") or {}
 
     h = result_hash(analysis)
-    register_hash(h, patient.get("name", ""))
+    register_hash(h, patient.get("name", ""), report=report, patient=patient,
+                  engine=bundle.get("engine"), verified=bundle.get("verified"))
+    # The QR opens the CLINICAL report — the document in the reader's hand,
+    # readable on a phone. The verification endpoint is still there and is
+    # printed below as a URL; it answers a different question ("is this hash
+    # one we issued?") and is not what someone scanning a report wants.
+    report_url = f"{verify_url_base}/api/report-view/{h}"
     verify_url = f"{verify_url_base}/api/verify/{h}"
 
     buf = io.BytesIO()
@@ -153,46 +223,30 @@ def build_pdf(payload: dict, verify_url_base: str = "http://localhost:8000") -> 
         except Exception:
             story.append(Paragraph("(chart image could not be embedded)", body))
 
-    sections = [
-        ("Findings", "findings"), ("Pattern & Likely Etiologies", "pattern_etiology"),
-        ("Degree & Type", "degree_type"), ("Disability Assessment (RPwD Act 2016)", "disability"),
-        ("Functional Impact", "functional_impact"), ("Recommendations", "recommendations"),
-    ]
-    for title, key in sections:
+    for title, key in REPORT_SECTIONS:
         lines = report.get(key) or []
         if lines:
             story.append(Paragraph(title, h2))
             for line in lines:
                 story.append(Paragraph(f"• {line}", body))
 
-    en = counseling.get("english") or {}
-    ta = counseling.get("tamil") or {}
-    if en:
-        story.append(Paragraph("Patient Counseling (English)", h2))
-        for s in en.get("summary", []) + en.get("tips", []):
-            story.append(Paragraph(f"• {s}", body))
-    if ta:
-        story.append(Paragraph("Patient Counseling (Tamil / தமிழ்)"
-                               if _TAMIL_FONT else "Patient Counseling (Tamil)",
-                               ParagraphStyle("h2t", parent=h2,
-                                              fontName=_TAMIL_FONT or "Helvetica-Bold")))
-        if _TAMIL_FONT:
-            for s in ta.get("summary", []) + ta.get("tips", []):
-                story.append(Paragraph(f"• {s}", tamil))
-        else:
-            story.append(Paragraph(
-                "(Tamil font not available on this system — see the web app "
-                "for the Tamil counseling sheet)", body))
+    # NO COUNSELLING SHEET HERE. It is a separate document for a separate
+    # reader — see this module's docstring — and it is issued as the QR handout
+    # that opens on the patient's own phone, in their own language. Printing it
+    # inside the clinical report served neither audience.
 
     story.append(Paragraph("Verification & Sign-off", h2))
-    qr_img = qrcode.make(verify_url)
+    qr_img = qrcode.make(report_url)
     qr_buf = io.BytesIO()
     qr_img.save(qr_buf, format="PNG")
     qr_buf.seek(0)
     sig_table = Table(
         [[Image(qr_buf, width=24 * mm, height=24 * mm),
           Paragraph(
-              f"Verification hash: <b>{h}</b><br/>{verify_url}<br/><br/>"
+              "Scan for this clinical report<br/>"
+              f"<font size=8>{report_url}</font><br/>"
+              f"Verification hash: <b>{h}</b><br/>"
+              f"<font size=8>Check authenticity: {verify_url}</font><br/><br/>"
               "____________________________<br/>Reviewing Audiologist "
               "(signature &amp; seal)", body)]],
         colWidths=[30 * mm, 140 * mm])

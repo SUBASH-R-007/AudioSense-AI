@@ -185,6 +185,11 @@ def scores_differ(score_a: float, score_b: float, n: int,
     binomial interval — the practical form of the Thornton & Raffin (1978)
     critical-difference tables. Used for ear-to-ear and aided-versus-unaided
     comparisons, where the temptation to over-read a few percent is strongest.
+
+    Both scores must come from a list of ``n`` words. Where they do not, use
+    ``scores_differ_unequal`` — passing one score's list length for a
+    comparison against a score measured on a different list understates the
+    uncertainty of whichever list was shorter.
     """
     if n <= 0:
         return None
@@ -192,6 +197,35 @@ def scores_differ(score_a: float, score_b: float, n: int,
     if ci["low"] is None:
         return None
     return not (ci["low"] <= score_b <= ci["high"])
+
+
+def scores_differ_unequal(score_a: float, n_a: int, score_b: float, n_b: int,
+                          confidence: float = 0.95) -> Optional[bool]:
+    """``scores_differ`` for two scores measured on lists of different lengths.
+
+    There is no single Thornton & Raffin table row for a comparison between a
+    50-word score and a 25-word one: the table is indexed by list length, and
+    the two scores carry different precision. Testing with only one of the two
+    lengths — whichever the caller happened to pass — makes a difference the
+    shorter list cannot resolve look resolvable.
+
+    So the difference counts only when NEITHER score falls inside the other's
+    interval. That is symmetric, uses each score's own list length, and is the
+    conservative direction: it can refuse to call a real difference real, and
+    it cannot manufacture one. Which is the right way round, because the
+    caller that matters here turns a difference into a referral for imaging.
+
+    With equal list lengths this reduces to ``scores_differ``, since the two
+    one-sided tests agree whenever the intervals are symmetric about their
+    own scores.
+    """
+    if n_a <= 0 or n_b <= 0:
+        return None
+    a_outside = scores_differ(score_a, score_b, n_a, confidence)
+    b_outside = scores_differ(score_b, score_a, n_b, confidence)
+    if a_outside is None or b_outside is None:
+        return None
+    return a_outside and b_outside
 
 
 # --------------------------------------------------------------------------
@@ -621,21 +655,50 @@ def wrs_analysis(wrs: List[dict], pta: Optional[float] = None,
     best = max(points, key=lambda p: p["score"])
     pb_max = best["score"]
     after = [p for p in points if p["level"] > best["level"]]
-    pb_min = min((p["score"] for p in after), default=None)
+    # The POINT, not just its score. The level is the most useful single fact
+    # about a rollover — "recognition fell at 95 dB" is actionable where a bare
+    # percentage is not — and the list length is needed to test the drop
+    # against the right amount of uncertainty.
+    worst = min(after, key=lambda p: p["score"]) if after else None
+    pb_min = worst["score"] if worst else None
 
     rollover_index = None
     rollover = False
     rollover_significant = None
     rollover_ratio = None
-    if pb_min is not None and pb_max > 0:
+    rollover_provisional = False
+    if worst is not None and pb_max > 0:
         # The criterion is applied to the exact ratio; the rounded index is
         # for display only.
         rollover_ratio = (pb_max - pb_min) / pb_max
         rollover_index = round(rollover_ratio, 3)
-        rollover = (rollover_ratio > ROLLOVER_THRESHOLD
-                    and not isclose(rollover_ratio, ROLLOVER_THRESHOLD))
-        # A drop the word list cannot resolve is not a drop.
-        rollover_significant = scores_differ(pb_max, pb_min, best["n_words"])
+        exceeds = (rollover_ratio > ROLLOVER_THRESHOLD
+                   and not isclose(rollover_ratio, ROLLOVER_THRESHOLD))
+        # A drop the word lists cannot resolve is not a drop. Each score is
+        # tested with its OWN list length: PB max on 50 words against a
+        # minimum on 25 used to be judged entirely on the 50-word interval,
+        # which treats the shorter list as more precise than it is.
+        rollover_significant = scores_differ_unequal(
+            pb_max, best["n_words"], pb_min, worst["n_words"])
+
+        # THE INDEX ALONE IS NOT ENOUGH, and this is the correction that
+        # matters. The index is a RATIO, so at a low PB max a difference of a
+        # few words swings it past the criterion: 6 words correct falling to 3
+        # on a 25-word list is an index of 0.50 and a drop of three words.
+        # Acting on that produced an urgent referral for imaging — the whole
+        # point of carrying binomial intervals through this module is to stop
+        # exactly that, and the flag ignored them.
+        #
+        # So a confirmed rollover now needs both the criterion AND a drop the
+        # lists can resolve. Where the index exceeds the criterion but the
+        # drop does not survive the test, the finding is kept and reported as
+        # PROVISIONAL with a repeat instruction — it is not discarded, and it
+        # does not become a referral on its own.
+        #
+        # An untestable drop (no usable interval) leaves the criterion to
+        # decide, which fails toward referral rather than away from it.
+        rollover = exceeds and rollover_significant is not False
+        rollover_provisional = exceeds and rollover_significant is False
 
     band = next((d for lo, hi, d in WRS_BANDS if lo <= pb_max < hi), WRS_BANDS[0][2])
     disproportionate = pta is not None and pta < 50 and pb_max < 60
@@ -651,8 +714,9 @@ def wrs_analysis(wrs: List[dict], pta: Optional[float] = None,
     if rollover:
         notes.append(
             f"Rollover index {rollover_index} exceeds {ROLLOVER_THRESHOLD} — word "
-            "recognition worsens at higher levels, which suggests a retrocochlear "
-            "site of lesion. Refer for ENT/neuro-otology assessment."
+            f"recognition falls from {pb_max:g}% at {best['level']} dB HL to "
+            f"{pb_min:g}% at {worst['level']} dB HL, which suggests a "
+            "retrocochlear site of lesion. Refer for ENT/neuro-otology assessment."
         )
         if rollover_ratio < ROLLOVER_THRESHOLD_DIRKS and not isclose(
                 rollover_ratio, ROLLOVER_THRESHOLD_DIRKS):
@@ -663,11 +727,28 @@ def wrs_analysis(wrs: List[dict], pta: Optional[float] = None,
                 "Borderline — repeat the performance-intensity function with "
                 "full lists; the referral stands until it is repeated."
             )
-        if rollover_significant is False:
+        if rollover_significant is None:
             notes.append(
-                f"That drop is within the range a {best['n_words']}-word list "
-                "cannot resolve. Repeat with a full list before acting on it."
+                "The drop could not be tested against the word lists' own "
+                "uncertainty, so the criterion alone decides it here."
             )
+    elif rollover_provisional:
+        # Reported, not discarded — and not a referral. The index is a ratio,
+        # and a ratio over a low PB max moves by whole words.
+        lists = (f"a {best['n_words']}-word list"
+                 if best["n_words"] == worst["n_words"]
+                 else f"{best['n_words']}- and {worst['n_words']}-word lists")
+        notes.append(
+            f"Possible rollover: index {rollover_index} exceeds "
+            f"{ROLLOVER_THRESHOLD}, but the fall from {pb_max:g}% at "
+            f"{best['level']} dB HL to {pb_min:g}% at {worst['level']} dB HL is "
+            f"within what {lists} cannot resolve — "
+            f"{best['correct']} words correct against {worst['correct']}. The "
+            "index is a ratio, so at a low PB max a difference of a few words "
+            "clears the criterion on its own. Repeat the performance-intensity "
+            "function with full lists before reading this as retrocochlear; it "
+            "is not a referral on these numbers."
+        )
     elif rollover_ratio is not None and isclose(rollover_ratio, ROLLOVER_THRESHOLD):
         notes.append(
             f"Rollover index {rollover_index} meets but does not exceed the "
@@ -721,11 +802,21 @@ def wrs_analysis(wrs: List[dict], pta: Optional[float] = None,
         "pb_max_ci": ci,
         "n_words": best["n_words"],
         "pb_min_after_max": pb_min,
+        #: Where the minimum was measured, and on what list. Without these the
+        #: reader cannot tell a two-word wobble from a collapse, and the
+        #: significance test cannot use the right amount of uncertainty.
+        "pb_min_level": worst["level"] if worst else None,
+        "pb_min_n_words": worst["n_words"] if worst else None,
+        "pb_min_ci": worst["ci"] if worst else None,
         "rollover_index": rollover_index,
         "rollover": rollover,
-        "rollover_criterion": (f"index > {ROLLOVER_THRESHOLD} (PAL PB-50; Jerger "
-                               "& Jerger 1971, Dirks et al. 1977)"),
+        "rollover_criterion": (f"index > {ROLLOVER_THRESHOLD} AND a drop the word "
+                               "lists can resolve (PAL PB-50; Jerger & Jerger "
+                               "1971, Dirks et al. 1977; Thornton & Raffin 1978)"),
         "rollover_significant": rollover_significant,
+        #: Index over the criterion, drop inside what the lists can hide. A
+        #: finding to repeat, never a referral on its own.
+        "rollover_provisional": rollover_provisional,
         "interpretation": band,
         "disproportionate": disproportionate,
         "adequate_level": adequate_level,
@@ -791,7 +882,13 @@ def compare_ears(right: Optional[dict], left: Optional[dict]) -> Optional[dict]:
 
     n = min(r_wrs["n_words"], l_wrs["n_words"])
     difference = round(r_wrs["pb_max"] - l_wrs["pb_max"], 1)
-    significant = scores_differ(r_wrs["pb_max"], l_wrs["pb_max"], n)
+    # Each ear tested on its own list length rather than both on the shorter
+    # one. Same reasoning as the rollover drop: the ears are often scored on
+    # different lists, and this comparison escalates to an urgent alert
+    # recommending imaging of the poorer ear, so it must not inherit a
+    # precision neither measurement has.
+    significant = scores_differ_unequal(
+        r_wrs["pb_max"], r_wrs["n_words"], l_wrs["pb_max"], l_wrs["n_words"])
 
     return {
         "right_pb_max": r_wrs["pb_max"],

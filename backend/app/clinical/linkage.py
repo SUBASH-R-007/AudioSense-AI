@@ -213,13 +213,26 @@ def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
     the ranked class probabilities weight the disease scores, so a picture the
     model cannot separate produces a differential that is correspondingly
     spread out instead of a confident answer built on a coin flip.
+
+    A CLINICIAN-CONFIRMED PATTERN IS NOT A DISTRIBUTION. Where the pattern was
+    set by examination rather than predicted, the model's spread is not
+    uncertainty about the appearance any more — the appearance is known — so
+    the differential is built from the confirmed pattern alone at full weight.
+    Weighting it by the model's own probabilities would let a classifier the
+    clinician has just overruled keep most of its say in the answer.
     """
     if not otoscopy:
         return {"available": False, "note": "No otoscope image recorded."}
 
-    ranked_patterns = otoscopy.get("ranked") or []
+    prediction = otoscopy.get("prediction") or {}
+    confirmed = prediction.get("kind") == "clinician_confirmed"
+
+    if confirmed and prediction.get("label"):
+        ranked_patterns = [{"label": prediction["label"], "probability": 1.0}]
+    else:
+        ranked_patterns = otoscopy.get("ranked") or []
     if not ranked_patterns:
-        label = (otoscopy.get("prediction") or {}).get("label")
+        label = prediction.get("label")
         if not label:
             return {"available": False, "note": "No otoscopic pattern to work from."}
         ranked_patterns = [{"label": label, "probability": 1.0}]
@@ -272,10 +285,15 @@ def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
         len(differential) == 1
         or differential[0]["score"] - differential[1]["score"] >= 0.15)
 
-    leading = (otoscopy.get("prediction") or {}).get("label")
+    leading = prediction.get("label")
     if leading == "normal":
         headline = ("A normal drum excludes the middle-ear causes; it cannot "
                     "rank the cochlear and neural ones against each other.")
+    elif confirmed and differential:
+        headline = (f"{prediction.get('name', 'The confirmed appearance')}, as "
+                    f"examined, points to {differential[0]['name']}"
+                    + (" — the appearance does not separate it from the others "
+                       "below." if not separated else "."))
     elif separated:
         headline = (f"The image's closest reference patterns point to "
                     f"{differential[0]['name']} — a prompt, not a validated "
@@ -292,8 +310,9 @@ def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
     return {
         "available": True,
         "from": "otoscopy",
-        "pattern": otoscopy["prediction"]["name"],
-        "certainty": otoscopy["prediction"].get("certainty"),
+        "pattern": prediction.get("name"),
+        "certainty": prediction.get("certainty"),
+        "clinician_confirmed": confirmed,
         "differential": differential,
         "separated": separated,
         "tied": tied if len(tied) > 1 else [],
@@ -302,10 +321,20 @@ def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
                            for k in sorted(excluded) if excluded[k] >= 0.5],
         "other_conditions": other,
         "reasoning": reasoning,
-        "note": ("Ranked from the image alone, weighted by the classifier's own "
-                 "uncertainty. It needs no history and no audiogram — and it "
-                 "inherits the classifier's accuracy, so read it as a prompt "
-                 "list rather than a conclusion."),
+        "note": (
+            # The caveat has to change with the source of the pattern: quoting
+            # the classifier's accuracy against a pattern a clinician confirmed
+            # would understate the finding, and dropping the caveat for a
+            # predicted one would overstate it.
+            "Ranked from the appearance you confirmed on examination. The "
+            "ranking itself comes from the reference set's disease links, so "
+            "it is a differential to work through rather than a diagnosis — "
+            "but it no longer depends on the classifier being right."
+            if confirmed else
+            "Ranked from the image alone, weighted by the classifier's own "
+            "uncertainty. It needs no history and no audiogram — and it "
+            "inherits the classifier's accuracy, so read it as a prompt "
+            "list rather than a conclusion."),
     }
 
 

@@ -54,6 +54,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+from app.clinical import correlation
 from app.clinical.symptoms import occupation_prompt, reconcile
 
 #: The full battery, in the order a workup runs. ``essential`` marks the tests
@@ -639,7 +640,8 @@ def diagnostic_picture(analysis: Optional[dict] = None,
                        tuning_fork: Optional[dict] = None,
                        boa: Optional[dict] = None,
                        age_months: Optional[float] = None,
-                       skipped: Optional[Dict[str, str]] = None) -> dict:
+                       skipped: Optional[Dict[str, str]] = None,
+                       otoscopy_ears: Optional[Dict[str, dict]] = None) -> dict:
     """Coverage, convergence, and the next test — the whole workup at a glance.
 
     ``skipped`` maps a modality key to the reason the clinician gave for not
@@ -665,6 +667,30 @@ def diagnostic_picture(analysis: Optional[dict] = None,
                      "alarm": False, "detail": None}]
     gaps = next_tests(analysis, done, age_months)
     conv = _convergence(analysis, findings, tuning_fork)
+
+    # Checks BETWEEN modalities that no single module can make — emissions
+    # against evoked potentials, an objective response against a volunteered
+    # threshold, the otoscope against the emissions, the forks against the
+    # tympanogram, an infant's response level against a measured one. Folded
+    # into convergence so they count toward the confidence rating rather than
+    # sitting in a panel of their own that nobody reads: a cross-test
+    # contradiction has to be able to make a workup "conflicted".
+    #
+    # Same defensive wrapping as `_findings` above and for the same reason:
+    # this aggregates several independently-evolving payloads, and one of them
+    # changing shape must cost a line rather than the whole panel.
+    try:
+        cross = correlation.correlate_case(
+            analysis=analysis, otoscopy=otoscopy, otoscopy_ears=otoscopy_ears,
+            aep=aep, tuning_fork=tuning_fork, boa=boa)
+    except Exception:  # noqa: BLE001 — deliberately broad; see the note above
+        cross = {"available": False, "findings": [], "conflicts": [],
+                 "agreements": [], "notes": [], "conflict_count": 0,
+                 "agreement_count": 0,
+                 "headline": "The cross-test checks could not be run.",
+                 "note": ""}
+    conv["agreements"].extend(f["detail"] for f in cross["agreements"])
+    conv["conflicts"].extend(f["detail"] for f in cross["conflicts"])
 
     performed = sum(1 for v in done.values() if v)
     coverage = [
@@ -724,6 +750,11 @@ def diagnostic_picture(analysis: Optional[dict] = None,
         "agreements": conv["agreements"],
         "conflicts": conv["conflicts"],
         "alarms": conv["alarms"],
+        #: The cross-modality checks in full, each with the pair of tests that
+        #: produced it and what to do about it — so the UI can show a
+        #: disagreement with its resolution rather than only the sentence that
+        #: was folded into `conflicts` above.
+        "cross_test": cross,
         "next_tests": gaps,
         "skipped": skipped,
         # A skip that has since become critical is the one worth naming: the

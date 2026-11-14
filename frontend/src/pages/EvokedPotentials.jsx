@@ -10,18 +10,24 @@
 // 5.4 ms at 90 dB nHL and near 7.5 ms at 20 dB — an absolute latency without
 // its intensity cannot be judged.
 //
-// NOTHING ON THIS PAGE IS THE PATIENT'S UNTIL IT IS ATTACHED. Every section
-// opens on an example preset so the page can be read before anything is
-// measured, and an example is not a recording. Publishing the battery on
-// render would tick "evoked potentials" done for a patient who never had the
-// test and put "the pathway is intact" on their results beside an MRI
-// referral. So a section only becomes this patient's when a value in it is
-// typed, and the record changes only when the clinician presses Attach on a
-// panel that lists exactly what will be stored — the same rule the BOA panel
-// and the immittance attach button follow. The first value typed into an
-// example clears the rest of it: an untouched example Wave I left beside a
-// measured Wave V would be recorded as this patient's and make an interval
-// measurable that never was.
+// NOTHING ON THIS PAGE IS THE PATIENT'S UNTIL IT IS ATTACHED. An example is
+// not a recording. Publishing the battery on render would tick "evoked
+// potentials" done for a patient who never had the test and put "the pathway
+// is intact" on their results beside an MRI referral. So a section only
+// becomes this patient's when a value in it is typed, and the record changes
+// only when the clinician presses Attach on a panel that lists exactly what
+// will be stored — the same rule the BOA panel and the immittance attach
+// button follow. The first value typed into an example clears the rest of it:
+// an untouched example Wave I left beside a measured Wave V would be recorded
+// as this patient's and make an interval measurable that never was.
+//
+// EVERY SECTION OPENS ON EMPTY FIELDS, waiting to be typed into. It used to
+// open on a loaded example with the preset chips above the inputs, and that
+// read as a demonstration rather than a form: the fields were always
+// editable, but a clinician seeing numbers already in them and a row of
+// scenario buttons on top reasonably concluded the page only did presets.
+// Entry is the point of the page, so entry is the default and the examples
+// are behind their own tab.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
@@ -135,9 +141,45 @@ function Presets({ options, active, onPick }) {
   )
 }
 
+/**
+ * Enter values, or load a worked example.
+ *
+ * `source` is the single source of truth — 'entered' or 'example' — so the
+ * tab cannot drift out of step with what the fields actually hold. Switching
+ * to Enter values blanks the fields rather than leaving an example's numbers
+ * in them to be mistaken for a measurement.
+ */
+function EntryTabs({ source, onValues, onExample }) {
+  const mode = source === 'example' ? 'preset' : 'values'
+  return (
+    <div role="tablist" aria-label="How this recording was entered"
+      className="mt-3 flex rounded-lg bg-slate-100 p-0.5 text-[12px]">
+      {[['values', 'Enter values'], ['preset', 'Example traces']].map(([k, label]) => (
+        <button key={k} type="button" role="tab" aria-selected={mode === k}
+          onClick={() => (k === 'values' ? onValues() : onExample())}
+          className={`flex-1 rounded-md px-3 py-1 font-medium transition ${
+            mode === k ? 'bg-white text-teal-700 shadow-sm'
+              : 'text-slate-500 hover:text-slate-700'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // Which of the two a section is showing — said on the section itself, so an
 // example can never be mistaken for a measurement.
-function SourceNote({ source, label }) {
+function SourceNote({ source, label, empty = false }) {
+  // An empty form has nothing to claim. Announcing "entered for this patient"
+  // over blank fields told the reader a recording existed before one did.
+  if (source === 'entered' && empty) {
+    return (
+      <p className="mt-2 text-[11.5px] leading-relaxed text-slate-400">
+        Type the measurements from the recording. Nothing is attached to the
+        patient until you press Attach below.
+      </p>
+    )
+  }
   return source === 'entered' ? (
     <p className="mt-2 rounded-lg border border-teal-200 bg-teal-50/60 px-3 py-1.5 text-[11.5px] text-teal-900">
       <span className="font-semibold">Entered for this patient.</span> These values
@@ -226,7 +268,7 @@ function ABRSection({ ear, sex, ageMonths, onResult }) {
   // ear's trace over to the other would make the interaural comparison
   // meaningless before it was ever made.
   const [runs, setRuns] = useState(
-    () => ({ right: abrFromPreset(ABR_PRESETS[0]), left: abrFromPreset(ABR_PRESETS[0]) }))
+    () => ({ right: blankAbr(), left: blankAbr() }))
   const run = runs[ear]
   const rightResult = useAbrRun('right', runs.right, sex, ageMonths, onResult, showToast)
   const leftResult = useAbrRun('left', runs.left, sex, ageMonths, onResult, showToast)
@@ -280,8 +322,13 @@ function ABRSection({ ear, sex, ageMonths, onResult }) {
         </span>
       )}
     >
-      <Presets options={ABR_PRESETS} active={run.source === 'example' ? run.label : null}
-        onPick={pickPreset} />
+      <EntryTabs source={run.source}
+        onValues={() => setRuns((prev) => ({ ...prev, [ear]: blankAbr() }))}
+        onExample={() => pickPreset(ABR_PRESETS[0])} />
+
+      {run.source === 'example' && (
+        <Presets options={ABR_PRESETS} active={run.label} onPick={pickPreset} />
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <NumField label="Level (dB nHL)" value={run.intensity} step="5" min="0"
@@ -325,7 +372,9 @@ function ABRSection({ ear, sex, ageMonths, onResult }) {
           preview treats them as corrected and they cannot be attached.
         </p>
       )}
-      <SourceNote source={run.source} label={run.label} />
+      <SourceNote source={run.source} label={run.label}
+        empty={num(run.intensity) == null
+          && ABR_FIELDS.every((w) => num(run.waves[w]) == null)} />
 
       {result && (
         <>
@@ -462,7 +511,7 @@ const blankMlr = () => ({
 })
 
 function MLRSection({ ear, onResult }) {
-  const [run, setRun] = useState(() => mlrFromPreset(MLR_PRESETS[0]))
+  const [run, setRun] = useState(blankMlr)
   const [result, setResult] = useState(null)
   // The first edit of an example starts from blank (see the page header).
   const edit = (change) => setRun((prev) => ({
@@ -498,8 +547,14 @@ function MLRSection({ ear, onResult }) {
         </Chip>
       )}
     >
-      <Presets options={MLR_PRESETS} active={run.source === 'example' ? run.label : null}
-        onPick={(p) => setRun(mlrFromPreset(p))} />
+      <EntryTabs source={run.source}
+        onValues={() => setRun(blankMlr())}
+        onExample={() => setRun(mlrFromPreset(MLR_PRESETS[0]))} />
+
+      {run.source === 'example' && (
+        <Presets options={MLR_PRESETS} active={run.label}
+          onPick={(p) => setRun(mlrFromPreset(p))} />
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
         {MLR_FIELDS.map((k) => (
@@ -517,7 +572,9 @@ function MLRSection({ ear, onResult }) {
           }} />
         recorded under sedation
       </label>
-      <SourceNote source={run.source} label={run.label} />
+      <SourceNote source={run.source} label={run.label}
+        empty={num(run.amp) == null
+          && MLR_FIELDS.every((k) => num(run.peaks[k]) == null)} />
 
       {result && (
         <>
@@ -573,10 +630,13 @@ const llrFromPreset = (p) => ({
   source: 'example', label: p.label, peaks: asStrings(p.peaks, LLR_FIELDS),
   amp: String(p.amp),
 })
+const blankLlr = () => ({
+  source: 'entered', label: null, peaks: asStrings({}, LLR_FIELDS), amp: '',
+})
 
 function LLRSection({ ear, onResult }) {
   const { patient } = useApp()
-  const [run, setRun] = useState(() => llrFromPreset(LLR_PRESETS[0]))
+  const [run, setRun] = useState(blankLlr)
   const [result, setResult] = useState(null)
   // P1 is the one measurement on this page that cannot be read without the
   // age. Normal P1 falls from about 200 ms at three months to about 60 ms by
@@ -642,8 +702,13 @@ function LLRSection({ ear, onResult }) {
         </Chip>
       )}
     >
-      <Presets options={LLR_PRESETS} active={run.source === 'example' ? run.label : null}
-        onPick={pickPreset} />
+      <EntryTabs source={run.source}
+        onValues={() => setRun(blankLlr())}
+        onExample={() => pickPreset(LLR_PRESETS[0])} />
+
+      {run.source === 'example' && (
+        <Presets options={LLR_PRESETS} active={run.label} onPick={pickPreset} />
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-6">
         {LLR_FIELDS.map((k) => (
@@ -675,7 +740,9 @@ function LLRSection({ ear, onResult }) {
           </span>
         )}
       </p>
-      <SourceNote source={run.source} label={run.label} />
+      <SourceNote source={run.source} label={run.label}
+        empty={num(run.amp) == null
+          && LLR_FIELDS.every((k) => num(run.peaks[k]) == null)} />
 
       {result && (
         <>

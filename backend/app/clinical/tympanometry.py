@@ -1564,13 +1564,27 @@ def analyze(
     age_years: Optional[float] = None,
     probe_hz: int = STANDARD_PROBE_HZ,
     gradient: Optional[float] = None,
+    recorded_type: Optional[str] = None,
 ) -> dict:
     """One tympanometry study: curve, type, gradient, reflexes, interpretation.
 
-    Accepts either a recorded sweep or the four summary values a machine
-    prints — ECV, peak pressure, static compliance and gradient. With the
-    summary the curve is modelled from those numbers, and an entered gradient
-    shapes it so the drawing reads back as the value that was typed.
+    Three entry modes, in order of how much they support:
+
+    1. A RECORDED SWEEP (``trace``) — everything: the peak, the gradient, the
+       tympanometric width, the notch that separates Types D and E.
+    2. THE FOUR PRINTED VALUES (ECV, peak pressure, static compliance,
+       gradient) — the curve is modelled from them, and an entered gradient
+       shapes it so the drawing reads back as the value that was typed.
+    3. THE TYPE ALONE (``recorded_type``) — for a clinic holding nothing but
+       "Type C" off a printout or a referral letter. The type is most of what
+       a tympanogram contributes to a differential, so it is worth recording;
+       what it cannot give is the Type B canal-volume split, the gradient or
+       any normative comparison, and the result says so instead of leaving a
+       reader to assume a full study.
+
+    A sweep or values always take precedence over a recorded type: they
+    support strictly more, so accepting the type beside them could only
+    subtract information.
 
     The probe tone and age choose the rules (``probe_mode``). A 226 Hz trace
     under six months is refused rather than typed; a 1000 Hz trace is read by
@@ -1579,7 +1593,65 @@ def analyze(
     """
     # Imported here rather than at module scope: immittance.py takes its
     # classifier from this module, so a top-level import would close a cycle.
-    from app.clinical.immittance import analyze_reflexes
+    from app.clinical.immittance import analyze_reflexes, from_recorded_type
+
+    has_values = any(v is not None for v in (peak_pressure, compliance, ecv))
+    if recorded_type and not (trace or has_values):
+        typed = from_recorded_type(recorded_type)
+        reflex = analyze_reflexes(reflexes or {}, pta)
+        infant_warning = None
+        if typed is None:
+            return {
+                "ear": ear, "probe_hz": probe_hz,
+                "probe_mode": probe_mode(age_years, probe_hz),
+                "age_years": age_years, "curve": None, "tympanogram": None,
+                "not_typed": (f"'{recorded_type}' is not one of the eight "
+                              f"tympanogram types ({', '.join(TYMPANOGRAM_TYPES)})."),
+                "reflexes": reflex, "entry_mode": "type",
+                "measurements": {}, "within_normal": {},
+                "infant_warning": None,
+                "interpretation": [], "flags": [],
+            }
+        caveat = None
+        if age_years is not None and age_years < 1.0:
+            # Same reasoning as the battery's: with no probe tone recorded
+            # alongside a bare type, an infant's normal-looking trace may be
+            # a 226 Hz probe reading over an effusion.
+            from app.clinical.immittance import INFANT_PROBE_CAVEAT
+            caveat = INFANT_PROBE_CAVEAT
+            typed = {**typed, "provisional": True,
+                     "caveats": [*typed["caveats"], caveat]}
+            infant_warning = caveat
+        lines = [f"{typed['label']}. {typed['interpretation']}"]
+        if typed["disorders"]:
+            lines.append("Associated disorders: "
+                         + ", ".join(typed["disorders"]) + ".")
+        lines.extend(typed["caveats"])
+        if reflex:
+            lines.append(reflex["note"])
+        return {
+            "ear": ear,
+            "probe_hz": probe_hz,
+            "probe_mode": probe_mode(age_years, probe_hz),
+            "age_years": age_years,
+            # No curve: there is nothing to draw, and drawing a representative
+            # shape for the type would be inventing a measurement.
+            "curve": None,
+            "tympanogram": typed,
+            "not_typed": None,
+            "reflexes": reflex,
+            "entry_mode": "type",
+            "measurements": {
+                "peak_pressure": None, "static_compliance": None,
+                "static_compliance_reference": None, "ecv": None,
+                "width": None, "gradient": None,
+            },
+            "within_normal": {"pressure": None, "compliance": None, "ecv": None,
+                              "width": None, "gradient": None},
+            "infant_warning": infant_warning,
+            "interpretation": lines,
+            "flags": [],
+        }
 
     mode = probe_mode(age_years, probe_hz)
     entered_gradient = gradient
@@ -1702,6 +1774,7 @@ def analyze(
         "tympanogram": typed,
         "not_typed": not_typed,
         "reflexes": reflex,
+        "entry_mode": "trace" if trace else "values",
         "measurements": {
             "peak_pressure": peak_pressure,
             "static_compliance": compliance,

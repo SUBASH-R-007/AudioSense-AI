@@ -34,7 +34,56 @@ def test_high_freq_loss_kills_soft_consonants_keeps_vowels():
     assert "o" in result["audible"]
     text = " ".join(result["impact"])
     assert "plurals" in text
-    assert "female and children" in text
+    # The impact statements are GRADED rather than stacked, so this ski-slope
+    # (mid and high consonants gone, vowels intact) comes back as one sentence
+    # carrying both consequences instead of four that repeat each other.
+    assert "children's voices" in text
+    assert len(result["impact"]) <= 2, result["impact"]
+
+
+def test_impact_statements_are_graded_not_stacked():
+    """A patient who cannot detect speech is not told about plural endings.
+
+    These rules used to fire independently and concatenate: a loss severe
+    enough to take the vowels out produced four statements, three of which
+    described consequences the fourth had already made irrelevant, and the
+    one sentence that mattered was last.
+    """
+    profound = phoneme_audibility(flat(95))
+    assert profound["inaudible"], "nothing inaudible at 95 dB HL?"
+    impact = profound["impact"]
+    text = " ".join(impact)
+    # The dominant finding leads, and it is the only one.
+    assert len(impact) <= 2, impact
+    assert "not reliably detected" in text
+    # The subsumed detail is gone rather than repeated as its own sentence.
+    assert "plurals" not in text
+    assert "requests for repetition" not in text
+
+
+def test_a_rising_loss_still_reports_its_own_low_frequency_consequence():
+    """Nasal loss is a separate axis, not a milder consonant loss.
+
+    The nasals sit a few dB softer on the banana than the low vowels beside
+    them, so a shallow low-frequency loss takes /m/, /n/ and /ng/ while the
+    vowels survive — and that says something no consonant statement does.
+    A deeper low-frequency loss takes the vowels too, and then the nasal
+    detail IS subsumed and is correctly dropped.
+    """
+    shallow = phoneme_audibility({250: 31, 500: 31, 1000: 15, 2000: 10,
+                                  4000: 10, 8000: 10})
+    assert "m" in shallow["inaudible"]
+    # Borderline is its own status, so "not inaudible" is the right test here.
+    assert "u" not in shallow["inaudible"], "the vowels should survive this one"
+    text = " ".join(shallow["impact"])
+    assert "nasal" in text.lower()
+    assert "prosody" in text
+
+    deep = phoneme_audibility({250: 70, 500: 65, 1000: 30, 2000: 15,
+                               4000: 10, 8000: 10})
+    deep_text = " ".join(deep["impact"])
+    assert "not reliably detected" in deep_text
+    assert "prosody" not in deep_text
 
 
 def test_interpolation_is_log_frequency_linear():

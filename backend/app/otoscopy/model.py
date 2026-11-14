@@ -36,6 +36,7 @@ import hashlib
 import json
 import math
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -1011,6 +1012,133 @@ def predict(image_bgr: np.ndarray) -> dict:
 
 
 # --------------------------------------------------------------------------
+# clinician override
+# --------------------------------------------------------------------------
+def apply_correction(result: dict, corrected_label: str, *,
+                     note: str = "") -> dict:
+    """Replace the model's pattern with the one the clinician actually saw.
+
+    THIS IS THE AUTHORITATIVE READING, and the rest of the system has to treat
+    it that way. Measured top-1 accuracy on unseen photographs is 27%, so for
+    roughly three images in four the person holding the scope is right and the
+    classifier is wrong. A correction that only annotated the display would
+    leave every downstream inference — the concordance against the
+    tympanogram, the disease differential, the anatomy video, the report —
+    still reasoning from a pattern the clinician has explicitly rejected.
+
+    So the correction is applied where every consumer already looks:
+    ``prediction.label`` and ``prediction.name``. ``linkage.py``,
+    ``anatomy_video.py`` and ``concordance`` below all read those two fields,
+    which means they follow the correction without knowing it happened.
+
+    What changes:
+
+    - ``prediction`` names the corrected pattern, with ``kind`` set to
+      ``clinician_confirmed`` and NO confidence. A number there would be the
+      model's score for a class the model did not choose, which is
+      meaningless, and a fabricated 100% would be worse.
+    - ``reliable`` becomes True — not because the model improved, but because
+      the source of the label is now a clinician's direct examination. The
+      note says exactly that, so nothing reads it as a validated model output.
+    - ``category``, ``urgency``, ``clinical`` and ``evidence`` are recomputed
+      from the corrected label: these are deterministic taxonomy lookups, so
+      they are as certain as the clinician's reading.
+    - ``ranked`` keeps the model's own probabilities, untouched and flagged.
+      They are the record of what the model said and are needed to measure how
+      often it is overridden; they just stop driving anything.
+
+    The measurements, image quality and reference matches are left alone —
+    they describe the picture, and the picture has not changed.
+    """
+    from app.otoscopy.taxonomy import (
+        CATEGORY, CATEGORY_LABEL, URGENCY, URGENCY_LABEL,
+    )
+
+    if corrected_label not in TAXONOMY:
+        raise ValueError(f"unknown otoscopic pattern: {corrected_label}")
+
+    model_prediction = dict(result.get("prediction") or {})
+    model_label = model_prediction.get("label")
+    model_name = model_prediction.get("name") or model_label
+    name = TAXONOMY[corrected_label].get("name", corrected_label)
+    agreed = model_label == corrected_label
+
+    category_key = CATEGORY[corrected_label]
+    urgency_key = URGENCY[corrected_label]
+
+    out = dict(result)
+    out["prediction"] = {
+        "label": corrected_label,
+        "name": name,
+        "kind": "clinician_confirmed",
+        "statement": (f"{name} — confirmed on examination by the clinician."
+                      if agreed else
+                      f"{name} — set by the clinician, overriding the model's "
+                      f"reading of {str(model_name).lower()}."),
+        "reliable": True,
+        # Deliberately absent rather than 1.0: this is not a probability, and
+        # the UI must not draw a full confidence bar for a human judgement.
+        "confidence": None,
+        "margin": None,
+        "certainty": "clinician_confirmed",
+        "certainty_held_out": None,
+        "model_label": model_label,
+        "model_name": model_name,
+        "model_confidence": model_prediction.get("confidence"),
+    }
+    out["reliable"] = True
+    out["reliability_note"] = (
+        "This pattern was set by the clinician from direct examination, not by "
+        "the classifier, so the model's measured accuracy does not apply to "
+        "it. Everything derived below — the expected hearing and tympanogram, "
+        "the disease differential and the cross-checks — follows the "
+        "clinician's pattern."
+    )
+    out["category"] = {
+        "key": category_key,
+        "name": CATEGORY_LABEL.get(category_key, category_key),
+        "probability": None,
+        "ranked": [{"key": category_key,
+                    "name": CATEGORY_LABEL.get(category_key, category_key),
+                    "probability": None}],
+    }
+    out["urgency"] = {
+        "key": urgency_key,
+        "name": URGENCY_LABEL.get(urgency_key, urgency_key),
+        "probability": None,
+        "ranked": [{"key": urgency_key,
+                    "name": URGENCY_LABEL.get(urgency_key, urgency_key),
+                    "probability": None}],
+    }
+    out["clinical"] = describe(corrected_label)
+    out["evidence"] = _evidence(result.get("measurements") or {}, corrected_label)
+    out["ranked"] = [{**r, "corrected": r.get("label") == corrected_label}
+                     for r in (result.get("ranked") or [])]
+    out["differential"] = out["ranked"][:3]
+    # An out-of-distribution image is a statement about the model's training
+    # set, and it no longer qualifies a label the model did not produce.
+    out["out_of_distribution"] = False
+    out["correction"] = {
+        "corrected": True,
+        "agreed_with_model": agreed,
+        "model_label": model_label,
+        "model_name": model_name,
+        "model_confidence": model_prediction.get("confidence"),
+        "model_certainty": model_prediction.get("certainty"),
+        "label": corrected_label,
+        "name": name,
+        "note": note,
+        "recorded": datetime.now(timezone.utc).isoformat(),
+    }
+    out["disclaimer"] = (
+        "Pattern set by the clinician on direct examination. The model's own "
+        "ranking is kept below for the record. A photograph still cannot "
+        "exclude disease behind an obscured or partially visible membrane."
+    )
+    return out
+
+
+# --------------------------------------------------------------------------
 # cross-check against the rest of the battery
 # --------------------------------------------------------------------------
 def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
@@ -1018,12 +1146,21 @@ def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
 
     The taxonomy states what each pattern predicts — a perforation should
     give a large ear-canal volume and an air-bone gap; a normal drum should
-    give neither. Comparing the closest reference pattern's predictions
-    against the measured battery produces a specific, checkable
-    disagreement, and a disagreement is informative whether or not the
-    classifier is right. An agreement is weaker: the pattern match is not
-    validated, so agreement corroborates it without confirming it, and when
-    the two conflict the unvalidated image reading is the likelier error.
+    give neither. Comparing the pattern's predictions against the measured
+    battery produces a specific, checkable disagreement, and a disagreement is
+    informative whether or not the classifier is right. An agreement is
+    weaker: a predicted pattern is not validated, so agreement corroborates it
+    without confirming it.
+
+    WHO IS THE LIKELIER ERROR DEPENDS ON WHERE THE PATTERN CAME FROM, and this
+    is the part that changes the advice rather than just the wording. Against a
+    PREDICTED pattern — 27% top-1 on unseen photographs — a conflict means the
+    image reading is probably wrong, so the action is to look down the scope
+    again. Against a pattern a clinician CONFIRMED on examination, that advice
+    is backwards: the appearance is the firmer fact, and the conflict points at
+    the measurement or at a second pathology the drum does not show. Telling a
+    clinician who has just confirmed an intact drum to re-examine it, because a
+    30 dB gap does not fit, sends them to check the one thing they are sure of.
 
     ``analysis`` is a response from ``POST /api/analyze``; None when the
     image was uploaded before any audiometry, in which case there is simply
@@ -1032,6 +1169,7 @@ def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
     from app.otoscopy.taxonomy import CONDUCTIVE_CLASSES
 
     label = prediction["prediction"]["label"]
+    confirmed = (prediction.get("prediction") or {}).get("kind") == "clinician_confirmed"
     entry = TAXONOMY.get(label, {})
     agreements: List[dict] = []
     conflicts: List[dict] = []
@@ -1052,40 +1190,80 @@ def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
     lo, hi = entry.get("expected_gap_db", (0, 10))
 
     name = entry.get("name", label)
-    # The pattern is a closest match, not an identification; every sentence
-    # below says so, because these lines are quoted on their own elsewhere.
-    pattern = f"the closest reference pattern ({name})"
-    subject = f"The closest reference pattern ({name})"
+    # A predicted pattern is a closest match, not an identification, and every
+    # sentence below says so — these lines are quoted on their own elsewhere,
+    # where that qualifier is the only thing stopping them reading as a
+    # diagnosis. A confirmed pattern needs the opposite treatment: calling a
+    # clinician's own examination a "closest reference pattern" would
+    # misattribute it to the model.
+    if confirmed:
+        pattern = f"the confirmed appearance ({name})"
+        subject = f"{name}, confirmed on examination,"
+        # Agreement with an examined appearance is genuine corroboration from
+        # two independent methods, not a hedge about an unvalidated label.
+        corroboration = ""
+        # Where the examination is the firmer evidence, send the reader to the
+        # measurement — not back to the scope.
+        reexamine = ("Re-check the measurement: with the appearance confirmed, "
+                     "repeat masked bone conduction and the tympanogram with a "
+                     "fresh probe seal before reporting. If both stand, look "
+                     "for a cause the drum does not show.")
+    else:
+        pattern = f"the closest reference pattern ({name})"
+        subject = f"The closest reference pattern ({name})"
+        corroboration = (" This corroborates the pattern match; it does not "
+                         "confirm it.")
+        reexamine = ("Re-examine the ear first — the pattern match is not "
+                     "validated and is the likelier error. If the appearance "
+                     "is confirmed, re-check masked bone conduction and repeat "
+                     "the tympanogram with a fresh probe seal.")
 
     if gap is not None:
         if expects_gap and gap >= max(lo, 10):
             agreements.append({
-                "title": "Air-bone gap is consistent with the closest reference pattern",
+                "title": ("Air-bone gap is consistent with the confirmed appearance"
+                          if confirmed else
+                          "Air-bone gap is consistent with the closest reference pattern"),
                 "detail": (f"{subject} predicts a "
                            f"conductive component and the measured gap is "
-                           f"{gap:g} dB. This corroborates the pattern match; it "
-                           f"does not confirm it."),
+                           f"{gap:g} dB." + corroboration),
             })
         elif expects_gap and gap < 10:
             conflicts.append({
-                "title": "The image's closest pattern implies a conductive cause but there is no gap",
+                "title": ("The confirmed appearance implies a conductive cause "
+                          "but there is no gap" if confirmed else
+                          "The image's closest pattern implies a conductive "
+                          "cause but there is no gap"),
                 "detail": (f"{subject} normally produces "
                            f"a {lo}-{hi} dB air-bone gap, yet the measured gap is "
                            f"only {gap:g} dB."),
-                "action": "Re-examine the ear first — the pattern match is not "
-                          "validated and is the likelier error. If the appearance "
-                          "is confirmed, re-check masked bone conduction.",
+                "action": reexamine,
             })
         elif not expects_gap and gap >= 15:
             conflicts.append({
-                "title": "Conductive loss while the closest pattern is a normal-looking drum",
+                "title": ("Conductive loss behind a drum confirmed as normal"
+                          if confirmed else
+                          "Conductive loss while the closest pattern is a "
+                          "normal-looking drum"),
                 "detail": (f"A {gap:g} dB air-bone gap needs an explanation, and "
                            f"{pattern} does not provide one."),
-                "action": "Re-examine the ear: the pattern match is not validated "
-                          "and may have missed a middle-ear cause. If the drum is "
-                          "confirmed normal, consider ossicular fixation or a "
-                          "third-window disorder; confirm with tympanometry and "
-                          "acoustic reflexes.",
+                # With the drum confirmed normal the gap becomes the finding,
+                # and it has a short differential of its own: the pathology is
+                # behind an intact membrane. Sending the clinician back to the
+                # scope would send them to check the one thing they are sure of.
+                "action": ("The drum is confirmed normal, so the cause lies "
+                           "behind it: consider ossicular fixation "
+                           "(otosclerosis), ossicular discontinuity or a "
+                           "third-window disorder such as superior canal "
+                           "dehiscence. Confirm with tympanometry and acoustic "
+                           "reflexes — absent reflexes behind a Type A trace "
+                           "point to otosclerosis."
+                           if confirmed else
+                           "Re-examine the ear: the pattern match is not "
+                           "validated and may have missed a middle-ear cause. "
+                           "If the drum is confirmed normal, consider ossicular "
+                           "fixation or a third-window disorder; confirm with "
+                           "tympanometry and acoustic reflexes."),
             })
 
     if tymp_type:
@@ -1096,21 +1274,22 @@ def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
         expected_types = set(re.findall(r"\b([ABC][sd12]?)\b", expected))
         if expected and tymp_type in expected_types:
             agreements.append({
-                "title": f"Tympanogram Type {tymp_type} is consistent with the closest reference pattern",
-                "detail": (f"{subject} predicts "
-                           f"{expected}. This corroborates the pattern match; it "
-                           f"does not confirm it."),
+                "title": (f"Tympanogram Type {tymp_type} is consistent with the "
+                          "confirmed appearance" if confirmed else
+                          f"Tympanogram Type {tymp_type} is consistent with the "
+                          "closest reference pattern"),
+                "detail": f"{subject} predicts {expected}." + corroboration,
             })
         elif expected:
             conflicts.append({
-                "title": "Tympanogram does not match the image's closest reference pattern",
+                "title": ("Tympanogram does not match the confirmed appearance"
+                          if confirmed else
+                          "Tympanogram does not match the image's closest "
+                          "reference pattern"),
                 "detail": (f"{subject} predicts "
                            f"{expected}, but the measured trace is Type "
                            f"{tymp_type}."),
-                "action": "Re-examine the ear first — the pattern match is not "
-                          "validated and is the likelier error. If the appearance "
-                          "is confirmed, repeat the tympanogram with a fresh "
-                          "probe seal.",
+                "action": reexamine,
             })
 
     # An unsafe pattern outranks any reassurance the audiogram might offer.
@@ -1118,13 +1297,23 @@ def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
     # than asserting the disease; what it must never do is stay silent.
     if label in {"perforation_attic", "tumor"}:
         conflicts.append({
-            "title": ("Unsafe reference pattern: if confirmed on examination, "
+            "title": ("Unsafe appearance confirmed: refer regardless of the "
+                      "audiogram" if confirmed else
+                      "Unsafe reference pattern: if confirmed on examination, "
                       "refer regardless of the audiogram"),
-            "detail": (f"The image most resembles {name.lower()}. That pattern "
-                       "is managed on the examination, not the thresholds: "
-                       "early cholesteatoma and small middle-ear masses are "
-                       "frequently silent on pure tones."),
-            "action": ("Examine the ear directly now. If the appearance is "
+            "detail": ((f"You have confirmed {name.lower()}. That is managed on "
+                        "the examination, not the thresholds: early "
+                        "cholesteatoma and small middle-ear masses are "
+                        "frequently silent on pure tones, so a reassuring "
+                        "audiogram does not change the referral."
+                        if confirmed else
+                        f"The image most resembles {name.lower()}. That pattern "
+                        "is managed on the examination, not the thresholds: "
+                        "early cholesteatoma and small middle-ear masses are "
+                        "frequently silent on pure tones.")),
+            "action": (entry.get("referral", "Urgent ENT referral.")
+                       if confirmed else
+                       "Examine the ear directly now. If the appearance is "
                        "confirmed: " + entry.get("referral", "Urgent ENT referral.")),
         })
 
@@ -1132,9 +1321,14 @@ def concordance(prediction: dict, analysis: Optional[dict], side: str) -> dict:
         "available": True,
         "agreements": agreements,
         "conflicts": conflicts,
+        "clinician_confirmed": confirmed,
         "headline": (
-            "The image's closest reference pattern and the test battery agree "
-            "(corroboration, not confirmation)." if agreements and not conflicts
+            ("The appearance you confirmed and the test battery agree — two "
+             "independent methods reaching the same answer."
+             if confirmed else
+             "The image's closest reference pattern and the test battery agree "
+             "(corroboration, not confirmation).")
+            if agreements and not conflicts
             else f"{len(conflicts)} finding(s) do not agree — resolve before reporting."
             if conflicts else "Not enough of the battery has been run to cross-check."
         ),

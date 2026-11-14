@@ -11,6 +11,7 @@ import LinkagePanel from '../components/LinkagePanel.jsx'
 import DiseaseAudiogram from '../components/DiseaseAudiogram.jsx'
 import MaskingPanel from '../components/MaskingPanel.jsx'
 import VerdictBanner from '../components/VerdictBanner.jsx'
+import Collapsible, { Reveal, ReferenceSection } from '../components/Collapsible.jsx'
 import {
   availableLanguages, speak, stopSpeaking, voiceAvailable, voiceDiagnostic,
 } from '../lib/speech.js'
@@ -404,7 +405,7 @@ const EarRow = ({ side, color, children }) => (
 )
 
 export default function Dashboard() {
-  const { analysis, otoscopy, babbleScreen, showToast } = useApp()
+  const { analysis, otoscopyEars, babbleScreen, showToast } = useApp()
   const [bundle, setBundle] = useState(null)
   const [loadingReport, setLoadingReport] = useState(false)
   const [tab, setTab] = useState('report')
@@ -639,9 +640,15 @@ export default function Dashboard() {
               {referralBusy ? 'Building…' : '📄 ENT Referral'}
             </button>
           )}
+          {/* The clinical report only. The patient's counselling sheet is a
+              separate document with its own QR handout, on the Counseling tab
+              below — the two used to be printed in one file, which gave a
+              clinician two pages of counselling to file and a patient their
+              summary wrapped in air-bone gaps. */}
           <button onClick={downloadPdf} disabled={pdfBusy || !bundle}
+            title="The clinician's report. The patient counselling sheet is issued separately, as a QR handout."
             className="rounded-lg bg-slate-900 px-4 py-2 text-[13px] font-semibold text-white transition hover:bg-slate-700 disabled:opacity-40">
-            {pdfBusy ? 'Building…' : '⬇ PDF Report'}
+            {pdfBusy ? 'Building…' : '⬇ Clinical report (PDF)'}
           </button>
         </div>
       </div>
@@ -803,13 +810,22 @@ export default function Dashboard() {
             })()}
 
             {/* The same ear the explanation above is about, put to the other
-                model. Their disagreement is the part worth reading. */}
+                model. Their disagreement is the part worth reading — but it is
+                a question about the MODELS, not about this patient, so it is
+                behind a click. Collapsing it also stops the deep-ensemble
+                prediction being requested on every dashboard load: the panel
+                does not mount until it is opened. */}
             {(() => {
               const side = ml?.[cochleaEar] ? cochleaEar : ml?.right ? 'right' : 'left'
               const m = ml?.[side]
               if (!m) return null
               return (
-                <SecondOpinion side={side} ear={analysis.thresholds?.[side]} forest={m} />
+                <Reveal className="mt-2 border-t border-slate-100 pt-2"
+                  label="Ask the deep ensemble the same ear"
+                  hideLabel="Hide the deep ensemble">
+                  <SecondOpinion side={side} ear={analysis.thresholds?.[side]}
+                    forest={m} />
+                </Reveal>
               )
             })()}
 
@@ -1025,11 +1041,21 @@ export default function Dashboard() {
       )}
 
       {/* Which diseases these thresholds resemble, matched on shape, degree,
-          type and symmetry. Uses no history at all — the audiogram alone. */}
+          type and symmetry. Uses no history at all — the audiogram alone.
+          Collapsed: it is a prompt list over a fifteen-condition reference
+          set, not a finding about this patient, and it was competing for
+          attention with the verdict and the red flags. */}
       <div className="mt-5">
-        <DiseaseAudiogram analysis={analysis} side={cochleaEar} />
+        <Collapsible title="Diseases matching this audiogram"
+          subtitle="What these thresholds resemble, on shape, degree, type and symmetry — from the audiogram alone, with no history.">
+          <DiseaseAudiogram analysis={analysis} side={cochleaEar} embedded />
+        </Collapsible>
       </div>
 
+      {/* The cross-check stays OPEN. It is the one panel on this page that can
+          say two of this patient's own tests cannot both be true, and a
+          disagreement nobody saw is the failure this whole app is built to
+          avoid. */}
       <div className="mt-5" data-tour="linkage">
         <LinkagePanel side={cochleaEar} />
       </div>
@@ -1176,8 +1202,15 @@ export default function Dashboard() {
           conversation runs in: play the clip, then hand over the sheet. The
           ear follows the same selector as every other per-ear panel. */}
       <div className="mt-5">
-        <EarAnatomyVideo analysis={analysis} otoscopy={otoscopy}
-          side={cochleaEar} onSideChange={setCochleaEar} />
+        {/* A counselling aid, not a finding — and it loads a video clip, so
+            collapsing it keeps that off the page for a reader who is here to
+            read the result. Lazily mounted, so the clip is not fetched until
+            somebody opens it. */}
+        <Collapsible title="Show the patient what is happening"
+          subtitle="A short animation of where this patient's sound is being lost, with the two or three sentences to say while it plays.">
+          <EarAnatomyVideo analysis={analysis} otoscopyEars={otoscopyEars}
+            side={cochleaEar} onSideChange={setCochleaEar} embedded />
+        </Collapsible>
       </div>
 
       {/* report + counseling */}
@@ -1282,7 +1315,9 @@ export default function Dashboard() {
                     <p className="mt-0.5 max-w-md text-[12px] leading-snug text-slate-600">
                       The patient scans this to open their own counseling sheet — in
                       every language — on their phone, to keep and to show family.
-                      Works on the clinic network with no internet.
+                      Works on the clinic network with no internet. This is the
+                      patient's document; the QR printed on the clinical report
+                      opens the clinical report instead.
                     </p>
                     <a href={handout.url} target="_blank" rel="noreferrer"
                       className="mt-1 inline-block text-[11.5px] font-medium text-teal-700 underline">

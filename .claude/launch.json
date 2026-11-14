@@ -19,9 +19,10 @@
       "port": 8000,
       "autoPort": false,
       "env": {
-        "AUDIOSENSE_ALLOW_ANONYMOUS": "1"
+        "AUDIOSENSE_ALLOW_ANONYMOUS": "1",
+        "AUDIOSENSE_USERS": ""
       },
-      "_comment": "autoPort must stay false: frontend/vite.config.js proxies /api to a hardcoded http://localhost:8000, so a reassigned port leaves the UI unable to reach the API."
+      "_comment": "autoPort must stay false: frontend/vite.config.js proxies /api to a hardcoded http://localhost:8000, so a reassigned port leaves the UI unable to reach the API. AUDIOSENSE_USERS is blanked deliberately: configuring accounts beats the anonymous opt-out (services/auth.anonymous_allowed), so on any machine that has a gitignored backend/.env this entry served a login screen instead of the no-login dev server it is meant to be. A real environment variable wins over the .env file, and an empty one means no accounts. Use the 'backend-protected' entry to exercise the login."
     },
     {
       "name": "frontend",

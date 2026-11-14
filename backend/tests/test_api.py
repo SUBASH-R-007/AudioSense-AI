@@ -137,6 +137,83 @@ def test_pdf_generation_and_verify_roundtrip():
     assert client.get("/api/verify/deadbeef00000000").json()["valid"] is False
 
 
+def test_the_pdf_is_the_clinical_report_and_carries_no_counselling_sheet():
+    """Two documents, two readers.
+
+    The PDF is countersigned and filed by a clinician; the counselling sheet
+    is plain language for the patient to take home, and it has its own QR
+    handout. Printing them in one file served neither — a filed report with
+    two pages of counselling in the middle of it, and a patient's summary
+    wrapped in air-bone gaps and an RPwD percentage.
+    """
+    pytest.importorskip("pypdf")
+    from pypdf import PdfReader
+
+    case = DEMO_CASES[0]
+    analysis = client.post("/api/analyze", json=case["record"]).json()
+    bundle = client.post("/api/report", json=analysis).json()
+    # The bundle still CARRIES the counselling sheet — the handout route and
+    # the dashboard both need it. It just does not go into the PDF.
+    assert bundle["counseling"]["english"]["summary"]
+
+    pdf_bytes = client.post("/api/pdf", json={
+        "patient": analysis["patient"], "analysis": analysis,
+        "report_bundle": bundle,
+    }).content
+    text = " ".join((p.extract_text() or "")
+                    for p in PdfReader(io.BytesIO(pdf_bytes)).pages)
+    assert "Patient Counseling" not in text
+    # The clinical sections are all still there.
+    for heading in ("Findings", "Degree & Type", "Recommendations"):
+        assert heading in text, heading
+    # And the QR says what it opens.
+    assert "Scan for this clinical report" in text
+
+
+def test_the_report_qr_opens_the_clinical_report_not_the_counselling_sheet():
+    case = DEMO_CASES[0]
+    analysis = client.post("/api/analyze", json=case["record"]).json()
+    bundle = client.post("/api/report", json=analysis).json()
+    client.post("/api/pdf", json={
+        "patient": analysis["patient"], "analysis": analysis,
+        "report_bundle": bundle,
+    })
+
+    from app.services.pdf import result_hash
+    page = client.get(f"/api/report-view/{result_hash(analysis)}")
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    body = page.text
+    assert "Clinical Report" in body
+    assert "Findings" in body and "Recommendations" in body
+    # It is the clinician's document: no counselling sheet, in any language.
+    assert "Practical tips" not in body
+    for phrase in bundle["counseling"]["english"]["tips"]:
+        assert phrase not in body
+
+    # An unknown hash is a 404, not an empty report.
+    assert client.get("/api/report-view/0000000000000000").status_code == 404
+
+
+def test_verification_reports_provenance_rather_than_the_report_text():
+    """Two routes, two questions. This one answers "did we issue this?"."""
+    case = DEMO_CASES[0]
+    analysis = client.post("/api/analyze", json=case["record"]).json()
+    bundle = client.post("/api/report", json=analysis).json()
+    client.post("/api/pdf", json={
+        "patient": analysis["patient"], "analysis": analysis,
+        "report_bundle": bundle,
+    })
+    from app.services.pdf import result_hash
+    h = result_hash(analysis)
+    body = client.get(f"/api/verify/{h}").json()
+    assert body["valid"] is True
+    assert body["report_url"].endswith(h)
+    # The findings live on the view, not duplicated here unformatted.
+    assert "report" not in body
+    assert "patient_header" not in body
+
+
 def _isolate_provider_env(monkeypatch):
     """Clear any provider keys the developer happens to have exported.
 

@@ -111,37 +111,80 @@ def phoneme_audibility(ac: Dict[int, Optional[ThresholdValue]]) -> dict:
 
 
 def functional_impact(results: List[dict]) -> List[str]:
-    """Rule-generated plain-language functional-impact statements."""
+    """Rule-generated plain-language functional-impact statements.
+
+    GRADED, NOT STACKED, and that is the correction here. These rules used to
+    fire independently and concatenate, so a loss severe enough to take the
+    vowels out produced four statements: that plurals and word endings would
+    be missed, that female and children's voices would be hard to follow, that
+    similar words would be confused, AND that speech was inaudible without
+    amplification. For a patient who cannot detect conversational speech at
+    all, the first three are not merely redundant — they are misleading about
+    the scale of the problem, and they bury the one sentence that matters
+    under advice about plural endings.
+
+    So the most significant finding leads and the ones it subsumes are folded
+    into a clause rather than repeated as sentences. Nothing is lost: the
+    per-phoneme detail is in ``results``, which the phoneme map on screen
+    draws in full.
+    """
     lost = {g: [r["symbol"] for r in results if r["status"] == "inaudible" and r["group"] == g]
             for g in ("nasal", "vowel", "voiced consonant", "soft consonant")}
     statements: List[str] = []
 
-    if lost["soft consonant"]:
-        sounds = ", ".join(f"/{s}/" for s in lost["soft consonant"][:5])
-        statements.append(
-            f"High-frequency soft consonants ({sounds}) fall below threshold: "
-            "will miss plurals, possessives and word endings (\"cat\" vs \"cats\"), "
-            "and soft consonants in quiet speech."
-        )
-        statements.append(
-            "Expect particular difficulty understanding female and children's "
-            "voices, and speech in background noise."
-        )
-    if lost["voiced consonant"]:
-        statements.append(
-            "Mid-frequency consonant loss: confusion between similar words "
-            "(\"bat\"/\"pat\", \"door\"/\"more\"); frequent requests for repetition."
-        )
+    def sounds(group: str, limit: int = 4) -> str:
+        items = lost[group][:limit]
+        more = len(lost[group]) - len(items)
+        return ", ".join(f"/{s}/" for s in items) + (f" and {more} more" if more > 0 else "")
+
+    consonants_gone = bool(lost["soft consonant"] or lost["voiced consonant"])
+
     if lost["vowel"]:
+        # The dominant finding: vowels carry most of the energy in speech, so
+        # losing them means speech is not reliably DETECTED, never mind
+        # understood. Consonant detail is implied by it.
         statements.append(
-            "Vowel energy is inaudible at conversational level: even loud "
-            "speech will be hard to detect without amplification."
+            "Vowel energy is inaudible at conversational level, so speech is "
+            "not reliably detected without amplification"
+            + (" — the consonant cues that carry intelligibility are below "
+               "threshold as well." if consonants_gone else ".")
         )
-    if lost["nasal"]:
+    elif lost["voiced consonant"]:
+        # Mid-frequency consonants gone, vowels intact: speech is audible but
+        # words are confusable. The soft-consonant consequence is a clause.
         statements.append(
-            "Low-frequency nasal cues (/m/, /n/) are lost: reduced awareness "
-            "of voice prosody and hum-type environmental sounds."
+            "Mid-frequency consonant cues are inaudible "
+            f"({sounds('voiced consonant')}): expect confusion between similar "
+            "words (\"bat\"/\"pat\", \"door\"/\"more\") and frequent requests for "
+            "repetition"
+            # The high-frequency consequence is kept as a clause rather than
+            # dropped: "plurals go, and women's and children's voices are
+            # hardest" is a specific, actionable observation that the
+            # mid-frequency sentence does not imply on its own.
+            + (", with plurals and word endings missed as well, and women's "
+               "and children's voices and speech in noise hardest to follow."
+               if lost["soft consonant"] else ".")
         )
+    elif lost["soft consonant"]:
+        # The classic high-frequency picture, in one sentence instead of two.
+        statements.append(
+            f"High-frequency soft consonants ({sounds('soft consonant', 5)}) fall "
+            "below threshold: plurals, possessives and word endings are missed "
+            "(\"cat\" vs \"cats\"), and following women's and children's voices or "
+            "speech in background noise will be hardest."
+        )
+
+    # A separate axis rather than a milder version of the above: losing the
+    # low-frequency nasals with the vowels intact is a rising loss, and it
+    # says something the consonant statements do not. Suppressed only when
+    # the vowels have gone too, where it adds nothing to "speech is not
+    # reliably detected".
+    if lost["nasal"] and not lost["vowel"]:
+        statements.append(
+            "Low-frequency nasal cues (/m/, /n/) are inaudible: reduced "
+            "awareness of voice prosody and of hum-type environmental sounds."
+        )
+
     if not any(lost.values()):
         borderline = [r for r in results if r["status"] == "borderline"]
         if borderline:

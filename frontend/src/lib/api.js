@@ -142,6 +142,16 @@ export const api = {
       body: JSON.stringify(ear),
     }).then(json),
 
+  // A whole report page: the audiogram is located on it and digitized, and
+  // the printed fields are read or returned as crops to confirm.
+  digitizeReport: (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return http('/api/digitize/report', { method: 'POST', body: fd }).then(json)
+  },
+  reportCapability: () =>
+    http('/api/digitize/report/capability').then(json),
+
   digitize: (file) => {
     const fd = new FormData()
     fd.append('file', file)
@@ -323,6 +333,17 @@ export const api = {
     if (analysis) fd.append('analysis', JSON.stringify(analysis))
     return http('/api/otoscopy/analyze', { method: 'POST', body: fd }).then(json)
   },
+  // The whole analysis goes back up rather than the image: the server then
+  // re-derives the clinical consequence, the differential and the
+  // cross-checks from the corrected pattern without decoding the photograph
+  // a second time.
+  otoscopyCorrect: ({ result, corrected, note = '', analysis = null }) =>
+    http('/api/otoscopy/correct', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ result, corrected, note, analysis }),
+    }).then(json),
+  otoscopyCorrections: () => http('/api/otoscopy/corrections').then(json),
 
   // --- signs and symptoms -------------------------------------------------
   symptomCatalog: () => http('/api/symptoms/catalog').then(json),

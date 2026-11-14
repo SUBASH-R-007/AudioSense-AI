@@ -257,6 +257,166 @@ def test_no_audiometry_means_nothing_to_reconcile():
     assert result["available"] is False
 
 
+# --------------------------------------------------- clinician override ---
+#
+# The classifier is right for about one unseen photograph in four, so the
+# clinician's own reading has to be able to replace it — and replacing it has
+# to reach every inference drawn from it, not just the heading.
+
+def a_prediction(label="otitis_media"):
+    """A full prediction, from the real model, for a real reference view."""
+    return M.predict(a_reference_image(label))
+
+
+def test_a_correction_replaces_the_label_everywhere_it_is_read():
+    result = a_prediction("otitis_media")
+    corrected = M.apply_correction(result, "perforation_central")
+    # Every downstream consumer reads prediction.label / .name — linkage.py,
+    # anatomy_video.py and concordance all do — so these two fields are what
+    # make the override propagate.
+    assert corrected["prediction"]["label"] == "perforation_central"
+    assert corrected["prediction"]["name"] == TAXONOMY["perforation_central"]["name"]
+    assert corrected["clinical"]["label"] == "perforation_central"
+    assert corrected["category"]["key"] == CATEGORY["perforation_central"]
+    assert corrected["urgency"]["key"] == URGENCY["perforation_central"]
+
+
+def test_a_corrected_pattern_carries_no_confidence_number():
+    """A human judgement is not a probability, and must not be drawn as one."""
+    corrected = M.apply_correction(a_prediction(), "normal")
+    assert corrected["prediction"]["confidence"] is None
+    assert corrected["prediction"]["kind"] == "clinician_confirmed"
+    assert corrected["category"]["probability"] is None
+    assert corrected["urgency"]["probability"] is None
+
+
+def test_a_corrected_pattern_is_reliable_and_says_why():
+    result = a_prediction()
+    assert result["reliable"] is False
+    corrected = M.apply_correction(result, "normal")
+    assert corrected["reliable"] is True
+    # Reliable because a clinician looked, NOT because the model improved.
+    assert "clinician" in corrected["reliability_note"].lower()
+
+
+def test_a_correction_keeps_the_model_ranking_for_the_record():
+    result = a_prediction()
+    corrected = M.apply_correction(result, "tumor")
+    assert len(corrected["ranked"]) == len(result["ranked"])
+    assert [r["probability"] for r in corrected["ranked"]] == \
+           [r["probability"] for r in result["ranked"]]
+    assert sum(1 for r in corrected["ranked"] if r["corrected"]) == 1
+    assert corrected["correction"]["model_label"] == result["prediction"]["label"]
+
+
+def test_a_correction_records_whether_it_agreed_with_the_model():
+    result = a_prediction()
+    predicted = result["prediction"]["label"]
+    other = next(c for c in CLASSES if c != predicted)
+    assert M.apply_correction(result, predicted)["correction"]["agreed_with_model"]
+    assert not M.apply_correction(result, other)["correction"]["agreed_with_model"]
+
+
+def test_an_unknown_corrected_pattern_is_refused():
+    with pytest.raises(ValueError):
+        M.apply_correction(a_prediction(), "not_a_pattern")
+
+
+def test_an_out_of_distribution_flag_does_not_survive_a_correction():
+    """It describes the model's training set, not a label the model never gave."""
+    result = {**a_prediction(), "out_of_distribution": True}
+    assert M.apply_correction(result, "normal")["out_of_distribution"] is False
+
+
+def test_a_confirmed_drum_sends_the_reader_to_the_measurement_not_the_scope():
+    """The advice has to flip with the source of the pattern.
+
+    Against a predicted pattern a conflict means the image reading is probably
+    wrong. Against a pattern the clinician confirmed, telling them to
+    re-examine the ear sends them to check the one thing they are sure of.
+    """
+    analysis = {"rules": {"right": {"abg": {"value": 30}, "type": "Conductive"}}}
+    predicted = M.concordance({"prediction": {"label": "normal"}}, analysis, "right")
+    confirmed = M.concordance(
+        {"prediction": {"label": "normal", "kind": "clinician_confirmed"}},
+        analysis, "right")
+
+    assert "re-examine" in predicted["conflicts"][0]["action"].lower()
+    action = confirmed["conflicts"][0]["action"].lower()
+    assert "re-examine" not in action
+    # With the drum confirmed normal, the gap is the finding and it has its
+    # own short differential behind an intact membrane.
+    assert "otosclerosis" in action
+    assert confirmed["clinician_confirmed"] is True
+
+
+def test_a_confirmed_pattern_that_agrees_is_two_methods_not_a_hedge():
+    analysis = {"rules": {"right": {"abg": {"value": 30}, "type": "Conductive"}},
+                "immittance": {"right": {"tympanogram": {"type": "B"}}}}
+    confirmed = M.concordance(
+        {"prediction": {"label": "perforation_central",
+                        "kind": "clinician_confirmed"}}, analysis, "right")
+    assert not confirmed["conflicts"]
+    assert "independent methods" in confirmed["headline"]
+    # The "corroborates but does not confirm" hedge belongs to an unvalidated
+    # model label, not to a direct examination.
+    assert all("does not confirm it" not in a["detail"]
+               for a in confirmed["agreements"])
+
+
+def test_a_confirmed_pattern_drives_the_disease_differential_alone():
+    """Not weighted by a classifier the clinician has just overruled."""
+    from app.clinical import linkage
+
+    result = a_prediction("otitis_media")
+    corrected = M.apply_correction(result, "perforation_central")
+
+    from_model = linkage.otoscopy_vs_diseases(result)
+    from_clinician = linkage.otoscopy_vs_diseases(corrected)
+
+    assert from_model["clinician_confirmed"] is False
+    assert from_clinician["clinician_confirmed"] is True
+    assert from_clinician["pattern"] == TAXONOMY["perforation_central"]["name"]
+    # The model spread pulls in every pattern's disease list at its own
+    # weight; a confirmed pattern contributes only its own.
+    assert from_clinician["differential"] != from_model["differential"]
+    assert "classifier" not in from_clinician["note"].lower() \
+        or "no longer depends" in from_clinician["note"].lower()
+
+
+def test_correct_endpoint_returns_an_analysis_shaped_response():
+    image = as_png_bytes(a_reference_image())
+    analysed = client.post("/api/otoscopy/analyze",
+                           files={"file": ("ref.png", image, "image/png")},
+                           data={"side": "left"}).json()
+
+    res = client.post("/api/otoscopy/correct", json={
+        "result": analysed, "corrected": "normal", "note": "intact, mobile"})
+    assert res.status_code == 200
+    body = res.json()
+    # Same shape as /analyze, so the client can swap it in whole.
+    for key in ("prediction", "ranked", "clinical", "category", "urgency",
+                "measurements", "reference_matches", "quality", "concordance"):
+        assert key in body, key
+    assert body["side"] == "left"
+    assert body["correction"]["note"] == "intact, mobile"
+
+
+def test_correct_endpoint_refuses_an_unknown_pattern():
+    image = as_png_bytes(a_reference_image())
+    analysed = client.post("/api/otoscopy/analyze",
+                           files={"file": ("ref.png", image, "image/png")}).json()
+    res = client.post("/api/otoscopy/correct",
+                      json={"result": analysed, "corrected": "sore_ear"})
+    assert res.status_code == 422
+
+
+def test_correct_endpoint_refuses_something_that_is_not_an_analysis():
+    res = client.post("/api/otoscopy/correct",
+                      json={"result": {"hello": "world"}, "corrected": "normal"})
+    assert res.status_code == 422
+
+
 # ----------------------------------------------------------- endpoints ---
 
 def test_analyze_endpoint_accepts_an_upload():

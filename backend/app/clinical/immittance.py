@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from app.clinical.tympanometry import _untyped_reason, classify
+from app.clinical.tympanometry import (
+    TYMPANOGRAM_TYPES, _untyped_reason, classify,
+)
 
 #: Acoustic reflex thresholds are normally 70-100 dB SL above threshold.
 REFLEX_SL_NORMAL = (70, 100)
@@ -79,6 +81,66 @@ def classify_tympanogram(
     page could disagree about the same ear.
     """
     return classify(peak_pressure, compliance, ecv, age_years=age_years)
+
+
+def from_recorded_type(type_key: Optional[str]) -> Optional[dict]:
+    """A tympanogram type taken straight off a printout, with no numbers.
+
+    The type is most of what a tympanogram contributes to a diagnosis — it is
+    the field ``linkage.py`` reads to move diseases on and off the
+    differential — so a clinic that has only the type should be able to record
+    it rather than leave the test blank.
+
+    What it cannot give, and says so:
+
+    - THE TYPE B SPLIT. Type B means effusion at a normal canal volume,
+      perforation or a patent grommet at a large one, and wax or a blocked
+      probe at a small one. That last is an ARTEFACT being reported as
+      middle-ear disease, and only the volume separates them. A recorded
+      Type B therefore stays ambiguous between all three.
+    - THE GRADIENT. A peak of normal height that is too broad is an early
+      effusion, and a type letter cannot carry that.
+    - ANY NORMATIVE CHECK. There are no values to compare against a band, so
+      the age-specific norms do not enter into it.
+    """
+    if not type_key:
+        return None
+    key = str(type_key).strip()
+    # Accept "Type A" and "a" as well as "A"; the letter case is meaningful
+    # (As vs AS is the same type, Ad vs AD likewise) so only the first letter
+    # is upper-cased and any 's'/'d' suffix lower-cased.
+    key = key.replace("Type", "").replace("type", "").strip()
+    if not key:
+        return None
+    key = key[0].upper() + key[1:].lower()
+    entry = TYMPANOGRAM_TYPES.get(key)
+    if entry is None:
+        return None
+
+    caveats = ["Type recorded directly, with no peak pressure, static "
+               "admittance or canal volume behind it, so the normal ranges "
+               "were not applied and the gradient is unknown."]
+    if key == "B":
+        caveats.append(
+            "A recorded Type B does not say which of the three it is: an "
+            "effusion (normal canal volume), a perforation or patent grommet "
+            "(large volume), or wax or a blocked probe (small volume) — the "
+            "last being an artefact rather than middle-ear disease. Enter the "
+            "ear-canal volume to separate them.")
+    return {
+        "type": key,
+        "label": entry["label"],
+        "shape": entry["shape"],
+        "interpretation": (f"{entry['label']} as recorded. "
+                           + ", ".join(entry["disorders"]) + "."),
+        "disorders": list(entry["disorders"]),
+        "suggests_conductive": entry["suggests_conductive"],
+        "ecv_flag": None,
+        "normative": None,
+        "entry_mode": "type",
+        "recorded_type": True,
+        "caveats": caveats,
+    }
 
 
 def analyze_reflexes(
@@ -146,6 +208,14 @@ def analyze_immittance(ear, pta: Optional[float] = None,
     """
     tymp = classify_tympanogram(ear.tymp_pressure, ear.tymp_compliance,
                                 ear.tymp_ecv, age_years=age_years)
+    # Measured values win over a recorded type: they support strictly more
+    # (the Type B volume split, the gradient, the normative comparison), so a
+    # type recorded alongside them would only ever subtract information.
+    recorded_type = None
+    if tymp is None:
+        recorded_type = from_recorded_type(getattr(ear, "tymp_type", None))
+        if recorded_type is not None:
+            tymp = recorded_type
     reflexes = analyze_reflexes(ear.reflexes or {}, pta)
     caveat = infant_probe_caveat(age_years)
     if caveat and reflexes:
@@ -153,7 +223,8 @@ def analyze_immittance(ear, pta: Optional[float] = None,
                     "note": f"{reflexes['note']} Provisional: reflexes in infants "
                             "under 9 months are measured with a 1000 Hz probe "
                             "(JCIH 2019)."}
-    entered = ear.tymp_pressure is not None or ear.tymp_compliance is not None
+    entered = (ear.tymp_pressure is not None or ear.tymp_compliance is not None
+               or recorded_type is not None)
     if caveat and entered and tymp is None:
         # The classifier may refuse an infant trace outright rather than type
         # it. The values were still entered, so the reader is told why no type

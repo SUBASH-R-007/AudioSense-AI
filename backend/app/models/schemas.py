@@ -75,8 +75,33 @@ class EarData(BaseModel):
     #: means "absent at maximum output"; an empty dict means "not tested".
     reflexes: Dict[str, Optional[float]] = Field(default_factory=dict)
 
+    #: A tympanogram type recorded directly, with no numbers behind it —
+    #: "Type B, no peak" off an instrument printout, or a screening record
+    #: that says pass/refer and nothing else. The type still moves diseases
+    #: on and off the differential, which is most of what a tympanogram is
+    #: for, so it is worth recording; what it cannot do is give the canal
+    #: volume that splits Type B three ways, or the gradient that catches an
+    #: early effusion. ``immittance.analyze_immittance`` says so in the
+    #: result rather than leaving the reader to assume otherwise.
+    #:
+    #: Values entered in ``tymp_pressure`` / ``tymp_compliance`` / ``tymp_ecv``
+    #: always win over this: they support strictly more.
+    tymp_type: Optional[str] = None
+    #: Middle-ear screening outcome recorded on its own: "pass" | "refer"
+    #: (or "fail", normalised to refer) | "incomplete".
+    tymp_outcome: Optional[str] = None
+
     # --- otoacoustic emissions -------------------------------------------
     oae: List[OAEPoint] = Field(default_factory=list)
+    #: An OAE screen recorded as one word, the way a newborn screener, a camp
+    #: tablet or a handwritten card actually reports it. Used only when ``oae``
+    #: carries no points. See ``dpoae.from_outcome`` for what an outcome alone
+    #: can and cannot support — notably NOT the pre-clinical damage finding,
+    #: which is per-frequency by nature.
+    oae_outcome: Optional[str] = None
+    #: The frequencies the screen covered, where they are known. An outcome is
+    #: only as transferable as the set behind it.
+    oae_freqs: List[int] = Field(default_factory=list)
 
     # --- aided verification ----------------------------------------------
     #: Aided (functional gain) thresholds measured in the sound field.

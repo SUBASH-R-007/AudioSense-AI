@@ -4,7 +4,7 @@ A full explanation of what this project is, how every part works, why each
 design decision was made, and what has actually been measured.
 
 **Scale:** ~16,900 lines of backend Python across 72 modules, ~11,000 lines of
-frontend across 48 files, **2,046 automated tests**, 14 application pages,
+frontend across 48 files, **2,245 automated tests**, 14 application pages,
 18 components, 44 test files, 72 API endpoints across 69 paths.
 
 ---
@@ -1789,7 +1789,7 @@ entry, simulation and screening keep working with no connectivity.
 
 ## 18. Testing strategy
 
-**2,046 tests across 44 files**, all passing at the last full run.
+**2,245 tests across 44 files**, all passing at the last full run.
 
 | Kind | What it proves |
 |---|---|
@@ -1935,8 +1935,38 @@ admits what it cannot do:
    value, and hearing ages above 70 are extrapolated, all flagged in the
    payload.
 6. **Tinnitus matching is subjective** and repeat matches vary.
-7. **The digitizer assumes** a reasonably clean, roughly axis-aligned chart
-   with conventional colours.
+7. **The digitizer assumes** a reasonably clean, roughly axis-aligned chart.
+   It no longer assumes conventional colours: every mark is identified by its
+   SHAPE across the standard symbol set (O, △, X, □, <, >, [, ]), so a
+   photocopy, a fax, a greyscale scan or a chart drawn in one pen is readable,
+   where the colour-only pipeline returned "no red/blue audiogram symbols
+   detected" and the feature was simply unavailable. Colour is still used
+   where it exists, to corroborate the shape and to separate two symbols drawn
+   at the same point.
+
+   **Recall is lower without colour; precision is not.** On the bundled
+   samples the reading is 22/22 and 21/22 thresholds exact in colour, and
+   12–16 of 22 in greyscale — with no wrong value in any case measured. Where
+   two ears share a threshold their symbols coincide, and on a single-colour
+   chart that is a genuine ambiguity rather than a bug: the frequencies that
+   could not be read are named in the warnings and left for the clinician,
+   because every value lands in an editable grid with its own confidence
+   badge and a value left blank gets filled in while a wrong one does not.
+
+   A chart's printed legend often spells the symbol set out literally
+   ("Right: red O / ["), which a shape detector reads — correctly — as
+   symbols. Two physiological guards catch that rather than reporting it: a
+   bone threshold more than 15 dB poorer than air at the same frequency is
+   dropped, and a marginal shape in the bottom 10 dB of the plot is dropped
+   because that strip is where a chart prints its furniture.
+
+   **A whole report page is a different document** and has its own route: the
+   audiogram is located on the page rather than assumed to fill the frame, and
+   the printed results are read only where an OCR engine or a vision provider
+   is available. With neither — the default, since this app ships needing no
+   keys — the page's text blocks are shown as crops beside the fields they
+   fill, for a clinician to read off. That is guided transcription, not
+   automatic extraction, and the result says which it was.
 8. **The otoscopy classifier is trained on 62 views cut from 22 photographs.**
    With every view of the source photograph held out, it identifies the exact
    pattern 27% of the time (17/62, 95% CI 15–42%) — about twice chance, far
@@ -1996,5 +2026,28 @@ admits what it cannot do:
     no sensitivity or specificity figure is quoted anywhere, because none
     could be verified. The Schwabach and ABC are examiner-relative with no
     internal way to detect an examiner's own hearing loss.
-15. **Nothing here replaces an audiologist.** Every report carries: *"AI-assisted
+15. **An outcome recorded on its own supports less than a measurement.** Every
+    instrument accepts the one word a screener prints — PASS, REFER, or a bare
+    tympanogram type — because that is what most records actually contain, and
+    a field left empty is indistinguishable from a test never done. What such
+    a record cannot support is stated with it rather than quietly omitted: an
+    OAE outcome gives no cochlear place, no pre-clinical outer-hair-cell
+    finding and no frequency-by-frequency comparison against the audiogram,
+    because each of those compares one frequency's emission with the same
+    frequency's threshold. A recorded tympanogram type gives no canal volume,
+    so a Type B stays ambiguous between an effusion, a perforation and a
+    blocked probe — and the last of those is an artefact rather than disease.
+    Where both a measurement and an outcome arrive, the measurement is used.
+16. **The cross-test correlations are rules over declared expectations, not
+    statistics.** Each one states the pair of tests behind it and the
+    reasoning, and each is one-directional about confidence: a contradiction
+    is reported whenever the data supports it, because two measurements that
+    cannot both be true is a finding in itself, while an agreement is reported
+    as corroboration and never upgraded to confirmation. None of them is
+    inferred from a missing test — a check whose inputs are absent returns
+    nothing rather than reading absence as a normal result. The
+    ABR-versus-behavioural comparison in particular allows 25 dB on top of the
+    stimulus level before it calls the two inconsistent, because dB nHL and
+    dB HL are different scales and a click says least at 500 Hz.
+17. **Nothing here replaces an audiologist.** Every report carries: *"AI-assisted
     interpretation; final diagnosis requires a qualified audiologist."*

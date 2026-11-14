@@ -39,14 +39,32 @@ and JCIH (2019) screening protocols; Lonsbury-Martin & Martin (1990).
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Sequence
 
 from app.clinical.oae import (MIN_EMISSION_DB_SPL, NOISE_FLOOR_MAX_DB_SPL,
                               OAE_CEILING_DB_HL, SNR_PRESENT_DB, criterion_text,
                               display_snr, judge_emission)
 
-#: Standard DP-gram frequencies (f2, Hz).
+#: Standard DP-gram frequencies (f2, Hz). A clinic is not limited to these —
+#: see the ``custom`` protocol and ``cochlear_region`` below, which handle any
+#: frequency set the instrument was actually run at.
 DP_FREQS: List[int] = [1000, 1500, 2000, 3000, 4000, 6000, 8000]
+
+#: Outcome vocabulary for a result recorded WITHOUT per-frequency values.
+#: A screening instrument often prints nothing but PASS or REFER, and a camp
+#: record is often nothing but that word — so it has to be enterable. Clinics
+#: say "fail" and "refer" interchangeably for the same thing, and the word is
+#: not interchangeable clinically: a refer is a referral for diagnostic
+#: testing, never a diagnosis of hearing loss. "fail" is therefore accepted as
+#: input and normalised to "refer" everywhere downstream.
+OUTCOME_ALIASES: Dict[str, str] = {
+    "pass": "pass", "p": "pass", "clear": "pass", "present": "pass",
+    "refer": "refer", "fail": "refer", "f": "refer", "r": "refer",
+    "no_clear_response": "refer", "absent": "refer",
+    "incomplete": "incomplete", "inconclusive": "incomplete",
+    "invalid": "incomplete", "not_tested": "incomplete",
+}
 
 #: A noise floor above this makes the measurement uninterpretable, whatever
 #: the SNR appears to be: an absent emission could be hidden in the noise, and
@@ -89,7 +107,28 @@ PROTOCOLS: Dict[str, dict] = {
         "note": "Full-range gram; interpret frequency by frequency rather than "
                 "as a single pass or refer.",
     },
+    # The protocols above are published criteria, and their frequency lists are
+    # part of the criterion — a "newborn screening pass" measured at 1 and 2
+    # kHz is not a newborn screening pass. So a clinic that tested a different
+    # set gets its own protocol rather than being scored against a standard it
+    # did not follow, or having its extra frequencies silently ignored.
+    "custom": {
+        "name": "As tested (custom frequency set)",
+        # Resolved at analysis time from the frequencies actually supplied.
+        "freqs": [],
+        "snr": 6.0,
+        # Default: every frequency tested must pass. Overridable per request.
+        "required": None,
+        "note": ("Scored against the frequencies actually tested rather than a "
+                 "published protocol's list. The decision is only as "
+                 "transferable as the frequency set behind it, so report the "
+                 "set with the outcome."),
+    },
 }
+
+#: Protocols whose frequency list and pass count come from the request rather
+#: than from a published standard.
+CUSTOM_PROTOCOLS = frozenset({"custom"})
 
 #: Cochlear place for each test frequency — base to apex. Outer hair cells
 #: are tonotopically arranged, so the pattern of absent emissions maps onto a
@@ -104,6 +143,70 @@ COCHLEAR_REGION: Dict[int, str] = {
     8000: "extreme base",
 }
 
+#: Greenwood (1990) cochlear frequency-place map, human coefficients:
+#: f = A(10^(a·x) − k), inverted to give x, the fraction of the distance from
+#: apex (0) to base (1). It is what lets an arbitrary test frequency be given a
+#: real cochlear place instead of a blank: a clinic that adds 5 kHz to its
+#: DP-gram should not get an empty "region" column.
+GREENWOOD_A = 165.4
+GREENWOOD_a = 2.1
+GREENWOOD_k = 0.88
+
+#: Place bands, as (upper bound on x, label). The bounds are chosen to
+#: reproduce ``COCHLEAR_REGION`` exactly for the seven standard frequencies —
+#: ``test_dpoae`` asserts that — so adding a frequency cannot silently change
+#: how an existing one is described.
+_PLACE_BANDS = (
+    (0.44, "apical (low-frequency) turn"),
+    (0.50, "apical turn"),
+    (0.57, "mid turn"),
+    (0.64, "mid-basal turn"),
+    (0.78, "basal turn"),
+    (float("inf"), "extreme base"),
+)
+
+
+def cochlear_place(freq: float) -> Optional[float]:
+    """Fraction of the distance from the cochlear apex (0) to the base (1).
+
+    None for a frequency below the map's floor, where the formula has no
+    real solution rather than an answer worth printing.
+    """
+    try:
+        ratio = float(freq) / GREENWOOD_A + GREENWOOD_k
+        if ratio <= 0:
+            return None
+        return math.log10(ratio) / GREENWOOD_a
+    except (TypeError, ValueError):
+        return None
+
+
+def cochlear_region(freq: float) -> str:
+    """Where along the cochlea a frequency sits, for any frequency.
+
+    The seven standard DP-gram frequencies come from ``COCHLEAR_REGION``
+    verbatim, so the wording a clinician is used to never shifts. Anything
+    else is placed by the Greenwood map above, which is why a custom
+    frequency set still produces a cochlear profile rather than a gap.
+    """
+    exact = COCHLEAR_REGION.get(int(freq)) if freq == int(freq) else None
+    if exact:
+        return exact
+    x = cochlear_place(freq)
+    if x is None:
+        return ""
+    for upper, label in _PLACE_BANDS:
+        if x < upper:
+            return label
+    return ""  # pragma: no cover — the last band is unbounded
+
+
+def normalise_outcome(value: Optional[str]) -> Optional[str]:
+    """Map what a clinic typed onto 'pass' | 'refer' | 'incomplete'."""
+    if value is None:
+        return None
+    return OUTCOME_ALIASES.get(str(value).strip().lower().replace(" ", "_"))
+
 
 def _point(item) -> Optional[dict]:
     if isinstance(item, dict):
@@ -117,17 +220,42 @@ def _point(item) -> Optional[dict]:
     return {"freq": int(freq), "amplitude": float(amp), "noise_floor": float(nf)}
 
 
+def resolve_protocol(protocol: str, tested_freqs: Sequence[int],
+                     required: Optional[int] = None) -> dict:
+    """The criterion this gram is scored against.
+
+    For a published protocol the frequency list and pass count ARE the
+    criterion, so a caller cannot change them — a "newborn screening pass"
+    measured at 1 and 2 kHz is not a newborn screening pass, and silently
+    honouring an overridden count would put a standard's name on a decision it
+    did not make. ``required`` is therefore accepted only for ``custom``,
+    whose whole purpose is to score the set actually tested.
+    """
+    spec = dict(PROTOCOLS.get(protocol, PROTOCOLS["screening"]))
+    if protocol in CUSTOM_PROTOCOLS:
+        freqs = sorted({int(f) for f in tested_freqs})
+        spec["freqs"] = freqs
+        if required is None:
+            # Default: everything tested must pass. The clinic chose the set,
+            # so there is no reason to assume any of it was optional.
+            spec["required"] = len(freqs)
+        else:
+            spec["required"] = max(0, min(int(required), len(freqs)))
+    return spec
+
+
 def dp_gram(
     points: Sequence,
     protocol: str = "screening",
     ac_numeric: Optional[Dict[int, Optional[float]]] = None,
+    required: Optional[int] = None,
 ) -> Optional[dict]:
     """Full DP-gram with per-frequency verdicts and a protocol decision."""
     rows = [p for p in (_point(i) for i in points or []) if p]
     if not rows:
         return None
 
-    spec = PROTOCOLS.get(protocol, PROTOCOLS["screening"])
+    spec = resolve_protocol(protocol, [r["freq"] for r in rows], required)
     thresholds = ac_numeric or {}
 
     for row in rows:
@@ -136,7 +264,8 @@ def dp_gram(
         row["present"] = judged["present"]
         row["status"] = judged["status"]
         row["noisy_response"] = judged["noisy_response"]
-        row["region"] = COCHLEAR_REGION.get(row["freq"], "")
+        row["region"] = cochlear_region(row["freq"])
+        row["cochlear_place"] = cochlear_place(row["freq"])
         row["in_protocol"] = row["freq"] in spec["freqs"]
 
         threshold = thresholds.get(row["freq"])
@@ -217,6 +346,7 @@ def dp_gram(
     return {
         "points": rows,
         "protocol": {"key": protocol, **spec},
+        "custom_protocol": protocol in CUSTOM_PROTOCOLS,
         "outcome": outcome,
         "headline": headline,
         "passed_freqs": [r["freq"] for r in rows if r["verdict"] == "pass"],
@@ -308,17 +438,136 @@ def cochlear_profile(gram: Optional[dict]) -> Optional[dict]:
     }
 
 
+def from_outcome(
+    ear: str = "right",
+    outcome: Optional[str] = None,
+    protocol: str = "screening",
+    note: str = "",
+    kind: str = "dpoae",
+    freqs: Optional[Sequence[int]] = None,
+) -> dict:
+    """An OAE result recorded as PASS or REFER, with no per-frequency values.
+
+    This is how most screening actually arrives. A newborn screener, a camp
+    tablet and a handwritten card all print one word, and a system that
+    demands amplitudes and noise floors before it will record anything simply
+    does not get used in those settings.
+
+    WHAT AN OUTCOME CANNOT DO, which this result states rather than quietly
+    omitting:
+
+    - NO COCHLEAR PROFILE. "Where along the cochlea" is a pattern across
+      frequencies; one word has no pattern.
+    - NO PRE-CLINICAL DAMAGE FINDING. That inference needs an absent emission
+      AT A FREQUENCY compared against the threshold AT THAT FREQUENCY. A
+      refer with no frequencies cannot distinguish outer hair cell damage
+      from a middle-ear block or a noisy room, which is the entire content of
+      the finding.
+    - NO AUDIOGRAM RECONCILIATION. Same reason: the cross-check is
+      per-frequency.
+
+    So the outcome is recorded, interpreted as a screening decision, and
+    explicitly marked as not supporting the inferences a full gram supports.
+    Reporting it as if it did would be the one failure mode worse than not
+    recording it at all.
+    """
+    normalised = normalise_outcome(outcome)
+    if normalised is None:
+        return {"ear": ear, "kind": kind, "available": False,
+                "entry_mode": "outcome",
+                "note": (f"'{outcome}' is not a screening outcome — expected "
+                         "pass, refer or incomplete.")}
+
+    spec = dict(PROTOCOLS.get(protocol, PROTOCOLS["screening"]))
+    if protocol in CUSTOM_PROTOCOLS:
+        spec["freqs"] = sorted({int(f) for f in (freqs or [])})
+        spec["required"] = len(spec["freqs"]) or None
+
+    headline = {
+        "pass": "PASS — emissions present to the screening criterion.",
+        "refer": ("REFER — emissions did not meet the screening criterion. A "
+                  "refer is a referral for diagnostic testing, not a diagnosis "
+                  "of hearing loss."),
+        "incomplete": ("INCOMPLETE — the screen did not reach a decision. "
+                       "Repeat it before the result is read either way."),
+    }[normalised]
+
+    interpretation = [headline]
+    if protocol in CUSTOM_PROTOCOLS and spec["freqs"]:
+        interpretation.append(
+            f"Recorded against the frequencies tested: {spec['freqs']} Hz.")
+    interpretation.append(
+        "Recorded as an outcome only, with no per-frequency emission levels. "
+        "That is a valid screening record, and it is all it is: the cochlear "
+        "place of any dropout, the comparison against the audiogram frequency "
+        "by frequency, and the pre-clinical outer-hair-cell finding all need "
+        "the amplitudes and noise floors, so none of them is reported here.")
+    if normalised == "refer":
+        interpretation.append(
+            "A refer has three common causes that an outcome alone cannot "
+            "separate — outer hair cell damage, a middle-ear disorder, and a "
+            "noisy or unsettled recording. Tympanometry distinguishes the "
+            "second; a repeat in quiet distinguishes the third.")
+    if note:
+        interpretation.append(note)
+
+    return {
+        "ear": ear,
+        "kind": kind,
+        "available": True,
+        "entry_mode": "outcome",
+        "outcome": normalised,
+        "recorded_outcome": normalised,
+        "headline": headline,
+        "note": note,
+        "protocol": {"key": protocol, **spec},
+        "custom_protocol": protocol in CUSTOM_PROTOCOLS,
+        "points": [],
+        # Every per-frequency list is empty BY CONSTRUCTION, not by accident.
+        # Consumers that count these (the battery, the report) must see empty
+        # rather than absent, so they do not fall back to "not tested".
+        "passed_freqs": [], "referred_freqs": [], "invalid_freqs": [],
+        "uninformative_freqs": [], "missing_freqs": [],
+        "cochlear_profile": None,
+        "mismatches": [],
+        "preclinical_damage": [],
+        "possible_unexplained_emissions": [],
+        "unexplained_emissions": [],
+        "interpretation": interpretation,
+        "limits": [
+            "No cochlear place — that needs a pattern across frequencies.",
+            "No pre-clinical damage finding — that needs an absent emission at "
+            "a frequency with a normal threshold at the same frequency.",
+            "No frequency-by-frequency comparison against the audiogram.",
+        ],
+        "criterion": (f"as recorded by the screening instrument "
+                      f"({criterion_text(spec['snr'])})"),
+    }
+
+
 def analyze(
     ear: str = "right",
     points: Optional[Sequence] = None,
     protocol: str = "screening",
     ac_numeric: Optional[Dict[int, Optional[float]]] = None,
     kind: str = "dpoae",
+    required: Optional[int] = None,
+    recorded_outcome: Optional[str] = None,
+    outcome_note: str = "",
+    freqs: Optional[Sequence[int]] = None,
 ) -> dict:
-    """One OAE study: gram, protocol decision, cochlear profile, caveats."""
+    """One OAE study: gram, protocol decision, cochlear profile, caveats.
+
+    ``recorded_outcome`` switches to outcome-only entry (see ``from_outcome``)
+    and is used only when no per-frequency points were supplied — values beat
+    a summary whenever both are present, because they support strictly more.
+    """
     from app.clinical.oae import oae_audiogram_agreement
 
-    gram = dp_gram(points or [], protocol, ac_numeric)
+    gram = dp_gram(points or [], protocol, ac_numeric, required=required)
+    if not gram and recorded_outcome is not None:
+        return from_outcome(ear=ear, outcome=recorded_outcome, protocol=protocol,
+                            note=outcome_note, kind=kind, freqs=freqs)
     if not gram:
         return {"ear": ear, "kind": kind, "available": False,
                 "note": "No emission data entered."}
@@ -357,6 +606,7 @@ def analyze(
         "ear": ear,
         "kind": kind,
         "available": True,
+        "entry_mode": "values",
         **gram,
         "cochlear_profile": profile,
         "mismatches": mismatches,

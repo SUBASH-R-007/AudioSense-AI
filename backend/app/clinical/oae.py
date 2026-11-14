@@ -250,12 +250,54 @@ def oae_audiogram_agreement(
 
 
 def analyze_oae(ear, ac_numeric: Dict[int, Optional[float]]) -> Optional[dict]:
-    """Full OAE review for one ear (EarData)."""
+    """Full OAE review for one ear (EarData).
+
+    An ear carrying only a recorded outcome (``oae_outcome``, with no
+    per-frequency points) is reported as that outcome and nothing more. Every
+    inference below this line — pre-clinical damage, unexplained emissions,
+    the frequency-by-frequency agreement with the audiogram — compares one
+    frequency's emission against the same frequency's threshold, so none of
+    them is available from a single word, and each is returned EMPTY rather
+    than absent so the battery cannot mistake "recorded, says nothing" for
+    "not tested".
+    """
     oae = classify_oae(ear.oae or [])
     if not oae:
+        outcome = getattr(ear, "oae_outcome", None)
+        if outcome:
+            from app.clinical.dpoae import normalise_outcome
+            normalised = normalise_outcome(outcome)
+            if normalised is None:
+                return None
+            return {
+                "entry_mode": "outcome",
+                "recorded_outcome": normalised,
+                "outcome": normalised,
+                "freqs": sorted({int(f) for f in (getattr(ear, "oae_freqs", None) or [])}),
+                "points": [],
+                "present_freqs": [], "absent_freqs": [], "reduced_freqs": [],
+                "inconclusive_freqs": [], "noisy_response_freqs": [],
+                # `valid` is about having a judgeable per-frequency result,
+                # which an outcome is not; `all_present` / `all_absent` are
+                # per-frequency claims and stay False for the same reason.
+                "valid": False,
+                "all_present": False,
+                "all_absent": False,
+                "criterion": "as recorded by the screening instrument",
+                "mismatches": [],
+                "preclinical_damage": [],
+                "unexplained_emissions": [],
+                "possible_unexplained_emissions": [],
+                "note": (
+                    f"Emissions recorded as a {normalised.upper()} outcome only. "
+                    "Without per-frequency levels this cannot be compared "
+                    "against the thresholds, so it neither supports nor "
+                    "excludes pre-clinical outer hair cell damage."),
+            }
         return None
     mismatches = oae_audiogram_agreement(oae, ac_numeric)
     return {
+        "entry_mode": "values",
         **oae,
         "mismatches": mismatches,
         "preclinical_damage": [m for m in mismatches if m["kind"] == "preclinical_damage"],

@@ -23,8 +23,15 @@ class PictureRequest(BaseModel):
     analysis: Optional[dict] = None
     #: The response from POST /api/symptoms/analyze.
     assessment: Optional[dict] = None
-    #: The response from POST /api/otoscopy/analyze.
+    #: The response from POST /api/otoscopy/analyze. Kept for a caller that
+    #: holds a single reading; prefer ``otoscopy_ears`` where both ears were
+    #: examined, since a right-ear image must never be reconciled against the
+    #: left ear's emissions.
     otoscopy: Optional[dict] = None
+    #: Per-ear otoscopy, ``{"right": result, "left": result}``. The two ears
+    #: are examined separately and a perforated left drum beside a normal
+    #: right one is the commonest thing an otoscope sees.
+    otoscopy_ears: Optional[Dict[str, Optional[dict]]] = None
     #: The response from POST /api/aep/battery.
     aep: Optional[dict] = None
     #: The response from POST /api/tuning-fork/analyze.
@@ -64,4 +71,6 @@ def picture(req: PictureRequest):
     return D.diagnostic_picture(
         analysis=req.analysis, assessment=req.assessment, otoscopy=req.otoscopy,
         aep=req.aep, tuning_fork=req.tuning_fork, boa=req.boa,
-        age_months=req.age_months, skipped=req.skipped)
+        age_months=req.age_months, skipped=req.skipped,
+        otoscopy_ears={k: v for k, v in (req.otoscopy_ears or {}).items()
+                       if k in ("right", "left") and v})

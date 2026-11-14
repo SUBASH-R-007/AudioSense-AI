@@ -38,7 +38,7 @@
 AudioSense AI is a full-battery audiometry interpretation platform: **14 page
 modules** (13 routed screens behind a sign-in gate), **72 HTTP endpoints** across
 69 paths, **~18,100 lines** of backend Python across 76 modules, **~14,600 lines**
-of frontend across 48 files, and **2,093 automated tests**, all passing.
+of frontend across 48 files, and **2,245 automated tests**, all passing.
 
 The clinical core covers pure-tone audiometry with masking, speech audiometry
 (SDT/SRT/WRS), immittance across eight tympanogram types, otoacoustic emissions,
@@ -299,7 +299,7 @@ flowchart TB
 
 **Dependency direction** is one-way: `routers → clinical/ml/services → data`. The
 clinical package performs **no file, network, database or joblib I/O** — verified.
-That purity is what makes 2,093 tests fast and what will make the core portable when
+That purity is what makes 2,245 tests fast and what will make the core portable when
 the surrounding infrastructure is replaced.
 
 #### Current deployment
@@ -336,7 +336,7 @@ flowchart TB
         API1["FastAPI replica 1"]
         API2["FastAPI replica 2"]
         APIN["FastAPI replica N"]
-        CORE2["<b>UNCHANGED: clinical core</b><br/>22 pure modules · 2,093 tests"]
+        CORE2["<b>UNCHANGED: clinical core</b><br/>22 pure modules · 2,245 tests"]
         API1 --- CORE2
         API2 --- CORE2
         APIN --- CORE2
@@ -430,7 +430,7 @@ Thirteen gaps, every one traceable to something in the repository. Effort is in
 | 5 | **Audit logging** | No record of who read or deleted anything. For occupational hearing conservation — where a threshold shift becomes a compensation claim — an audiogram without tamper-evident provenance has little evidential value. | 2–3 pw |
 | 6 | **Backups & disaster recovery** | `DEPLOYMENT.md` documents data loss as expected: *"Patient records disappear after a redeploy — Expected."* No volume, no backup job, no export path. | 1–2 pw |
 | 7 | **Observability** | No structured logging, metrics, tracing or error tracking. With ~250 MB resident in a possibly-512 MB container, the realistic failure is a silent OOM nobody can attribute. | 2–3 pw |
-| 8 | **CI/CD** | **No `.github/` directory.** 2,093 tests exist and nothing runs them on push. The model artifact is committed, not built, so a stale model can ship indefinitely with no signal. | 1–2 pw |
+| 8 | **CI/CD** | **No `.github/` directory.** 2,245 tests exist and nothing runs them on push. The model artifact is committed, not built, so a stale model can ship indefinitely with no signal. | 1–2 pw |
 | 9 | **Rate limiting & request-size caps** | Batch reads whole CSVs into memory; digitize reads whole images; PDF and report paths are CPU-heavy. One signed-in caller can exhaust a single-worker instance; the login route itself spends ~360 ms of PBKDF2 per attempt and is public by necessity. In API mode it is also a cost-amplification vector. | 1–2 pw |
 | 10 | **Secret management** | Provider key stored as plaintext JSON; the saved file takes precedence over the environment forever after first write; `masked()` returns the last 4 characters to any signed-in caller. | 1–2 pw |
 | 11 | **Horizontal scaling** | Three concrete blockers: a module-level config global written to local disk; whole-file JSON rewrites for handouts and verification hashes; a per-process 200 MB model cache with a 1.6–2.9 s cold load. | 3–4 pw |
@@ -625,14 +625,14 @@ Stated so the number is not mistaken for a complete business plan:
 | 2 | **Clinical validation underperforms** the synthetic-data figures | **Medium–High** | Feature descope; retraining; timeline slip | Run a 200-case pilot read-out at month 9 as a go/no-go before committing the full study |
 | 3 | **Otoscopy accuracy stays below clinical utility** even with 5,000 images | Medium | Feature repositioned as retrieval-only | The product already ships this honestly — reference retrieval is the durable value, and the UI already states measured accuracy |
 | 4 | **A PHI incident** | Reduced — authentication has shipped | Existential | Residual exposure is what remains: every signed-in user sees every patient, no audit trail, no encryption at rest, and handout/verify URLs are deliberately public capability links. Single-clinic use with accounts configured is defensible; multi-clinic is gated on gaps 1–2 |
-| 5 | Key-person dependency — one author, 20 commits | High | Delivery risk | Pair up the clinical core early; the 2,093 tests and cited docstrings are already strong knowledge transfer |
+| 5 | Key-person dependency — one author, 20 commits | High | Delivery risk | Pair up the clinical core early; the 2,245 tests and cited docstrings are already strong knowledge transfer |
 | 6 | Offline camp model proves harder than estimated | Medium | +2–4 pw | Prefer the local-backend-on-laptop route over browser sync if reconciliation proves complex |
 | 7 | LLM provider cost or policy change | Low | Low | Offline engine is already the default with automatic fallback — no dependency to break |
 
 ### 6.1 Recommended immediate actions (first 60 days)
 
 1. **Single-clinic deployment is acceptable** once `AUDIOSENSE_USERS` and `AUDIOSENSE_SECRET` are set. **Multi-clinic remains frozen** until authorisation and audit (gaps 1–2) land — today one clinic's staff can read and delete another's records.
-2. **Add CI** — 2,093 tests exist and nothing runs them; this is 1–2 pw for
+2. **Add CI** — 2,245 tests exist and nothing runs them; this is 1–2 pw for
    disproportionate return.
 3. **Obtain a CDSCO classification opinion.** It is the cheapest way to remove the
    largest budget uncertainty.
@@ -822,7 +822,7 @@ All figures re-measured from the repository on 15 August 2026, after the access-
 | `frontend/src/lib/` | 6 | 1,179 |
 | `frontend/src/audio/` | 7 | 1,423 |
 | **Frontend total** | **48** | **≈ 14,800** |
-| **Tests** | **45 files** | **2,093 tests, all passing** |
+| **Tests** | **48 files** | **2,245 tests, all passing** |
 
 ### B.2 Interfaces
 

@@ -30,6 +30,7 @@ backend/data/verify_store.json
 backend/data/records.db
 backend/data/handouts.json
 backend/data/feedback.jsonl
+backend/data/otoscopy_corrections.jsonl
 
 # Node
 frontend/node_modules/

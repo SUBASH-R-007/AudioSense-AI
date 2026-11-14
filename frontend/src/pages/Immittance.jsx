@@ -20,6 +20,14 @@ import { useApp } from '../lib/store.jsx'
 import TympanogramAtlas from '../components/TympanogramAtlas.jsx'
 import SpeechAudiometry from '../components/SpeechAudiometry.jsx'
 import StepNav from '../components/StepNav.jsx'
+import Collapsible, { Reveal, ReferenceSection } from '../components/Collapsible.jsx'
+import {
+  EntryModeTabs, FrequencyEditor, OutcomeLimits, OutcomePicker,
+} from '../components/EntryMode.jsx'
+
+//: The eight types, for the type-only entry mode. Ordered as the reference
+//: document orders them, not alphabetically — A/As/Ad/Add are one family.
+const TYMP_TYPE_KEYS = ['A', 'As', 'Ad', 'Add', 'B', 'C', 'D', 'E']
 
 const TYPE_STYLE = {
   A: 'border-emerald-300 bg-emerald-50 text-emerald-900',
@@ -224,41 +232,65 @@ function Tympanometry({ reference, onType }) {
   useEffect(() => { if (recordedAge != null) setAgeYears(recordedAge) }, [recordedAge])
   const [probeHz, setProbeHz] = useState(226)
   const [preset, setPreset] = useState(TYMP_PRESETS[0])
-  const [ipsi, setIpsi] = useState('85')
-  const [contra, setContra] = useState('90')
-  // Most clinics record the four printed values, not the sweep. Entering
-  // them models the curve they imply, labelled as modelled rather than measured.
-  const [mode, setMode] = useState('preset')
-  const [manual, setManual] = useState({ ecv: '1.0', pp: '-20', sc: '0.85', grad: '0.55' })
+  // Reflexes start EMPTY, not prefilled. Example values in a field that can be
+  // attached to a patient record are a trap, and the "include reflexes"
+  // checkbox below existed only to defuse it. Blank fields need no defusing.
+  const [ipsi, setIpsi] = useState('')
+  const [contra, setContra] = useState('')
+  // "Enter values" is the default: this page is for recording a patient, and
+  // the examples are for learning the instrument. Opening on an example meant
+  // every visit started with fabricated numbers on screen.
+  const [mode, setMode] = useState('values')
+  // Blank, for the same reason. The placeholders show the shape of a normal
+  // trace without putting it in the record.
+  const [manual, setManual] = useState({ ecv: '', pp: '', sc: '', grad: '' })
+  //: Type-only entry, for a printout or referral letter that gives the letter
+  //: and nothing else.
+  const [recordedType, setRecordedType] = useState(null)
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
 
-  // Off by default: the prefilled reflex fields are instrument examples, and
-  // an example must never reach a patient record unasked.
-  const [includeReflexes, setIncludeReflexes] = useState(false)
-
   const trace = useMemo(() => buildTrace(preset), [preset])
 
+  // Whether the clinician has actually entered anything in the current mode.
+  // Nothing is sent, and no result is shown, until they have — an instrument
+  // panel that interprets an empty form is interpreting nothing.
+  const hasValues = mode === 'values'
+    && ['pp', 'sc'].some((k) => manual[k] !== '')
+  const reflexEntered = ipsi !== '' || contra !== ''
+  const ready = mode === 'preset' || (mode === 'values' && hasValues)
+    || (mode === 'type' && Boolean(recordedType))
+    // Reflexes on their own are a result: absent reflexes with no tympanogram
+    // still localise a lesion, and refusing to interpret them would discard a
+    // measurement the clinic actually took.
+    || (mode === 'values' && reflexEntered)
+
   useEffect(() => {
+    if (!ready) { setResult(null); return }
     let cancelled = false
     setBusy(true)
     const reflexes = {}
     if (ipsi !== '') reflexes.ipsi = ipsi === 'absent' ? null : Number(ipsi)
     if (contra !== '') reflexes.contra = contra === 'absent' ? null : Number(contra)
     const num = (v) => (v === '' || v === null ? undefined : Number(v))
-    const body = mode === 'manual'
+    const common = { ear, age_years: Number(ageYears),
+                     probe_hz: Number(probeHz), reflexes }
+    const body = mode === 'values'
       ? {
-          ear, age_years: Number(ageYears), probe_hz: Number(probeHz), reflexes,
+          ...common,
           peak_pressure: num(manual.pp), compliance: num(manual.sc),
           ecv: num(manual.ecv), gradient: num(manual.grad),
         }
-      : { ear, trace, age_years: Number(ageYears), probe_hz: Number(probeHz), reflexes }
+      : mode === 'type'
+        ? { ...common, recorded_type: recordedType }
+        : { ...common, trace }
     api.tympanometry(body)
       .then((r) => { if (!cancelled) setResult(r) })
       .catch((e) => { if (!cancelled) showToast(e.message, 'error') })
       .finally(() => { if (!cancelled) setBusy(false) })
     return () => { cancelled = true }
-  }, [ear, ageYears, probeHz, trace, ipsi, contra, mode, manual, showToast])
+  }, [ear, ageYears, probeHz, trace, ipsi, contra, mode, manual, recordedType,
+      ready, showToast])
 
   const norms = result?.curve?.normative
   const jerger = result?.tympanogram
@@ -278,57 +310,96 @@ function Tympanometry({ reference, onType }) {
         </span>
       )}
     >
-      <div className="mt-3 flex rounded-lg bg-slate-100 p-0.5 text-[12px]">
-        {[['preset', 'Example traces'], ['manual', 'Enter values']].map(([k, label]) => (
-          <button key={k} type="button" onClick={() => setMode(k)}
-            className={`flex-1 rounded-md px-3 py-1 font-medium transition ${
-              mode === k ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-500'}`}>
-            {label}
-          </button>
-        ))}
-      </div>
+      <EntryModeTabs mode={mode} onMode={setMode}
+        modes={['values', 'type', 'preset']}
+        labels={{ values: 'Enter values', type: 'Type only',
+                  preset: 'Example traces' }} />
 
-      {mode === 'preset' ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {TYMP_PRESETS.map((p) => (
-            <button key={p.label} type="button" onClick={() => setPreset(p)}
-              className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
-                preset.label === p.label
-                  ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
-                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
-              {p.label}
-            </button>
-          ))}
-        </div>
-      ) : (
+      {mode === 'values' && (
         <div className="mt-3">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
-              ['ecv', 'ECV', 'ml', '0.1', 'ear-canal volume'],
-              ['pp', 'PP', 'daPa', '5', 'peak pressure'],
-              ['sc', 'SC', 'mmho', '0.05', 'static compliance'],
-              ['grad', 'GRAD', '', '0.01', 'gradient, 0–1'],
-            ].map(([key, label, unit, step, hint]) => (
+              ['ecv', 'ECV', 'ml', '0.1', 'ear-canal volume', '1.0'],
+              ['pp', 'PP', 'daPa', '5', 'peak pressure', '-20'],
+              ['sc', 'SC', 'mmho', '0.05', 'static compliance', '0.85'],
+              ['grad', 'GRAD', '', '0.01', 'gradient, 0–1', '0.55'],
+            ].map(([key, label, unit, step, hint, eg]) => (
               <label key={key} className="text-[12px]">
                 <span className="mb-1 block font-medium text-slate-600">
                   {label}{unit && <span className="ml-1 text-slate-400">({unit})</span>}
                 </span>
                 <input type="number" step={step} value={manual[key]}
+                  placeholder={eg}
                   onChange={(e) => setManual({ ...manual, [key]: e.target.value })}
                   className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
                 <span className="mt-0.5 block text-[10.5px] text-slate-400">{hint}</span>
               </label>
             ))}
           </div>
+          {!hasValues ? (
+            <p className="mt-2 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-[12px] leading-relaxed text-slate-500">
+              Enter at least the peak pressure and static compliance — the two
+              the type is decided on. The canal volume splits Type B three ways,
+              and the gradient catches an early effusion that peak height misses.
+            </p>
+          ) : (
+            <Reveal className="mt-2" label="How the curve is drawn from these">
+              <p className="text-[11.5px] leading-relaxed text-slate-500">
+                The curve is modelled from these four values, and the gradient
+                shapes it — a curve drawn from GRAD 0.30 measures back as 0.30.
+                It is a drawing of the numbers, not a recorded sweep.
+              </p>
+            </Reveal>
+          )}
+        </div>
+      )}
+
+      {mode === 'type' && (
+        <div className="mt-3">
+          <span className="mb-1.5 block text-[12px] font-medium text-slate-600">
+            Type as recorded
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {TYMP_TYPE_KEYS.map((t) => (
+              <button key={t} type="button" aria-pressed={recordedType === t}
+                onClick={() => setRecordedType(recordedType === t ? null : t)}
+                className={`rounded-lg border px-3 py-1.5 text-[12.5px] transition ${
+                  recordedType === t
+                    ? 'border-teal-500 bg-teal-50 font-semibold text-teal-800 ring-1 ring-teal-300'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-teal-300'}`}>
+                Type {t}
+              </button>
+            ))}
+          </div>
           <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
-            The curve below is modelled from these four values, and the gradient
-            shapes it — a curve drawn from GRAD 0.30 measures back as 0.30. It is
-            a drawing of the numbers, not a recorded sweep.
+            For a printout or referral letter that gives the letter and nothing
+            else. The type is most of what a tympanogram contributes to a
+            differential — what it cannot give is listed with the result.
           </p>
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+      {mode === 'preset' && (
+        <div className="mt-3">
+          <p className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-[11.5px] leading-relaxed text-amber-900">
+            These are worked examples for learning the instrument, not this
+            patient. Nothing here can be attached to a record.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {TYMP_PRESETS.map((p) => (
+              <button key={p.label} type="button" onClick={() => setPreset(p)}
+                className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
+                  preset.label === p.label
+                    ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <label className="text-[12px]">
           <span className="mb-1 block font-medium text-slate-600">Ear</span>
           <select value={ear} onChange={(e) => setEar(e.target.value)}
@@ -359,21 +430,20 @@ function Tympanometry({ reference, onType }) {
             <option value="226">226 Hz</option><option value="1000">1000 Hz</option>
           </select>
         </label>
-        <label className="text-[12px]">
-          <span className="mb-1 block font-medium text-slate-600">Ipsi reflex</span>
-          <input value={ipsi} onChange={(e) => setIpsi(e.target.value)} placeholder="dB HL"
-            className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
-        </label>
-        <label className="text-[12px]">
-          <span className="mb-1 block font-medium text-slate-600">Contra reflex</span>
-          <input value={contra} onChange={(e) => setContra(e.target.value)} placeholder="dB HL"
-            className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
-        </label>
       </div>
 
+      {/* Reflexes are their own measurement, not two more boxes in the
+          tympanogram row — and they are entered the way they are recorded:
+          usually just present or absent, sometimes with a threshold. */}
+      <ReflexEntry ipsi={ipsi} contra={contra} onIpsi={setIpsi} onContra={setContra} />
+
+      {/* No curve in type-only mode: there is nothing measured to draw, and
+          sketching a representative shape for the letter would be putting a
+          measurement on screen that nobody took. */}
+      {mode !== 'type' && (
       <div className="mt-4 h-64 w-full">
         <ResponsiveContainer>
-          <LineChart data={result?.curve?.points || trace}
+          <LineChart data={result?.curve?.points || (mode === 'preset' ? trace : [])}
             margin={{ top: 8, right: 12, bottom: 24, left: 4 }}>
             <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
             {norms && norms.applicable !== false && norms.pressure?.length === 2 && (
@@ -405,21 +475,32 @@ function Tympanometry({ reference, onType }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
+      )}
+
+      {!ready && (
+        <p className="mt-3 rounded-xl border border-dashed border-slate-300 px-3 py-6 text-center text-[12.5px] text-slate-400">
+          {mode === 'type'
+            ? 'Pick the type that was recorded.'
+            : 'Enter the measured values to get a type and an interpretation.'}
+        </p>
+      )}
 
       {result && (
         <>
-          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Measure label="Peak pressure" value={result.measurements.peak_pressure}
-              unit="daPa" ok={result.within_normal.pressure} />
-            <Measure label="Static compliance" value={result.measurements.static_compliance}
-              unit="mmho" ok={result.within_normal.compliance} />
-            <Measure label="Canal volume" value={result.measurements.ecv}
-              unit="cm³" ok={result.within_normal.ecv} />
-            <Measure label="Gradient (width)" value={result.measurements.width}
-              unit="daPa" ok={result.within_normal.width} />
-          </div>
+          {mode !== 'type' && (
+            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <Measure label="Peak pressure" value={result.measurements.peak_pressure}
+                unit="daPa" ok={result.within_normal.pressure} />
+              <Measure label="Static compliance" value={result.measurements.static_compliance}
+                unit="mmho" ok={result.within_normal.compliance} />
+              <Measure label="Canal volume" value={result.measurements.ecv}
+                unit="cm³" ok={result.within_normal.ecv} />
+              <Measure label="Gradient (width)" value={result.measurements.width}
+                unit="daPa" ok={result.within_normal.width} />
+            </div>
+          )}
 
-          {result.measurements.static_compliance_reference && (
+          {result.measurements?.static_compliance_reference && (
             <p className="mt-1.5 text-[11px] leading-snug text-slate-500">
               Static compliance measured {result.measurements.static_compliance_reference}.
             </p>
@@ -444,15 +525,25 @@ function Tympanometry({ reference, onType }) {
               {result.curve.gradient_note}
             </p>
           )}
-          {result.flags.map((f) => (
+          {(result.flags || []).map((f) => (
             <p key={f} className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900">
               {f}
             </p>
           ))}
 
+          {/* The type and its clinical meaning lead; the derivation — gradient,
+              width, normative bands, citations — is evidence behind it. */}
           <ul className="mt-3 space-y-1.5 text-[12.5px] leading-relaxed text-slate-600">
-            {result.interpretation.map((line, i) => <li key={i}>· {line}</li>)}
+            {result.interpretation.slice(0, 2).map((line, i) => <li key={i}>· {line}</li>)}
           </ul>
+          {result.interpretation.length > 2 && (
+            <Reveal className="mt-2"
+              label={`${result.interpretation.length - 2} more on how this was read`}>
+              <ul className="space-y-1.5 text-[12.5px] leading-relaxed text-slate-600">
+                {result.interpretation.slice(2).map((line, i) => <li key={i}>· {line}</li>)}
+              </ul>
+            </Reveal>
+          )}
 
           {norms && norms.applicable === false && (
             <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
@@ -461,16 +552,28 @@ function Tympanometry({ reference, onType }) {
             </p>
           )}
           {norms && norms.applicable !== false && norms.pressure?.length === 2 && (
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
-              Normal ranges for the {norms.band} band — pressure {norms.pressure[0]} to{' '}
-              {norms.pressure[1]} daPa, compliance {norms.compliance[0]}–{norms.compliance[1]} mmho,
-              volume {norms.ecv[0]}–{norms.ecv[1]} cm³, width {norms.width[0]}–{norms.width[1]} daPa.
-              {' '}{(norms.citations || []).join('; ')}.
-            </p>
+            <Reveal className="mt-2.5" label="Normal ranges used">
+              <p className="text-[11px] leading-relaxed text-slate-400">
+                For the {norms.band} band — pressure {norms.pressure[0]} to{' '}
+                {norms.pressure[1]} daPa, compliance {norms.compliance[0]}–{norms.compliance[1]} mmho,
+                volume {norms.ecv[0]}–{norms.ecv[1]} cm³, width {norms.width[0]}–{norms.width[1]} daPa.
+                {' '}{(norms.citations || []).join('; ')}.
+              </p>
+            </Reveal>
           )}
         </>
       )}
-      {result?.measurements && result.probe_mode && result.probe_mode !== 'jerger' && (
+
+      {/* An example can be read but never filed. */}
+      {result && mode === 'preset' && (
+        <p className="mt-3 rounded-lg border border-dashed border-amber-300 bg-amber-50/60 px-3 py-2 text-[11.5px] leading-relaxed text-amber-900">
+          This is the “{preset.label}” example, not a measurement — switch to
+          Enter values or Type only to record this patient.
+        </p>
+      )}
+
+      {result && mode !== 'preset' && result.probe_mode
+        && result.probe_mode !== 'jerger' && (
         <p className="mt-3 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-[11.5px] leading-relaxed text-slate-500">
           This result cannot be attached to the analysis: the test battery types a
           tympanogram on 226 Hz rules from its peak pressure, admittance and canal
@@ -478,42 +581,101 @@ function Tympanometry({ reference, onType }) {
           is read differently. Report it from this page.
         </p>
       )}
-      {result?.measurements && (!result.probe_mode || result.probe_mode === 'jerger') && (
+
+      {result && mode !== 'preset'
+        && (!result.probe_mode || result.probe_mode === 'jerger') && (
         <AttachToAnalysis
           ear={ear}
           summary={
-            `PP ${result.measurements.peak_pressure} daPa · ` +
-            `SC ${result.measurements.static_compliance} mmho · ` +
-            `ECV ${result.measurements.ecv} ml` +
-            (jerger ? ` — Type ${jerger.type}` : '') +
-            (includeReflexes
+            (mode === 'type'
+              ? `Type ${recordedType} as recorded — no values behind it`
+              : `PP ${result.measurements.peak_pressure} daPa · `
+                + `SC ${result.measurements.static_compliance} mmho · `
+                + `ECV ${result.measurements.ecv} ml`
+                + (jerger ? ` — Type ${jerger.type}` : ''))
+            + (reflexEntered
               ? ` · reflexes ipsi ${ipsi === 'absent' ? 'absent' : `${ipsi} dB`}, contra ${contra === 'absent' ? 'absent' : `${contra} dB`}`
-              : ' · reflexes not attached')
+              : ' · no reflexes recorded')
           }
           patch={{
-            tymp_pressure: result.measurements.peak_pressure,
-            tymp_compliance: result.measurements.static_compliance,
-            tymp_ecv: result.measurements.ecv,
-            ...(includeReflexes ? {
+            // Only what this mode actually measured. Sending nulls for the
+            // rest matters: it clears a value left over from a previous
+            // attach rather than leaving a stale number in the record.
+            ...(mode === 'type'
+              ? { tymp_type: recordedType, tymp_pressure: null,
+                  tymp_compliance: null, tymp_ecv: null }
+              : { tymp_pressure: result.measurements.peak_pressure,
+                  tymp_compliance: result.measurements.static_compliance,
+                  tymp_ecv: result.measurements.ecv, tymp_type: null }),
+            ...(reflexEntered ? {
               reflexes: {
-                ipsi: ipsi === 'absent' ? null : ipsi === '' ? null : Number(ipsi),
-                contra: contra === 'absent' ? null : contra === '' ? null : Number(contra),
+                ipsi: ipsi === 'absent' || ipsi === '' ? null : Number(ipsi),
+                contra: contra === 'absent' || contra === '' ? null : Number(contra),
               },
             } : {}),
           }}
         />
       )}
-      {result?.measurements && (
-        <label className="mt-1.5 flex cursor-pointer items-center gap-1.5 text-[11.5px] text-slate-500">
-          <input type="checkbox" checked={includeReflexes}
-            onChange={(e) => setIncludeReflexes(e.target.checked)}
-            className="h-3.5 w-3.5 accent-teal-600" />
-          include the reflex thresholds above — off by default, because the
-          prefilled values are examples until they are yours
-        </label>
-      )}
       {busy && !result && <p className="mt-2 text-[12px] text-slate-400">Analysing…</p>}
     </Panel>
+  )
+}
+
+// ----------------------------------------------------------- reflexes ----
+//
+// A reflex is recorded three ways in practice, and all three have to be
+// enterable: a threshold in dB HL, "absent at maximum output", or not tested
+// at all. The difference between the last two is clinical, not clerical —
+// absent reflexes behind a Type A trace point at otosclerosis, while untested
+// reflexes point at nothing — so the control makes it impossible to confuse
+// them: Absent is a button you press, blank means untested.
+function ReflexEntry({ ipsi, contra, onIpsi, onContra }) {
+  const row = (label, value, onChange, hint) => {
+    const absent = value === 'absent'
+    return (
+      <div key={label} className="rounded-lg border border-slate-200 bg-white p-2.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[12px] font-medium text-slate-600">{label}</span>
+          <span className="text-[10.5px] text-slate-400">{hint}</span>
+        </div>
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <input type="number" step="5" min="0" max="125"
+            value={absent ? '' : value} placeholder="dB HL"
+            onChange={(e) => onChange(e.target.value)}
+            className="w-24 rounded-lg border border-slate-300 px-2 py-1.5 text-[13px] disabled:bg-slate-50"
+            disabled={absent} />
+          <button type="button" aria-pressed={absent}
+            onClick={() => onChange(absent ? '' : 'absent')}
+            className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition ${
+              absent
+                ? 'border-rose-400 bg-rose-50 font-semibold text-rose-800'
+                : 'border-slate-200 bg-white text-slate-600 hover:border-rose-300'}`}>
+            Absent
+          </button>
+          {value !== '' && (
+            <button type="button" onClick={() => onChange('')}
+              className="text-[11.5px] text-slate-400 underline hover:text-slate-600">
+              clear
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-3">
+      <span className="text-[12px] font-medium text-slate-600">
+        Acoustic reflexes
+        <span className="ml-1.5 text-[10.5px] font-normal text-slate-400">
+          leave blank if not tested — blank and absent are different findings
+        </span>
+      </span>
+      <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+        {row('Ipsilateral', ipsi, onIpsi, 'same ear')}
+        {row('Contralateral', contra, onContra, 'opposite ear')}
+      </div>
+    </div>
   )
 }
 
@@ -523,13 +685,59 @@ function Emissions({ reference }) {
   const [ear, setEar] = useState('right')
   const [protocol, setProtocol] = useState('screening')
   const [preset, setPreset] = useState(OAE_PRESETS[1])
+  const [mode, setMode] = useState('values')
   const [result, setResult] = useState(null)
+  // The frequency set is the clinic's, not ours. An occupational programme
+  // tests 3, 4 and 6 kHz; somebody chasing a noise notch wants 5 kHz, which
+  // no preset offered. Scoring a clinic against frequencies it did not test —
+  // or silently dropping the ones it added — produces a decision that does
+  // not describe the test that was run.
+  const [testFreqs, setTestFreqs] = useState(DEFAULT_OAE_FREQS)
+  //: freq -> { amplitude, noise_floor } as typed. Strings, so a half-typed
+  //: "-" or "1." does not become NaN mid-keystroke.
+  const [entered, setEntered] = useState({})
+  const [outcome, setOutcome] = useState(null)
+  const [outcomeNote, setOutcomeNote] = useState('')
+  //: For a custom set: how many must pass. Blank = all of them.
+  const [required, setRequired] = useState('')
 
-  const freqs = reference?.frequencies || DEFAULT_OAE_FREQS
-  const points = useMemo(
-    () => freqs.map((f) => ({ freq: f, ...preset.build(f) })),
-    [freqs, preset],
-  )
+  const protocolFreqs = useMemo(() => {
+    const spec = (reference?.protocols || []).find((p) => p.key === protocol)
+    return spec?.freqs || []
+  }, [reference, protocol])
+
+  // Picking a published protocol sets the frequency set it is defined on —
+  // that list IS part of the criterion. The clinician can still edit it
+  // afterwards, which is exactly when the custom protocol earns its place.
+  useEffect(() => {
+    if (protocolFreqs.length) setTestFreqs(protocolFreqs)
+  }, [protocolFreqs])
+
+  const num = (v) => {
+    if (v === '' || v === null || v === undefined) return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+
+  const points = useMemo(() => {
+    if (mode === 'preset') {
+      return testFreqs.map((f) => ({ freq: f, ...preset.build(f) }))
+    }
+    if (mode !== 'values') return []
+    // Only frequencies with BOTH an emission and a noise floor. One without
+    // the other cannot be judged — the SNR needs both — and sending a
+    // half-entered row would have it scored as an absent emission.
+    return testFreqs
+      .map((f) => ({ freq: f, amplitude: num(entered[f]?.amplitude),
+                     noise_floor: num(entered[f]?.noise_floor) }))
+      .filter((p) => p.amplitude !== null && p.noise_floor !== null)
+  }, [mode, testFreqs, preset, entered])
+
+  const partialRows = mode === 'values' && testFreqs.some((f) => {
+    const a = num(entered[f]?.amplitude)
+    const n = num(entered[f]?.noise_floor)
+    return (a === null) !== (n === null)
+  })
 
   // Thresholds from the current case, so absent emissions above the ceiling
   // are marked uninformative rather than counted as fresh damage.
@@ -542,19 +750,35 @@ function Emissions({ reference }) {
     return out
   }, [analysis, ear])
 
+  const ready = mode === 'outcome' ? Boolean(outcome) : points.length > 0
+
   useEffect(() => {
+    if (!ready) { setResult(null); return }
     let cancelled = false
-    api.oae({ ear, protocol, points, ac })
+    api.oae({
+      ear, protocol, points, ac,
+      ...(protocol === 'custom' && required !== ''
+        ? { required: Number(required) } : {}),
+      ...(mode === 'outcome'
+        ? { recorded_outcome: outcome, outcome_note: outcomeNote,
+            freqs: testFreqs }
+        : {}),
+    })
       .then((r) => { if (!cancelled) setResult(r) })
       .catch((e) => { if (!cancelled) showToast(e.message, 'error') })
     return () => { cancelled = true }
-  }, [ear, protocol, points, ac, showToast])
+  }, [ear, protocol, points, ac, mode, outcome, outcomeNote, testFreqs,
+      required, ready, showToast])
 
   const chartData = (result?.points || points).map((p) => ({
     name: p.freq >= 1000 ? `${p.freq / 1000}k` : `${p.freq}`,
     emission: p.amplitude,
     noise: p.noise_floor,
     verdict: p.verdict,
+  }))
+
+  const setCell = (freq, key, value) => setEntered((prev) => ({
+    ...prev, [freq]: { ...(prev[freq] || {}), [key]: value },
   }))
 
   return (
@@ -568,17 +792,8 @@ function Emissions({ reference }) {
         </span>
       )}
     >
-      <div className="mt-3 flex flex-wrap gap-2">
-        {OAE_PRESETS.map((p) => (
-          <button key={p.label} type="button" onClick={() => setPreset(p)}
-            className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
-              preset.label === p.label
-                ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
-                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
-            {p.label}
-          </button>
-        ))}
-      </div>
+      <EntryModeTabs mode={mode} onMode={setMode}
+        modes={['values', 'outcome', 'preset']} />
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <label className="text-[12px]">
@@ -596,9 +811,124 @@ function Emissions({ reference }) {
               <option key={p.key} value={p.key}>{p.name}</option>
             ))}
           </select>
+          {protocol !== 'custom'
+            && protocolFreqs.length > 0
+            && (testFreqs.length !== protocolFreqs.length
+              || testFreqs.some((f, i) => f !== protocolFreqs[i])) && (
+            <span className="mt-1 block text-[10.5px] leading-snug text-amber-700">
+              This protocol is defined on {protocolFreqs.join(', ')} Hz. You have
+              changed the set, so only its own frequencies are scored — switch
+              to “As tested” to score what you actually measured.
+            </span>
+          )}
         </label>
       </div>
 
+      <FrequencyEditor freqs={testFreqs} onChange={setTestFreqs}
+        suggestions={[...(reference?.frequencies || DEFAULT_OAE_FREQS),
+                      ...(reference?.extra_frequencies || [])]
+          .filter((f, i, a) => a.indexOf(f) === i).sort((a, b) => a - b)}
+        label={mode === 'outcome' ? 'Frequencies the screen covered'
+          : 'Frequencies tested'} />
+
+      {protocol === 'custom' && mode !== 'outcome' && (
+        <label className="mt-2 block text-[12px]">
+          <span className="mb-1 block font-medium text-slate-600">
+            How many must pass
+            <span className="ml-1 font-normal text-slate-400">
+              (blank = all {testFreqs.length})
+            </span>
+          </span>
+          <input type="number" min="0" max={testFreqs.length} value={required}
+            onChange={(e) => setRequired(e.target.value)}
+            placeholder={String(testFreqs.length)}
+            className="w-24 rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
+        </label>
+      )}
+
+      {mode === 'values' && (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[340px] text-left text-[12px]">
+            <thead>
+              <tr className="text-[10.5px] uppercase tracking-wide text-slate-400">
+                <th className="py-1 pr-3 font-medium">f2 (Hz)</th>
+                <th className="py-1 pr-3 font-medium">Emission (dB SPL)</th>
+                <th className="py-1 font-medium">Noise floor (dB SPL)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {testFreqs.map((f) => (
+                <tr key={f} className="border-t border-slate-100">
+                  <td className="py-1.5 pr-3 font-mono text-slate-700">{f}</td>
+                  <td className="py-1.5 pr-3">
+                    <input type="number" step="0.5" placeholder="e.g. 11"
+                      value={entered[f]?.amplitude ?? ''}
+                      onChange={(e) => setCell(f, 'amplitude', e.target.value)}
+                      className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-[12.5px]" />
+                  </td>
+                  <td className="py-1.5">
+                    <input type="number" step="0.5" placeholder="e.g. -13"
+                      value={entered[f]?.noise_floor ?? ''}
+                      onChange={(e) => setCell(f, 'noise_floor', e.target.value)}
+                      className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-[12.5px]" />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {partialRows && (
+            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] leading-relaxed text-amber-900">
+              A frequency needs both the emission and the noise floor to be
+              judged — the signal-to-noise ratio is the whole criterion. Rows
+              with only one of the two are left out rather than scored as an
+              absent emission.
+            </p>
+          )}
+          {points.length === 0 && (
+            <p className="mt-2 rounded-lg border border-dashed border-slate-300 px-3 py-2 text-[12px] leading-relaxed text-slate-500">
+              Enter the emission and noise floor for at least one frequency.
+              Only have a PASS or REFER off the screener? Use “Pass / refer only”.
+            </p>
+          )}
+        </div>
+      )}
+
+      {mode === 'outcome' && (
+        <>
+          <OutcomePicker value={outcome} onChange={setOutcome}
+            note={outcomeNote} onNote={setOutcomeNote}
+            label="Screening outcome as recorded" />
+          {!outcome && (
+            <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+              How a newborn screener, a camp tablet or a referral letter
+              actually reports it. Recorded faithfully — and it supports less
+              than a full DP-gram, which the result spells out.
+            </p>
+          )}
+        </>
+      )}
+
+      {mode === 'preset' && (
+        <>
+          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-[11.5px] leading-relaxed text-amber-900">
+            Worked examples for learning the test, not this patient. Nothing
+            here can be attached to a record.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {OAE_PRESETS.map((p) => (
+              <button key={p.label} type="button" onClick={() => setPreset(p)}
+                className={`rounded-lg border px-2.5 py-1 text-[12px] transition ${
+                  preset.label === p.label
+                    ? 'border-teal-500 bg-teal-50 font-medium text-teal-800'
+                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {mode !== 'outcome' && chartData.length > 0 && (
       <div className="mt-4 h-64 w-full">
         <ResponsiveContainer>
           <BarChart data={chartData} margin={{ top: 8, right: 12, bottom: 24, left: 4 }}>
@@ -616,50 +946,90 @@ function Emissions({ reference }) {
           </BarChart>
         </ResponsiveContainer>
       </div>
+      )}
+
+      {result?.available === false && result?.note && (
+        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900">
+          {result.note}
+        </p>
+      )}
 
       {result?.available && (
         <>
-          <p className="mt-1 text-[13px] font-medium text-slate-800">{result.headline}</p>
-          <p className="mt-0.5 text-[11.5px] text-slate-500">
-            {result.protocol.name}: {result.protocol.required} of{' '}
-            {result.protocol.freqs.length} frequencies must reach{' '}
-            {result.protocol.snr} dB SNR. {result.protocol.note}
-          </p>
+          <p className="mt-3 text-[13px] font-medium text-slate-800">{result.headline}</p>
+          <Reveal className="mt-1" label="The criterion behind that">
+            <p className="text-[11.5px] leading-relaxed text-slate-500">
+              {result.protocol.name}
+              {result.protocol.required != null && result.protocol.freqs?.length > 0 && (
+                <>: {result.protocol.required} of {result.protocol.freqs.length}{' '}
+                  frequencies ({result.protocol.freqs.join(', ')} Hz) must reach{' '}
+                  {result.protocol.snr} dB SNR</>
+              )}
+              . {result.protocol.note}
+            </p>
+          </Reveal>
 
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-left text-[12px]">
-              <thead>
-                <tr className="text-[11px] uppercase tracking-wide text-slate-400">
-                  <th className="py-1 pr-3 font-medium">Hz</th>
-                  <th className="py-1 pr-3 font-medium">SNR</th>
-                  <th className="py-1 pr-3 font-medium">Threshold</th>
-                  <th className="py-1 pr-3 font-medium">Verdict</th>
-                  <th className="py-1 font-medium">Cochlear place</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.points.map((p) => (
-                  <tr key={p.freq} className="border-t border-slate-100">
-                    <td className="py-1.5 pr-3 font-mono">{p.freq}</td>
-                    <td className="py-1.5 pr-3 font-mono">{p.snr}</td>
-                    <td className="py-1.5 pr-3 font-mono text-slate-500">
-                      {p.threshold ?? '—'}
-                    </td>
-                    <td className="py-1.5 pr-3">
-                      <span className={`rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase ${
-                        p.verdict === 'pass' ? 'bg-emerald-100 text-emerald-700'
-                          : p.verdict === 'refer' ? 'bg-rose-100 text-rose-700'
-                            : p.verdict === 'invalid' ? 'bg-amber-100 text-amber-700'
-                              : 'bg-slate-100 text-slate-600'}`}>
-                        {p.verdict}
-                      </span>
-                    </td>
-                    <td className="py-1.5 text-slate-500">{p.region}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {/* An outcome-only record: say what it is, and what it is not. */}
+          <OutcomeLimits limits={result.limits} />
+
+          {result.points?.length > 0 && (
+            <Collapsible title="Frequency by frequency" defaultOpen
+              subtitle="SNR, verdict and the cochlear place each dropout maps to."
+              badge={result.points.length}>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-[12px]">
+                  <thead>
+                    <tr className="text-[11px] uppercase tracking-wide text-slate-400">
+                      <th className="py-1 pr-3 font-medium">Hz</th>
+                      <th className="py-1 pr-3 font-medium">SNR</th>
+                      <th className="py-1 pr-3 font-medium">Threshold</th>
+                      <th className="py-1 pr-3 font-medium">Verdict</th>
+                      <th className="py-1 font-medium">Cochlear place</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.points.map((p) => (
+                      <tr key={p.freq} className="border-t border-slate-100">
+                        <td className="py-1.5 pr-3 font-mono">
+                          {p.freq}
+                          {p.in_protocol === false && (
+                            <span className="ml-1 text-[9.5px] uppercase text-slate-400"
+                              title="Outside the chosen protocol, so not scored">
+                              extra
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-1.5 pr-3 font-mono">{p.snr}</td>
+                        <td className="py-1.5 pr-3 font-mono text-slate-500">
+                          {p.threshold ?? '—'}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          <span className={`rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase ${
+                            p.verdict === 'pass' ? 'bg-emerald-100 text-emerald-700'
+                              : p.verdict === 'refer' ? 'bg-rose-100 text-rose-700'
+                                : p.verdict === 'invalid' ? 'bg-amber-100 text-amber-700'
+                                  : 'bg-slate-100 text-slate-600'}`}>
+                            {p.verdict}
+                          </span>
+                        </td>
+                        <td className="py-1.5 text-slate-500">{p.region}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Reveal className="mt-2.5" label="Why each frequency got that verdict">
+                <ul className="space-y-1 text-[11.5px] leading-relaxed text-slate-600">
+                  {result.points.filter((p) => p.reason).map((p) => (
+                    <li key={p.freq}>
+                      <span className="font-mono text-slate-700">{p.freq} Hz</span>
+                      {' — '}{p.reason}
+                    </li>
+                  ))}
+                </ul>
+              </Reveal>
+            </Collapsible>
+          )}
 
           {result.cochlear_profile && (
             <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-[12.5px] leading-relaxed text-slate-700">
@@ -670,28 +1040,59 @@ function Emissions({ reference }) {
 
           {/* The headline and the cochlear summary already have their own
               places on screen; the list is what is left to say. */}
-          <ul className="mt-2.5 space-y-1.5 text-[12.5px] leading-relaxed text-slate-600">
-            {result.interpretation
+          {(() => {
+            const rest = result.interpretation
               .filter((line) => line !== result.headline
                 && line !== result.cochlear_profile?.summary)
-              .map((line, i) => <li key={i}>· {line}</li>)}
-          </ul>
+            if (rest.length === 0) return null
+            return (
+              <Reveal className="mt-2.5"
+                label={`${rest.length} further note${rest.length === 1 ? '' : 's'} on this recording`}>
+                <ul className="space-y-1.5 text-[12.5px] leading-relaxed text-slate-600">
+                  {rest.map((line, i) => <li key={i}>· {line}</li>)}
+                </ul>
+              </Reveal>
+            )
+          })()}
 
-          {Object.keys(ac).length === 0 && (
+          {Object.keys(ac).length === 0 && mode !== 'outcome' && (
             <p className="mt-2 text-[11.5px] text-slate-400">
               No audiogram loaded, so absent emissions cannot be checked against the
               thresholds that would explain them.
             </p>
           )}
 
-          <AttachToAnalysis
-            ear={ear}
-            summary={`${points.length} DP-gram points (${preset.label}) — ${
-              result.outcome ? `outcome ${result.outcome}` : 'per-frequency verdicts as shown'}`}
-            patch={{ oae: points.map(({ freq, amplitude, noise_floor }) =>
-              ({ freq, amplitude, noise_floor })) }}
-          />
+          {mode === 'preset' ? (
+            <p className="mt-3 rounded-lg border border-dashed border-amber-300 bg-amber-50/60 px-3 py-2 text-[11.5px] leading-relaxed text-amber-900">
+              This is the “{preset.label}” example — switch to Enter values or
+              Pass / refer only to record this patient.
+            </p>
+          ) : (
+            <AttachToAnalysis
+              ear={ear}
+              summary={mode === 'outcome'
+                ? `Screening outcome ${String(outcome).toUpperCase()}`
+                  + (testFreqs.length ? ` over ${testFreqs.join(', ')} Hz` : '')
+                  + ' — no per-frequency levels'
+                : `${points.length} DP-gram point${points.length === 1 ? '' : 's'} `
+                  + `(${points.map((p) => p.freq).join(', ')} Hz) — `
+                  + `outcome ${result.outcome}`}
+              patch={mode === 'outcome'
+                ? { oae: [], oae_outcome: outcome, oae_freqs: testFreqs }
+                : { oae: points.map(({ freq, amplitude, noise_floor }) =>
+                    ({ freq, amplitude, noise_floor })),
+                    oae_outcome: null, oae_freqs: [] }}
+            />
+          )}
         </>
+      )}
+
+      {!ready && (
+        <p className="mt-3 rounded-xl border border-dashed border-slate-300 px-3 py-6 text-center text-[12.5px] text-slate-400">
+          {mode === 'outcome'
+            ? 'Record the screening outcome above.'
+            : 'Enter at least one frequency to get a result.'}
+        </p>
       )}
     </Panel>
   )
@@ -715,11 +1116,10 @@ export default function Immittance() {
         <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
           Immittance, emissions &amp; speech
         </h1>
-        <p className="mt-1 max-w-3xl text-[13.5px] leading-relaxed text-slate-500">
-          Tympanometry, otoacoustic emissions and speech audiometry as full
-          instruments — the curve, the gradient, the pass criterion, the cochlear
-          place and the performance-intensity function — usable on their own,
-          without a pure-tone audiogram to attach them to.
+        <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-slate-500">
+          Tympanometry, otoacoustic emissions and speech audiometry — enter the
+          values, or just the pass/refer if that is all the instrument printed.
+          Each works on its own, without a pure-tone audiogram to attach it to.
         </p>
       </header>
 
@@ -733,17 +1133,12 @@ export default function Immittance() {
           is only worth running because it moves diseases on and off the
           differential, so the differential is what the table shows. */}
       {linkRef && (
-        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
-          <h2 className="text-[15px] font-semibold text-slate-900">
-            What each tympanogram type means for the diagnosis
-          </h2>
-          <p className="mt-1 text-[12px] leading-relaxed text-slate-500">
-            All five Jerger types, with the conditions each supports and the ones
-            it takes off the table. The second column is the one usually left out
-            and often the more useful: a Type A trace diagnoses nothing on its own,
-            but it removes most of the conductive differential in one measurement.
-          </p>
-          <div className="mt-3 overflow-x-auto">
+        <div className="mt-5">
+        <ReferenceSection
+          title="What each tympanogram type means for the diagnosis"
+          badge={`${linkRef.tympanogram_types.length} types`}
+          subtitle="Every type with the conditions it supports and the ones it takes off the table — a Type A trace diagnoses nothing on its own, but it removes most of the conductive differential in one measurement.">
+          <div className="overflow-x-auto">
             <table className="w-full min-w-[640px] text-left text-[12px]">
               <thead>
                 <tr className="text-[10.5px] uppercase tracking-wide text-slate-400">
@@ -778,33 +1173,35 @@ export default function Immittance() {
               </tbody>
             </table>
           </div>
+        </ReferenceSection>
         </div>
       )}
 
+      {/* The atlas highlights the row this ear landed on, so it stays useful —
+          but it is 8 generated curves of reference material, not this
+          patient's result, and it opens closed. */}
       {tympRef && (
         <div className="mt-5">
-          <TympanogramAtlas reference={tympRef} activeType={activeType} />
-        </div>
-      )}
-
-      {tympRef && (
-        <div className="mt-5 rounded-2xl border border-slate-200/80 bg-slate-50/60 p-5">
-          <h2 className="text-[13px] font-semibold text-slate-800">Type summary</h2>
-          <dl className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {tympRef.types.map((t) => (
-              <div key={t.type} className="rounded-lg bg-white px-3 py-2">
-                <dt className="text-[12.5px] font-semibold text-slate-800">
-                  Type {t.type} — {t.label}
-                </dt>
-                <dd className="mt-0.5 text-[11.5px] leading-relaxed text-slate-600">
-                  {t.detail}
-                </dd>
-              </div>
-            ))}
-          </dl>
-          <p className="mt-3 text-[11.5px] leading-relaxed text-slate-500">
-            {tympRef.infant_note}
-          </p>
+          <ReferenceSection title="Tympanogram atlas — all eight types"
+            badge={activeType ? `this ear: ${activeType}` : `${tympRef.types.length} curves`}
+            subtitle="Every type with its generated curve and the criteria that define it. The row matching this ear is highlighted.">
+            <TympanogramAtlas reference={tympRef} activeType={activeType} />
+            <dl className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {tympRef.types.map((t) => (
+                <div key={t.type} className="rounded-lg bg-white px-3 py-2">
+                  <dt className="text-[12.5px] font-semibold text-slate-800">
+                    Type {t.type} — {t.label}
+                  </dt>
+                  <dd className="mt-0.5 text-[11.5px] leading-relaxed text-slate-600">
+                    {t.detail}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-3 text-[11.5px] leading-relaxed text-slate-500">
+              {tympRef.infant_note}
+            </p>
+          </ReferenceSection>
         </div>
       )}
 

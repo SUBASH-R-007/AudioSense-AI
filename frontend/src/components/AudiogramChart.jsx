@@ -9,7 +9,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { useEffect, useRef, useState } from 'react'
 import { AC_FREQS, FREQ_LABELS } from '../lib/api.js'
+
+//: Set explicitly so the square-grid arithmetic below has real numbers to
+//: work with rather than Recharts' defaults, which it would have to guess.
+const Y_AXIS_WIDTH = 56
+const X_AXIS_HEIGHT = 36
+const MARGIN = { top: 12, right: 24, bottom: 8, left: 4 }
 
 const RED = '#dc2626'
 const BLUE = '#2563eb'
@@ -223,18 +230,59 @@ export default function AudiogramChart({
   square = true,
 }) {
   const annotations = showAnnotations ? deriveAnnotations(data) : []
-  // A clinical audiogram is conventionally drawn on a square grid, one octave
-  // occupying the same distance as 20 dB. Recharts' `aspect` keeps that true
-  // at any container width, which a fixed pixel height cannot.
-  const sizing = square
-    ? { width: '100%', aspect: 1 }
-    : { width: '100%', height }
+
+  // SQUARE MEANS THE PLOT AREA, NOT THE BOX AROUND IT — and conflating the
+  // two is why the toggle behaved backwards. `aspect: 1` makes the
+  // ResponsiveContainer square, but the container also holds the axes, their
+  // tick labels and their titles, and those take different amounts of space
+  // horizontally (a 56 px y-axis plus its rotated title) and vertically (a
+  // 36 px x-axis plus its title). Square outside therefore means
+  // NOT square inside: the drawing area came out visibly taller than wide,
+  // while "square grid" switched off gave a fixed height that happened to
+  // land nearer a true square at the widths this page uses.
+  //
+  // So the chrome is measured rather than guessed — the axis sizes below are
+  // set explicitly for exactly that reason — and the container height is
+  // computed to make the GRID square:
+  //
+  //     plotW = W − (left + right + yAxisWidth)
+  //     plotH = H − (top + bottom + xAxisHeight)
+  //     plotW = plotH  ⇒  H = W − hChrome + vChrome
+  //
+  // which needs the real width, so it is observed rather than assumed.
+  const wrap = useRef(null)
+  const [boxWidth, setBoxWidth] = useState(0)
+  useEffect(() => {
+    const node = wrap.current
+    if (!node || !square) return
+    const measure = () => setBoxWidth(node.clientWidth)
+    measure()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure)
+      return () => window.removeEventListener('resize', measure)
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [square])
+
+  const H_CHROME = MARGIN.left + MARGIN.right + Y_AXIS_WIDTH
+  const V_CHROME = MARGIN.top + MARGIN.bottom + X_AXIS_HEIGHT
+  // Until the first measurement lands, fall back to the caller's height: a
+  // chart that renders once at the wrong size and then corrects itself is
+  // worse than one that starts at a sensible one.
+  const squareHeight = boxWidth > H_CHROME + 80
+    ? Math.round(boxWidth - H_CHROME + V_CHROME)
+    : height
+
   return (
-    <ResponsiveContainer {...sizing}>
-      <ComposedChart data={data} margin={{ top: 12, right: 24, bottom: 8, left: 4 }}>
+    <div ref={wrap} className="w-full">
+    <ResponsiveContainer width="100%" height={square ? squareHeight : height}>
+      <ComposedChart data={data} margin={MARGIN}>
         <CartesianGrid stroke="#e2e8f0" />
         <XAxis
           dataKey="freq"
+          height={X_AXIS_HEIGHT}
           tickFormatter={(f) => FREQ_LABELS[f] || f}
           tick={{ fontSize: 12, fill: '#475569' }}
           axisLine={{ stroke: '#cbd5e1' }}
@@ -244,6 +292,7 @@ export default function AudiogramChart({
         <YAxis
           domain={[-10, 120]}
           reversed
+          width={Y_AXIS_WIDTH}
           ticks={[-10, 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]}
           tick={{ fontSize: 11, fill: '#475569' }}
           axisLine={{ stroke: '#cbd5e1' }}
@@ -276,5 +325,6 @@ export default function AudiogramChart({
           dot={bracket(BLUE, false)} activeDot={false} isAnimationActive={false} connectNulls={false} />
       </ComposedChart>
     </ResponsiveContainer>
+    </div>
   )
 }
