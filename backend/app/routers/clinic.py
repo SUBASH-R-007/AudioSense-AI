@@ -176,8 +176,18 @@ def project(ear: dict = Body(...)):
     _, _, vt = np.linalg.svd(centred, full_matrices=False)
     components = vt[:2]
 
-    ac = {int(k): v for k, v in (ear.get("ac") or {}).items()}
-    bc = {int(k): v for k, v in (ear.get("bc") or {}).items()}
+    # The same key and value checks as the deep second opinion, so a
+    # malformed ear ({"ac": {"1k": 40}}, a threshold of 500) is a readable
+    # 422 rather than a server error.
+    from app.routers.listening import _thresholds_field
+    if not isinstance(ear, dict):
+        raise HTTPException(422, "request body must be a JSON object with 'ac' "
+                                 "(and optionally 'bc')")
+    try:
+        ac = _thresholds_field(ear.get("ac"), "ac")
+        bc = _thresholds_field(ear.get("bc"), "bc")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
     x = build_features(ear_to_numeric(ac), ear_to_numeric(bc))
     zq = (x - b["global_mean"]) / b["global_std"] - z.mean(axis=0)
     coords = zq @ components.T

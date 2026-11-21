@@ -159,7 +159,11 @@ function LinkBlock({ id, link }) {
  *        conflicts — used where the panel is a sidebar rather than the subject.
  */
 export default function LinkagePanel({ side = 'right', compact = false }) {
-  const { analysis, assessment, otoscopy } = useApp()
+  const { analysis, assessment, otoscopyEars } = useApp()
+  // The ear's OWN examination, never the case's most recent one. Reconciling
+  // the right ear's picture against the left ear's thresholds produced
+  // confident, specific and entirely fictional conflicts.
+  const otoscopy = otoscopyEars?.[side === 'left' ? 'left' : 'right'] || null
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
   // "The call failed" and "nothing has been recorded" are different facts, and

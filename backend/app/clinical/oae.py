@@ -15,25 +15,131 @@ the most valuable test in this battery:
    lesion beyond the cochlea (auditory neuropathy) — the audiogram is not
    telling the truth on its own.
 
-A DPOAE is conventionally judged present when the emission exceeds the
-noise floor by >= 6 dB, at an absolute level above about -5 dB SPL.
+A DPOAE is judged present only when all three hold (BSA 2023, Recommended
+Procedure: Clinical Application of OAEs, s.6.2, s.7.2 and s.8.1):
+
+  - the emission exceeds the noise floor by >= 6 dB,
+  - the emission itself is at least -5 dB SPL, and
+  - the noise floor is low enough to have seen an emission had there been
+    one (<= -5 dB SPL).
+
+A recording that fails the third condition is INCONCLUSIVE, never absent:
+"no clear response" is only a finding when the noise was low enough for a
+response to show. Calling a noisy ear "absent" would turn a crying baby or a
+loud room into a referral, or into a diagnosis of cochlear damage. Nor can a
+noisy recording PASS: BSA s.6.2 makes the outcome inconclusive "when
+recording conditions are not adequate to allow for low noise levels to be
+reached", and a pass in a noisy recording is the screening error that misses
+a hearing loss.
+
+A noisy recording in which a response nonetheless clears the floor by the
+criterion is kept as ``noisy_response``. It is not a result, but where the
+thresholds say no emission should exist it is the one finding that cannot be
+faked (point 2 above) asking to be confirmed, so it is reported for a repeat
+in quiet rather than discarded.
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional
 
 OAE_FREQS = [1000, 2000, 4000, 8000]
 #: Signal-to-noise ratio (dB) at which an emission counts as present.
 SNR_PRESENT_DB = 6.0
+#: Minimum absolute emission level, dB SPL. BSA (2023) s.8.1: "a SNR of 6dB
+#: with a minimum signal level of -5dB SPL"; s.6.2 gives about -5 to +30 dB SPL
+#: as the level of a clear response. An emission 6 dB above a very quiet floor
+#: but weaker than this is not evidence of a working cochlea.
+MIN_EMISSION_DB_SPL = -5.0
+#: Highest noise floor, dB SPL, at which a frequency can be judged at all.
+#: BSA (2023) s.6.2 allows "No Clear Response" only "when adequately low noise
+#: levels (<= -5 dB SPL) in each band are achieved", and calls anything else
+#: "Inconclusive"; s.7.2 lists low noise (ideally < -10 dB SPL) as a condition
+#: of every DPOAE category, present or absent.
+NOISE_FLOOR_MAX_DB_SPL = -5.0
 #: Thresholds above this rarely produce measurable emissions, so an absent
 #: result there carries no extra information.
 OAE_CEILING_DB_HL = 50.0
+#: Highest threshold, dB HL, at which a healthy cochlea is expected to give an
+#: emission, so that its absence is itself a finding (pre-clinical damage).
+#: DPOAE test-performance work classifies ears at <= 20 dB HL as normal and
+#: above it as impaired (Johnson, Neely, Kopun, Dierking, Tan & Gorga 2010,
+#: Ear Hear 31:74-83), the same normal limit as safety.NORMAL_LIMIT_DB. Between
+#: this and ``OAE_CEILING_DB_HL`` an emission may or may not survive, so its
+#: presence or absence helps place the lesion but is not expected either way.
+EMISSION_EXPECTED_MAX_DB_HL = 20.0
+
+#: Tolerance for binary floating-point error in the comparisons below. It is
+#: not a clinical margin: a true 5.96 dB SNR still fails a 6 dB criterion,
+#: while -2.2 - (-8.2), stored as 5.999999999999999, does not.
+_FLOAT_TOL = 1e-9
+
+
+def judge_emission(amplitude: float, noise_floor: float,
+                   snr_criterion: float = SNR_PRESENT_DB) -> dict:
+    """One frequency: present, reduced, absent or inconclusive.
+
+    ``present``      SNR, absolute level and noise floor all meet criterion.
+    ``reduced``      clears the noise floor by the SNR criterion but is weaker
+                     than the minimum emission level — abnormal, not present.
+    ``absent``       below the SNR criterion in a quiet enough recording
+                     ("no clear response").
+    ``inconclusive`` the noise floor was too high to tell — not a result.
+                     ``noisy_response`` is True when a response cleared that
+                     floor by the criterion anyway: still not a result, but
+                     a reason to repeat in quiet.
+
+    The SNR is compared unrounded: a true 5.96 dB does not meet a 6 dB
+    criterion, and rounding belongs to display only (``display_snr``).
+    """
+    snr = amplitude - noise_floor
+    noisy = noise_floor > NOISE_FLOOR_MAX_DB_SPL + _FLOAT_TOL
+    clears_noise = snr >= snr_criterion - _FLOAT_TOL
+    loud_enough = amplitude >= MIN_EMISSION_DB_SPL - _FLOAT_TOL
+    if noisy:
+        status = "inconclusive"
+    elif clears_noise:
+        status = "present" if loud_enough else "reduced"
+    else:
+        status = "absent"
+    return {
+        "snr": snr,
+        "status": status,
+        "present": status == "present",
+        "valid": status != "inconclusive",
+        "noisy_response": noisy and clears_noise and loud_enough,
+    }
+
+
+def display_snr(snr: float, snr_criterion: float = SNR_PRESENT_DB) -> float:
+    """SNR for display, to two decimals.
+
+    A value that failed the criterion is never shown as meeting it: 5.9999 dB
+    against 6 dB reads 5.99, not 6, so the number on the report cannot
+    contradict the "absent" printed beside it.
+    """
+    shown = round(snr, 2)
+    if snr < snr_criterion - _FLOAT_TOL and shown >= snr_criterion:
+        shown = round(math.floor(snr * 100) / 100, 2)
+    return shown
+
+
+def criterion_text(snr_criterion: float = SNR_PRESENT_DB) -> str:
+    return (f"emission ≥ {snr_criterion:g} dB above the noise floor and at least "
+            f"{MIN_EMISSION_DB_SPL:g} dB SPL, with the noise floor at or below "
+            f"{NOISE_FLOOR_MAX_DB_SPL:g} dB SPL")
 
 
 def classify_oae(points: List[dict]) -> Optional[dict]:
-    """Present / absent per frequency from DPOAE amplitude and noise floor.
+    """Present / absent / inconclusive per frequency from DPOAE amplitude and
+    noise floor.
 
     ``points``: [{"freq": Hz, "amplitude": dB SPL, "noise_floor": dB SPL}]
+
+    ``absent_freqs`` holds every frequency judged abnormal (no clear response,
+    or an emission below the minimum level). Inconclusive frequencies are in
+    neither list, and ``all_present`` / ``all_absent`` describe only the
+    frequencies that could be judged — both are False when none could.
     """
     if not points:
         return None
@@ -42,21 +148,33 @@ def classify_oae(points: List[dict]) -> Optional[dict]:
         freq = int(p["freq"] if isinstance(p, dict) else p.freq)
         amp = float(p["amplitude"] if isinstance(p, dict) else p.amplitude)
         nf = float(p["noise_floor"] if isinstance(p, dict) else p.noise_floor)
-        snr = round(amp - nf, 1)
+        judged = judge_emission(amp, nf)
         results.append({
-            "freq": freq, "amplitude": amp, "noise_floor": nf, "snr": snr,
-            "present": snr >= SNR_PRESENT_DB,
+            "freq": freq, "amplitude": amp, "noise_floor": nf,
+            "snr": display_snr(judged["snr"]),
+            "present": judged["present"],
+            "status": judged["status"],
+            "valid": judged["valid"],
+            "noisy_response": judged["noisy_response"],
         })
     results.sort(key=lambda r: r["freq"])
-    present = [r["freq"] for r in results if r["present"]]
-    absent = [r["freq"] for r in results if not r["present"]]
+    present = [r["freq"] for r in results if r["status"] == "present"]
+    absent = [r["freq"] for r in results if r["status"] in ("absent", "reduced")]
+    reduced = [r["freq"] for r in results if r["status"] == "reduced"]
+    inconclusive = [r["freq"] for r in results if r["status"] == "inconclusive"]
     return {
         "points": results,
         "present_freqs": present,
         "absent_freqs": absent,
-        "all_present": not absent,
-        "all_absent": not present,
-        "criterion": f"emission ≥ {SNR_PRESENT_DB:g} dB above the noise floor",
+        "reduced_freqs": reduced,
+        "inconclusive_freqs": inconclusive,
+        # Inconclusive frequencies at which a response still cleared the noisy
+        # floor by the criterion: not a result, but worth a repeat in quiet.
+        "noisy_response_freqs": [r["freq"] for r in results if r.get("noisy_response")],
+        "valid": bool(present or absent),
+        "all_present": bool(present) and not absent,
+        "all_absent": bool(absent) and not present,
+        "criterion": criterion_text(),
     }
 
 
@@ -68,6 +186,19 @@ def oae_audiogram_agreement(
 
     Returns the clinically meaningful mismatches — the whole point of
     running OAEs alongside pure tones.
+
+    A frequency whose recording was too noisy to judge is neither an absent
+    emission nor a present one, so it supports neither a damage finding nor a
+    non-organic one. The one exception is reported as a POSSIBLE mismatch: a
+    response that cleared the noisy floor anyway, at a threshold that should
+    have abolished it — the non-organic / neural question is then open, and
+    a repeat in quiet answers it.
+
+    An absent emission at a normal threshold is reported as damage only
+    *conditionally*. This function does not see the middle ear, and a
+    middle-ear disorder abolishes emissions just as outer hair cell loss does
+    (BSA 2023, Table 4) — the battery engine decides whether the condition
+    is met.
     """
     if not oae:
         return []
@@ -76,13 +207,34 @@ def oae_audiogram_agreement(
         thr = ac_numeric.get(r["freq"])
         if thr is None:
             continue
-        if not r["present"] and thr <= 20:
+        status = r.get("status") or ("present" if r["present"] else "absent")
+        if status == "inconclusive" or r.get("valid") is False:
+            if r.get("noisy_response") and thr > OAE_CEILING_DB_HL:
+                findings.append({
+                    "freq": r["freq"], "kind": "possible_threshold_mismatch",
+                    "detail": (
+                        f"{r['freq']} Hz: a response clears the noise floor by "
+                        f"{r['snr']:g} dB although the threshold is {thr:g} dB HL, "
+                        f"but the floor ({r['noise_floor']:g} dB SPL) was above "
+                        f"{NOISE_FLOOR_MAX_DB_SPL:g} dB SPL, so it is not a result. "
+                        "If a repeat in quiet confirms it, the thresholds overstate "
+                        "the loss or the lesion lies beyond the cochlea."
+                    ),
+                })
+            continue
+        if not r["present"] and thr <= EMISSION_EXPECTED_MAX_DB_HL:
+            if status == "reduced" and r.get("amplitude") is not None:
+                what = (f"emission only {r['amplitude']:g} dB SPL, below the "
+                        f"{MIN_EMISSION_DB_SPL:g} dB SPL minimum (SNR {r['snr']:g} dB)")
+            else:
+                what = f"emissions absent (SNR {r['snr']:g} dB)"
             findings.append({
                 "freq": r["freq"], "kind": "preclinical_damage",
                 "detail": (
-                    f"{r['freq']} Hz: emissions absent (SNR {r['snr']:g} dB) despite a "
-                    f"normal threshold of {thr:g} dB HL — outer hair cell damage is "
-                    "present before the audiogram has moved."
+                    f"{r['freq']} Hz: {what} despite a normal threshold of "
+                    f"{thr:g} dB HL — outer hair cell damage before the audiogram "
+                    "has moved, once a normal middle ear is confirmed (a middle-ear "
+                    "disorder abolishes emissions too)."
                 ),
             })
         elif r["present"] and thr > OAE_CEILING_DB_HL:
@@ -98,16 +250,61 @@ def oae_audiogram_agreement(
 
 
 def analyze_oae(ear, ac_numeric: Dict[int, Optional[float]]) -> Optional[dict]:
-    """Full OAE review for one ear (EarData)."""
+    """Full OAE review for one ear (EarData).
+
+    An ear carrying only a recorded outcome (``oae_outcome``, with no
+    per-frequency points) is reported as that outcome and nothing more. Every
+    inference below this line — pre-clinical damage, unexplained emissions,
+    the frequency-by-frequency agreement with the audiogram — compares one
+    frequency's emission against the same frequency's threshold, so none of
+    them is available from a single word, and each is returned EMPTY rather
+    than absent so the battery cannot mistake "recorded, says nothing" for
+    "not tested".
+    """
     oae = classify_oae(ear.oae or [])
     if not oae:
+        outcome = getattr(ear, "oae_outcome", None)
+        if outcome:
+            from app.clinical.dpoae import normalise_outcome
+            normalised = normalise_outcome(outcome)
+            if normalised is None:
+                return None
+            return {
+                "entry_mode": "outcome",
+                "recorded_outcome": normalised,
+                "outcome": normalised,
+                "freqs": sorted({int(f) for f in (getattr(ear, "oae_freqs", None) or [])}),
+                "points": [],
+                "present_freqs": [], "absent_freqs": [], "reduced_freqs": [],
+                "inconclusive_freqs": [], "noisy_response_freqs": [],
+                # `valid` is about having a judgeable per-frequency result,
+                # which an outcome is not; `all_present` / `all_absent` are
+                # per-frequency claims and stay False for the same reason.
+                "valid": False,
+                "all_present": False,
+                "all_absent": False,
+                "criterion": "as recorded by the screening instrument",
+                "mismatches": [],
+                "preclinical_damage": [],
+                "unexplained_emissions": [],
+                "possible_unexplained_emissions": [],
+                "note": (
+                    f"Emissions recorded as a {normalised.upper()} outcome only. "
+                    "Without per-frequency levels this cannot be compared "
+                    "against the thresholds, so it neither supports nor "
+                    "excludes pre-clinical outer hair cell damage."),
+            }
         return None
     mismatches = oae_audiogram_agreement(oae, ac_numeric)
     return {
+        "entry_mode": "values",
         **oae,
         "mismatches": mismatches,
         "preclinical_damage": [m for m in mismatches if m["kind"] == "preclinical_damage"],
         "unexplained_emissions": [
             m for m in mismatches if m["kind"] == "oae_threshold_mismatch"
+        ],
+        "possible_unexplained_emissions": [
+            m for m in mismatches if m["kind"] == "possible_threshold_mismatch"
         ],
     }

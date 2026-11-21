@@ -3,9 +3,11 @@
 // It belongs here because it is where paediatric audiometry starts and because
 // the mistake it invites is to write its numbers onto an audiogram. Those are
 // minimum response levels, not thresholds — a normal-hearing newborn responds
-// to a warble tone near 78 dB SPL, some 75 dB above what they can hear. The
-// panel states that in the interface rather than in a footnote, and never
-// offers to transfer a value into the threshold grid.
+// to a warble tone near 78 dB, far above what they can hear. (The Northern &
+// Downs levels are labelled dB SPL; whether they are SPL or HL is unverified,
+// and the backend's unit_note says so with every result.) The panel states
+// that in the interface rather than in a footnote, and never offers to
+// transfer a value into the threshold grid.
 
 import { useEffect, useMemo, useState } from 'react'
 import {
@@ -105,6 +107,13 @@ export default function BOAPanel() {
           <input type="number" min="0" max="120" step="5" value={level}
             onChange={(e) => score(setLevel)(e.target.value)}
             className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
+          {/* The source table's unit (SPL or HL) could not be verified; the
+              server says so, and the label must not hide it. */}
+          {(result?.unit_note || reference?.unit_note) && (
+            <span className="mt-1 block text-[10.5px] leading-snug text-amber-700">
+              {result?.unit_note || reference?.unit_note}
+            </span>
+          )}
         </label>
         <label className="text-[12px]">
           <span className="mb-1 block font-medium text-slate-600">Observers</span>

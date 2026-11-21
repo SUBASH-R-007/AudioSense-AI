@@ -46,7 +46,7 @@ export default function Screening() {
         setBabbleScreen({ ...scored, trials: run.babble.trials,
                           reversals: run.babble.reversals,
                           when: new Date().toISOString() })
-        showToast(`Speech-in-babble SRT ${scored.result.srt_db_snr} dB SNR — ${scored.result.band}`)
+        showToast(`Speech-in-babble SRT ${scored.result.srt_db_snr} dB SNR — ${scored.result.band}${scored.result.reliable === false ? ' (provisional — too few reversals; see the dashboard)' : ''}`)
         navigate('/dashboard')
       } catch (e) {
         showToast(`Scoring failed: ${e.message}`, 'error')

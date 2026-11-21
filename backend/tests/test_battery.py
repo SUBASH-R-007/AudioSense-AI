@@ -63,8 +63,10 @@ def test_reflexes_not_tested_returns_none():
 # ------------------------------------------------------------------ OAE ---
 
 def test_oae_present_when_snr_at_least_6db():
+    # Noise floors at or below -5 dB SPL: a floor of -4 would make the
+    # frequency inconclusive rather than present or absent (BSA 2023 s.6.2).
     oae = classify_oae([
-        {"freq": 1000, "amplitude": 2, "noise_floor": -4},   # SNR 6 -> present
+        {"freq": 1000, "amplitude": 1, "noise_floor": -5},   # SNR 6 -> present
         {"freq": 2000, "amplitude": 0, "noise_floor": -5},   # SNR 5 -> absent
     ])
     assert oae["present_freqs"] == [1000]
@@ -132,21 +134,38 @@ def test_auditory_neuropathy_pattern():
 
 
 def test_preclinical_damage_marked_priority():
+    # The priority finding needs a confirmed normal middle ear (BSA 2023
+    # Table 4); without a tympanogram it is only a possibility.
     oae = {"present_freqs": [1000], "absent_freqs": [4000], "points": [],
            "preclinical_damage": [{"freq": 4000, "kind": "preclinical_damage",
                                    "detail": "x"}],
            "unexplained_emissions": []}
+    type_a = {"tympanogram": classify_tympanogram(-10, 0.7, 1.2), "reflexes": None}
     result = reconcile_ear("right", _ear("Normal", 12),
-                           None, oae, None, flat(12))
+                           type_a, oae, None, flat(12))
     assert "preclinical_nihl" in result["patterns"]
     assert result["confirmations"][0]["priority"] is True
 
+    untested = reconcile_ear("right", _ear("Normal", 12), None, oae, None, flat(12))
+    assert "preclinical_nihl" not in untested["patterns"]
+    assert "preclinical_nihl_possible" in untested["patterns"]
+    assert not any(c.get("priority") for c in untested["confirmations"])
 
-def test_reflexes_present_with_severe_loss_contradicts():
+
+def test_reflexes_present_with_profound_loss_contradicts():
+    # Cochlear losses keep their reflexes to about 80 dB HL (Silman & Gelfand
+    # 1981), so the check starts above that, not at 60.
+    reflexes = analyze_reflexes({"ipsi": 105, "contra": 110})
+    result = reconcile_ear("right", _ear("Sensorineural", 85),
+                           {"tympanogram": None, "reflexes": reflexes}, None, None, flat(85))
+    assert "reflex_threshold_mismatch" in result["patterns"]
+
+
+def test_reflexes_present_with_severe_cochlear_loss_are_expected():
     reflexes = analyze_reflexes({"ipsi": 95, "contra": 95})
     result = reconcile_ear("right", _ear("Sensorineural", 75),
                            {"tympanogram": None, "reflexes": reflexes}, None, None, flat(75))
-    assert "reflex_threshold_mismatch" in result["patterns"]
+    assert "reflex_threshold_mismatch" not in result["patterns"]
 
 
 def test_audiogram_only_gives_no_cross_checks():

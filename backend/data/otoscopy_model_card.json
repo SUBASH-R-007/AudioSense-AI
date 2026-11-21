@@ -9,74 +9,268 @@
     "retraction",
     "tumor"
   ],
-  "n_images": 62,
-  "n_training_samples": 1860,
-  "n_features": 391,
-  "augmentations_per_image": 30,
-  "sources": {
-    "otoscope_reference": {
-      "cerumen_impaction": 10,
-      "normal": 9,
-      "otitis_media": 10,
-      "perforation_attic": 8,
-      "perforation_central": 6,
-      "perforation_marginal": 7,
-      "retraction": 4,
-      "tumor": 8
-    }
-  },
-  "unmapped_folders": [],
+  "reliable": false,
+  "reliability_note": "Not a validated diagnosis: the label is the closest reference pattern, offered for comparison with the reference views. With every view of the test photograph held out of training, it named the labelled pattern for 17 of 62 views (27%, 95% CI 15%-42%; chance 12.5%) and had it in its top three 52% of the time. The urgency band was right 44% of the time, against 37% for always answering the commonest band. Its top probability averaged 75% even when it was wrong, so the percentage beside a pattern is not the chance that it is right. Even where its top pattern stood well clear of the rest ('probable'), it was right for 15 of 50 views. On unseen photographs it rarely or never identified attic perforation or retraction pocket (1/8), central perforation (1/6), marginal perforation (0/7), retracted tympanic membrane (0/4) and mass in the canal or middle ear (0/8), so a result that does not name them does not exclude them. Decide from what you see down the scope.",
   "validation": {
-    "method": "leave-one-source-image-out; probabilities averaged over augmentations of the held-out image",
+    "protocol": "source_photograph",
+    "method": "leave-one-source-photograph-out: every view cut from the held-out picture, with all its augmentations, is removed from training; the scaler, PCA and classifier are fit on the training fold alone; each held-out view is scored once, with probabilities averaged over its augmentations",
+    "optimistic": false,
+    "scaler": "fit on the training fold only",
+    "held_out_groups": 22,
     "images_tested": 62,
-    "accuracy": 0.4355,
-    "top2_accuracy": 0.629,
-    "top3_accuracy": 0.7258,
-    "category_accuracy": 0.4839,
-    "urgency_accuracy": 0.5484,
-    "retrieval_top1": 0.3548,
-    "retrieval_top3": 0.5968,
+    "correct": 17,
+    "accuracy": 0.2742,
+    "accuracy_ci95": [
+      0.179,
+      0.396
+    ],
+    "accuracy_ci95_method": "Wilson score interval over views. It treats views as independent, which views cut from one picture are not, so it is too narrow.",
+    "top2_accuracy": 0.371,
+    "top3_accuracy": 0.5161,
+    "top3_ci95": [
+      0.394,
+      0.636
+    ],
+    "category_accuracy": 0.3548,
+    "urgency_accuracy": 0.4355,
+    "urgency_ci95": [
+      0.319,
+      0.559
+    ],
+    "retrieval_top1": 0.2742,
+    "retrieval_top3": 0.4032,
     "chance_level": 0.125,
+    "no_information_rate": {
+      "exact_class": 0.1613,
+      "category": 0.3387,
+      "urgency": 0.371
+    },
+    "mean_top_probability": {
+      "when_correct": 0.877,
+      "when_wrong": 0.75
+    },
+    "accuracy_by_certainty": {
+      "probable": {
+        "correct": 15,
+        "n": 50,
+        "accuracy": 0.3
+      },
+      "provisional": {
+        "correct": 2,
+        "n": 11,
+        "accuracy": 0.182
+      },
+      "uncertain": {
+        "correct": 0,
+        "n": 1,
+        "accuracy": 0.0
+      }
+    },
     "per_class_recall": {
       "cerumen_impaction": {
-        "correct": 5,
+        "correct": 4,
         "n": 10,
-        "recall": 0.5
+        "recall": 0.4,
+        "source_photographs": 2
       },
       "normal": {
         "correct": 6,
         "n": 9,
-        "recall": 0.667
+        "recall": 0.667,
+        "source_photographs": 8
       },
       "otitis_media": {
-        "correct": 6,
+        "correct": 5,
         "n": 10,
-        "recall": 0.6
+        "recall": 0.5,
+        "source_photographs": 2
       },
       "perforation_attic": {
-        "correct": 3,
+        "correct": 1,
         "n": 8,
-        "recall": 0.375
+        "recall": 0.125,
+        "source_photographs": 2
       },
       "perforation_central": {
-        "correct": 2,
+        "correct": 1,
         "n": 6,
-        "recall": 0.333
+        "recall": 0.167,
+        "source_photographs": 2
       },
       "perforation_marginal": {
-        "correct": 2,
+        "correct": 0,
         "n": 7,
-        "recall": 0.286
+        "recall": 0.0,
+        "source_photographs": 2
       },
       "retraction": {
         "correct": 0,
         "n": 4,
-        "recall": 0.0
+        "recall": 0.0,
+        "source_photographs": 2
+      },
+      "tumor": {
+        "correct": 0,
+        "n": 8,
+        "recall": 0.0,
+        "source_photographs": 2
+      }
+    },
+    "confusion": {
+      "retraction": {
+        "perforation_attic": 2,
+        "perforation_central": 2
+      },
+      "perforation_marginal": {
+        "cerumen_impaction": 2,
+        "perforation_central": 2,
+        "retraction": 1,
+        "otitis_media": 1,
+        "normal": 1
+      },
+      "normal": {
+        "normal": 6,
+        "perforation_attic": 1,
+        "perforation_central": 1,
+        "retraction": 1
+      },
+      "perforation_attic": {
+        "perforation_marginal": 1,
+        "otitis_media": 1,
+        "tumor": 3,
+        "normal": 2,
+        "perforation_attic": 1
+      },
+      "cerumen_impaction": {
+        "cerumen_impaction": 4,
+        "tumor": 1,
+        "normal": 2,
+        "perforation_central": 1,
+        "retraction": 1,
+        "perforation_marginal": 1
+      },
+      "perforation_central": {
+        "tumor": 3,
+        "perforation_central": 1,
+        "perforation_marginal": 2
+      },
+      "tumor": {
+        "retraction": 3,
+        "perforation_marginal": 1,
+        "perforation_attic": 3,
+        "otitis_media": 1
+      },
+      "otitis_media": {
+        "perforation_attic": 3,
+        "otitis_media": 5,
+        "perforation_marginal": 1,
+        "tumor": 1
+      }
+    },
+    "source_photographs": 22,
+    "accuracy_ci95_by_source_photograph": [
+      0.154,
+      0.417
+    ]
+  },
+  "validation_optimistic": {
+    "protocol": "crop",
+    "method": "leave-one-view-out (OPTIMISTIC): one view and its augmentations are held out while sibling views cut from the same source picture stay in training, so the model is partly tested on a picture it learned from; kept only for comparison with the source-photograph figure",
+    "optimistic": true,
+    "scaler": "fit on the training fold only",
+    "held_out_groups": 62,
+    "images_tested": 62,
+    "correct": 27,
+    "accuracy": 0.4355,
+    "accuracy_ci95": [
+      0.319,
+      0.559
+    ],
+    "accuracy_ci95_method": "Wilson score interval over views. It treats views as independent, which views cut from one picture are not, so it is too narrow.",
+    "top2_accuracy": 0.629,
+    "top3_accuracy": 0.7097,
+    "top3_ci95": [
+      0.587,
+      0.808
+    ],
+    "category_accuracy": 0.4839,
+    "urgency_accuracy": 0.5484,
+    "urgency_ci95": [
+      0.425,
+      0.666
+    ],
+    "retrieval_top1": 0.3548,
+    "retrieval_top3": 0.6129,
+    "chance_level": 0.125,
+    "no_information_rate": {
+      "exact_class": 0.1613,
+      "category": 0.3387,
+      "urgency": 0.371
+    },
+    "mean_top_probability": {
+      "when_correct": 0.778,
+      "when_wrong": 0.751
+    },
+    "accuracy_by_certainty": {
+      "probable": {
+        "correct": 20,
+        "n": 50,
+        "accuracy": 0.4
+      },
+      "provisional": {
+        "correct": 7,
+        "n": 12,
+        "accuracy": 0.583
+      }
+    },
+    "per_class_recall": {
+      "cerumen_impaction": {
+        "correct": 5,
+        "n": 10,
+        "recall": 0.5,
+        "source_photographs": 2
+      },
+      "normal": {
+        "correct": 6,
+        "n": 9,
+        "recall": 0.667,
+        "source_photographs": 8
+      },
+      "otitis_media": {
+        "correct": 6,
+        "n": 10,
+        "recall": 0.6,
+        "source_photographs": 2
+      },
+      "perforation_attic": {
+        "correct": 3,
+        "n": 8,
+        "recall": 0.375,
+        "source_photographs": 2
+      },
+      "perforation_central": {
+        "correct": 2,
+        "n": 6,
+        "recall": 0.333,
+        "source_photographs": 2
+      },
+      "perforation_marginal": {
+        "correct": 2,
+        "n": 7,
+        "recall": 0.286,
+        "source_photographs": 2
+      },
+      "retraction": {
+        "correct": 0,
+        "n": 4,
+        "recall": 0.0,
+        "source_photographs": 2
       },
       "tumor": {
         "correct": 3,
         "n": 8,
-        "recall": 0.375
+        "recall": 0.375,
+        "source_photographs": 2
       }
     },
     "confusion": {
@@ -85,7 +279,7 @@
         "tumor": 1,
         "normal": 1,
         "perforation_central": 1,
-        "perforation_attic": 1,
+        "retraction": 1,
         "perforation_marginal": 1
       },
       "normal": {
@@ -113,9 +307,8 @@
         "normal": 1
       },
       "perforation_marginal": {
-        "cerumen_impaction": 2,
+        "cerumen_impaction": 3,
         "perforation_marginal": 2,
-        "retraction": 1,
         "otitis_media": 1,
         "normal": 1
       },
@@ -130,8 +323,32 @@
         "retraction": 1,
         "otitis_media": 1
       }
+    },
+    "source_photographs": 22,
+    "accuracy_ci95_by_source_photograph": [
+      0.333,
+      0.552
+    ]
+  },
+  "n_images": 62,
+  "n_source_photographs": 22,
+  "n_training_samples": 1860,
+  "n_features": 391,
+  "augmentations_per_image": 30,
+  "sources": {
+    "otoscope_reference": {
+      "cerumen_impaction": 10,
+      "normal": 9,
+      "otitis_media": 10,
+      "perforation_attic": 8,
+      "perforation_central": 6,
+      "perforation_marginal": 7,
+      "retraction": 4,
+      "tumor": 8
     }
   },
+  "unmapped_folders": [],
   "kaggle_present": false,
-  "novelty_threshold": 27.304
+  "novelty_threshold": 27.304,
+  "training_fingerprint": "f7a81e58e714d08f"
 }

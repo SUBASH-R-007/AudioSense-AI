@@ -45,7 +45,9 @@ def who_grade_reference(value: float) -> str:
         return "Moderately severe hearing loss"
     if value < 80:
         return "Severe hearing loss"
-    return "Profound hearing loss"
+    if value < 95:
+        return "Profound hearing loss"
+    return "Complete or total hearing loss"
 
 
 def test_who_grade_matches_guideline_across_entire_scale():
@@ -64,7 +66,7 @@ def test_who_grade_is_monotonic():
     """Hearing can never be graded better as thresholds get worse."""
     order = ["Normal hearing", "Mild hearing loss", "Moderate hearing loss",
              "Moderately severe hearing loss", "Severe hearing loss",
-             "Profound hearing loss"]
+             "Profound hearing loss", "Complete or total hearing loss"]
     last = -1
     v = -10.0
     while v <= 120.0:
@@ -84,15 +86,20 @@ def test_pta_equals_arithmetic_mean_across_the_scale():
 # ---------------------------------------------------------------------------
 
 def type_reference(ac_level: float, bc_level: float) -> str:
-    """Standard criteria, re-derived: gap must EXCEED 10 dB to count."""
+    """Standard criteria, re-derived: gap must EXCEED 10 dB to count.
+
+    Air conduction below 20 dB HL is normal hearing (WHO 2021 grades 20 as
+    Mild), and normal hearing is typed Normal even with an air-bone gap — the
+    gap is reported separately, not as a loss type.
+    """
     abg = ac_level - bc_level
+    if ac_level < 20:
+        return "Normal"
     if abg > 10 and bc_level <= 20:
         return "Conductive"
     if abg > 10 and bc_level > 20:
         return "Mixed"
-    if abg <= 10 and ac_level > 20:
-        return "Sensorineural"
-    return "Normal"
+    return "Sensorineural"
 
 
 def test_type_matches_criteria_across_ac_bc_plane():
@@ -110,12 +117,20 @@ def test_type_matches_criteria_across_ac_bc_plane():
 
 
 def test_conductive_requires_gap_strictly_greater_than_ten():
-    """The 10 dB boundary, swept at every BC level."""
+    """The 10 dB boundary, swept at every BC level.
+
+    A 15 dB gap is significant at every level; it types Conductive once air
+    conduction is a loss (>= 20 dB HL) and is reported as a gap on a Normal
+    ear below that.
+    """
     for bc_level in range(-10, 21, 5):
         exactly_ten = hearing_type(flat(bc_level + 10), bc_flat(bc_level))
         assert exactly_ten["type"] != "Conductive", f"BC {bc_level}: 10 dB gap"
+        assert exactly_ten["significant_air_bone_gap"] is False
         just_over = hearing_type(flat(bc_level + 15), bc_flat(bc_level))
-        assert just_over["type"] == "Conductive", f"BC {bc_level}: 15 dB gap"
+        assert just_over["significant_air_bone_gap"] is True, f"BC {bc_level}: 15 dB gap"
+        expected = "Conductive" if bc_level + 15 >= 20 else "Normal"
+        assert just_over["type"] == expected, f"BC {bc_level}: 15 dB gap"
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +138,19 @@ def test_conductive_requires_gap_strictly_greater_than_ten():
 # ---------------------------------------------------------------------------
 
 def monaural_reference(pta_value: float) -> float:
-    return min(100.0, max(0.0, 1.5 * (pta_value - 25)))
+    """Gazette S.O. 76(E) 2018 para 20.2.2 ready reckoner, re-derived from its
+    row pattern rather than read from the implementation's transcription."""
+    if pta_value <= 25:
+        return 0.0
+    if pta_value <= 33:
+        return 1.0
+    if pta_value <= 59:
+        return float(pta_value - 32)
+    if pta_value == 60:
+        return 40.0
+    if pta_value < 95:
+        return round(40 + 1.71 * (pta_value - 60), 2)
+    return 100.0
 
 
 def test_rpwd_monaural_formula_across_the_scale():

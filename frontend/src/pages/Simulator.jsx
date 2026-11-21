@@ -678,6 +678,14 @@ export default function Simulator() {
                 {t('filter.active')}
               </span>
             </div>
+            {/* An ear with a loss but no 500/1000/2000 Hz threshold has no
+                NAL-R X term: the zero gains are not a prescription, and the
+                aided sound is not what a fitted aid would give. */}
+            {prescription.prescribable === false && (
+              <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11.5px] leading-snug text-amber-900">
+                {prescription.note || 'No gain can be prescribed from these thresholds.'}
+              </p>
+            )}
             <div className="mt-2 grid grid-cols-6 gap-2">
               {AC_FREQS.map((f) => (
                 <div key={f} className="rounded-lg bg-white/70 py-1.5 text-center">

@@ -8,8 +8,11 @@ as a teaching and first-fit reference:
     IG(f)  = X + 0.31 x H(f) + k(f)
 
 where H(f) is the air-conduction threshold in dB HL and k(f) is a
-frequency-dependent constant. Gains are capped at a physically realistic
-maximum and floored at zero (an aid does not attenuate).
+frequency-dependent constant. The formula is applied at every tested band
+of an ear with hearing loss — including bands that are themselves within
+normal limits, because the X term carries the prescription there — and a
+negative result is set to zero (an aid does not attenuate). Gains are also
+capped at a physically realistic maximum.
 
 This drives the "with hearing aid" state of the simulator and the aided
 Speech Intelligibility Index. It is a *linear first-fit reference*, not a
@@ -17,21 +20,40 @@ substitute for real-ear-verified fitting by an audiologist.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from app.models.schemas import AC_FREQS, ThresholdValue, ear_to_numeric
 
-#: NAL-R frequency constants k(f), dB (Byrne & Dillon 1986, Table 1).
+#: NAL-R frequency constants k(f), dB (Byrne & Dillon 1986). The published
+#: constants stop at 6000 Hz; 8000 Hz carries the 4-6 kHz value of -2.
 NAL_R_K = {250: -17, 500: -8, 1000: 1, 2000: -1, 4000: -2, 8000: -2}
 
 #: Maximum insertion gain a real wearable device can deliver before
 #: feedback/output limits dominate.
 MAX_GAIN_DB = 45.0
 
-#: Upper edge of normal hearing (WHO 2021). NAL-R is a prescription for
-#: impaired ears; bands already within normal limits get no gain, since
-#: amplifying them would only add loudness without restoring audibility.
+#: Lower edge of hearing loss: WHO (2021) World Report on Hearing grades
+#: hearing below 20 dB HL as normal. This decides candidacy only — an ear in
+#: which no tested threshold reaches 20 dB HL is not fitted at all. It is NOT
+#: a per-band cut-off: within a candidate ear NAL-R prescribes gain at every
+#: band, normal or not (Byrne & Dillon 1986).
 NORMAL_LIMIT_DB = 20.0
+
+
+#: The three frequencies of the NAL-R X term (Byrne & Dillon 1986).
+NAL_R_X_FREQS = (500, 1000, 2000)
+
+
+def amplification_candidate(ac: Dict[int, Optional[ThresholdValue]]) -> bool:
+    """Whether any tested threshold reaches the hearing-loss range."""
+    return any(v is not None and v >= NORMAL_LIMIT_DB
+               for v in ear_to_numeric(ac).values())
+
+
+def x_term_frequencies(ac: Dict[int, Optional[ThresholdValue]]) -> List[int]:
+    """Which of 500/1000/2000 Hz were tested, i.e. what the X term rests on."""
+    numeric = ear_to_numeric(ac)
+    return [f for f in NAL_R_X_FREQS if numeric.get(f) is not None]
 
 
 def nal_r_gains(ac: Dict[int, Optional[ThresholdValue]]) -> Dict[int, float]:
@@ -39,16 +61,18 @@ def nal_r_gains(ac: Dict[int, Optional[ThresholdValue]]) -> Dict[int, float]:
     numeric = ear_to_numeric(ac)
     three_fa = [numeric.get(f) for f in (500, 1000, 2000)]
     known = [v for v in three_fa if v is not None]
-    if not known:
+    if not known or not amplification_candidate(ac):
         return {f: 0.0 for f in AC_FREQS}
     x = 0.05 * sum(known) * (3 / len(known))  # scale if a frequency is missing
 
     gains: Dict[int, float] = {}
     for f in AC_FREQS:
         h = numeric.get(f)
-        if h is None or h <= NORMAL_LIMIT_DB:
+        if h is None:
             gains[f] = 0.0
             continue
+        # Negative NAL-R targets (typically 250/500 Hz of a sloping loss) are
+        # set to zero rather than prescribed as attenuation.
         gain = x + 0.31 * h + NAL_R_K[f]
         gains[f] = round(min(MAX_GAIN_DB, max(0.0, gain)), 1)
     return gains
@@ -86,6 +110,18 @@ def verify_fitting(
     """
     if not aided:
         return None
+    if amplification_candidate(ac) and not x_term_frequencies(ac):
+        # Without the X term there is no NAL-R target, and judging measured
+        # gain against the placeholder zeros would call any working aid
+        # "over target".
+        return {
+            "bands": [], "mean_abs_deviation": None, "on_target": None,
+            "off_target_freqs": [], "tolerance_db": 10,
+            "summary": ("The fitting cannot be verified: NAL-R targets need the "
+                        "unaided 500, 1000 and 2000 Hz thresholds, and none was "
+                        "tested."),
+            "action": "Test 500, 1000 and 2000 Hz unaided, then verify again.",
+        }
     unaided_n = ear_to_numeric(ac)
     aided_n = ear_to_numeric(aided)
     targets = nal_r_gains(ac)
@@ -137,11 +173,37 @@ def verify_fitting(
 def prescribe(ac: Dict[int, Optional[ThresholdValue]]) -> dict:
     """Full prescription bundle for the UI and the audio graph."""
     gains = nal_r_gains(ac)
+    candidate = amplification_candidate(ac)
+    x_freqs = x_term_frequencies(ac)
+    # NAL-R cannot be computed without its X term: an ear with a loss but no
+    # 500/1000/2000 Hz threshold is a candidate the formula cannot fit, which
+    # is a different statement from "no gain is needed".
+    prescribable = candidate and bool(x_freqs)
+    if not candidate:
+        note = (f"No tested threshold reaches {NORMAL_LIMIT_DB:g} dB HL (WHO 2021: "
+                "normal hearing), so no amplification is indicated and no gain "
+                "is prescribed.")
+    elif not prescribable:
+        note = ("Hearing loss is present, but NAL-R needs the 500, 1000 and "
+                "2000 Hz thresholds and none was tested, so no gain can be "
+                "prescribed. Test those frequencies before fitting; the zero "
+                "gains shown are not a prescription.")
+    else:
+        note = ("First-fit reference only; real fittings require real-ear "
+                "verification by an audiologist.")
+        if len(x_freqs) < len(NAL_R_X_FREQS):
+            missing = [f for f in NAL_R_X_FREQS if f not in x_freqs]
+            note += (" The NAL-R X term is estimated from "
+                     + "/".join(str(f) for f in x_freqs) + " Hz alone (the untested "
+                     + "/".join(str(f) for f in missing) + " Hz is taken as the mean "
+                     "of the tested ones); test it to confirm the prescription.")
     return {
         "method": "NAL-R (Byrne & Dillon 1986) linear insertion gain",
         "gains": gains,
         "aided_thresholds": aided_thresholds(ac, gains),
         "max_gain_db": MAX_GAIN_DB,
-        "note": "First-fit reference only; real fittings require real-ear "
-                "verification by an audiologist.",
+        "candidate": candidate,
+        "prescribable": prescribable,
+        "x_term_freqs": x_freqs,
+        "note": note,
     }

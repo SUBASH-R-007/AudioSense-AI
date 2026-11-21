@@ -19,7 +19,11 @@
 //   2. THE CATCH TRIALS. Silent presentations are interleaved throughout. A
 //      response to silence never touches the threshold estimate; it goes to the
 //      reliability monitor instead, and an unreliable run says so on the result
-//      table rather than quietly reporting tidy-looking thresholds.
+//      table rather than quietly reporting tidy-looking thresholds. The test is
+//      self-administered, so the person pressing Space is the person being
+//      checked: while a response is awaited, nothing on screen — no label, no
+//      level, no shorter listening window — may differ between a silent trial
+//      and a tone, or the catch trials measure nothing.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FREQ_LABELS } from '../lib/api.js'
@@ -32,6 +36,11 @@ const STEPS = EARS.flatMap((ear) => SCREEN_FREQS.map((freq) => ({ ear, freq })))
 // The results table reads left-to-right in ascending frequency, which is how an
 // audiogram is read, even though the tones are presented in clinical order.
 const TABLE_FREQS = [250, 500, 1000, 2000, 4000, 8000]
+// A silent trial holds the listening window open exactly as long as a tone
+// does: playTone's default envelope is a 50 ms lead-in, three 220 ms pulses
+// with 130 ms gaps, and a 50 ms tail. A shorter window would let an attentive
+// patient tell a catch trial from a tone by its length alone.
+const TONE_PRESENTATION_MS = 50 + 3 * (220 + 130) + 50
 
 /**
  * @param {(run: {right: Object, left: Object, reliability: Object, procedure: string}) => any} onComplete
@@ -94,7 +103,7 @@ export default function ScreeningRunner({
     const doCatch = relRef.current.shouldCatch()
     setIsCatch(doCatch)
     if (doCatch) {
-      await new Promise((r) => setTimeout(r, 900))
+      await new Promise((r) => setTimeout(r, TONE_PRESENTATION_MS))
     } else {
       await tone().playTone(step.freq, lvl, step.ear)
     }
@@ -143,15 +152,21 @@ export default function ScreeningRunner({
     if (method === 'bayesian') {
       const state = est.record(level, heard)
       setCi(state.ci)
-      setPosterior(est.distribution())
+      // Only the levels the procedure can present are drawn; the posterior
+      // also extends past both ends so it can express "beyond the range".
+      setPosterior(est.distribution().filter((d) => d.level >= est.min && d.level <= est.max))
       if (!est.done) return
       const s = est.summary()
       setResults((r) => ({ ...r, [step.ear]: { ...r[step.ear], [step.freq]: s.threshold } }))
       setIntervals((iv) => ({ ...iv, [step.ear]: { ...iv[step.ear], [step.freq]: s } }))
     } else {
-      const threshold = est.record(heard)
+      est.record(heard)
       setLevel(est.level)
-      if (threshold === null) return
+      // `done`, not the return value: the staircase's presentation cap ends
+      // the run without returning a threshold, and waiting on one would
+      // present tones indefinitely.
+      if (!est.done) return
+      const threshold = est.threshold
       setResults((r) => ({ ...r, [step.ear]: { ...r[step.ear], [step.freq]: threshold } }))
     }
 
@@ -237,12 +252,13 @@ export default function ScreeningRunner({
               ))}
             </div>
             <p className="mt-2 text-[11.5px] leading-relaxed text-slate-400">
-              Measured over 300 simulated listeners with realistic response noise, the
-              Bayesian procedure needed <b>9.6 presentations per frequency versus 11.6</b>
-              {' '}for the staircase, with a mean absolute error of 2.7 dB versus 3.3 dB
-              and almost no bias — at the cost of occasional larger misses (1.3% of
-              thresholds off by more than 10 dB, versus 0.3%). Its real advantage is
-              that it reports how sure it is.
+              Measured over 1,000 simulated listeners with realistic response noise,
+              and scored against the lowest 5-dB step each listener hears at least
+              half the time, the Bayesian procedure needed <b>9.3 presentations per
+              frequency versus 10.6</b> for the staircase, with a mean absolute error
+              of 1.8 dB versus 2.2 dB and no bias — at the cost of slightly more
+              large misses (0.16% of thresholds off by more than 10 dB, versus
+              0.03%). Its real advantage is that it reports how sure it is.
             </p>
             <p className="mt-1.5 text-[11.5px] text-slate-400">
               Both procedures insert silent catch trials — if you respond when nothing
@@ -330,8 +346,11 @@ export default function ScreeningRunner({
                 {FREQ_LABELS[step.freq]} Hz
               </span>
             </div>
+            {/* Progress only. The presentation level is not shown: a patient
+                who can read it knows how loud a tone was due, and so can tell
+                a silent trial from one too soft to hear. */}
             <span className="text-[12px] text-slate-400">
-              {stepIdx + 1} of {STEPS.length} · testing at {level} dB HL
+              {stepIdx + 1} of {STEPS.length}
             </span>
           </div>
 
@@ -383,14 +402,10 @@ export default function ScreeningRunner({
                   })()}
                 </svg>
                 <div className="flex justify-between text-[10px] text-slate-400">
-                  <span>−10 dB</span><span>40</span><span>90 dB</span>
+                  <span>{posterior[0].level} dB</span>
+                  <span>{(posterior[0].level + posterior[posterior.length - 1].level) / 2}</span>
+                  <span>{posterior[posterior.length - 1].level} dB</span>
                 </div>
-              </div>
-            )}
-
-            {isCatch && awaiting && (
-              <div className="mt-2 rounded-lg bg-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
-                (silent catch trial — nothing was played)
               </div>
             )}
 
@@ -415,7 +430,9 @@ export default function ScreeningRunner({
               ? 'Procedure: Bayesian adaptive estimation (QUEST/ZEST family). Each '
                 + 'response updates a posterior over threshold; the next tone is the '
                 + 'one whose outcome is least predictable, and testing stops when the '
-                + '95% credible interval narrows to 10 dB.'
+                + '95% credible interval narrows to 10 dB. The threshold reported is '
+                + 'the lowest 5-dB step estimated to be heard at least half the time '
+                + '(ASHA 2005), or NR when the loudest level goes unanswered.'
               : 'Procedure: start 40 dB HL, down 10 dB after a response, up 5 dB after '
                 + 'none; threshold is the lowest level heard on 2 of 3 ascending '
                 + 'presentations (modified Hughson-Westlake, ASHA 2005).'}
@@ -462,9 +479,13 @@ export default function ScreeningRunner({
                       return (
                         <td key={f} className="px-2 py-2 font-medium text-slate-800">
                           {results[ear][f] ?? '—'}
+                          {/* No ± on a no-response: there is no threshold
+                              inside the range for an interval to bracket. */}
                           {iv && (
                             <div className="text-[10px] font-normal text-slate-400">
-                              ±{Math.round(iv.ci_width / 2)} · {iv.presentations}t
+                              {iv.threshold === 'NR'
+                                ? `${iv.presentations}t`
+                                : `±${Math.round(iv.ci_width / 2)} · ${iv.presentations}t`}
                             </div>
                           )}
                         </td>

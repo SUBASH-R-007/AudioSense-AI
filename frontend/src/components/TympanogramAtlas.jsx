@@ -159,8 +159,16 @@ export default function TympanogramAtlas({ reference, activeType = null }) {
                 </td>
               </tr>
               <tr className="border-t border-slate-100">
+                {/* The reference table states > 0.2, but no normative study
+                    backs that cut-off (tympanometry.GRADIENT_BASIS), so it is
+                    labelled a heuristic here as it is in every result. */}
                 <td className="py-1 pr-3">Tympanic gradient</td>
-                <td className="py-1 pr-3" colSpan={2}>&gt; {criteria.gradient_min}</td>
+                <td className="py-1 pr-3" colSpan={2}>
+                  &gt; {criteria.gradient_min}{' '}
+                  <span className="text-slate-400">
+                    (heuristic — judge peak shape by tympanometric width)
+                  </span>
+                </td>
               </tr>
             </tbody>
           </table>

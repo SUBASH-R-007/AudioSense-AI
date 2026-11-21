@@ -56,7 +56,10 @@ def test_pta_none_when_no_data():
     (65.0, "Severe hearing loss"),
     (79.99, "Severe hearing loss"),
     (80.0, "Profound hearing loss"),
-    (120.0, "Profound hearing loss"),
+    (94.99, "Profound hearing loss"),
+    # WHO 2021: 95 dB HL or greater is "Complete or total", not Profound.
+    (95.0, "Complete or total hearing loss"),
+    (120.0, "Complete or total hearing loss"),
     (-10.0, "Normal hearing"),
 ])
 def test_who_grade_boundaries(value, grade):
@@ -94,6 +97,22 @@ def test_normal_when_ac_within_normal_and_no_gap():
     assert hearing_type(ac, bc)["type"] == "Normal"
 
 
+def test_ac_pta_of_exactly_20_is_a_loss_not_normal():
+    # WHO 2021 grades 20 dB HL as Mild; the type must agree with the grade.
+    ac = flat(20)
+    bc = {f: 20 for f in (250, 500, 1000, 2000, 4000)}
+    assert hearing_type(ac, bc)["type"] == "Sensorineural"
+
+
+def test_normal_air_conduction_with_a_gap_is_normal_with_the_gap_noted():
+    ac = flat(15)
+    bc = {f: -5 for f in (250, 500, 1000, 2000, 4000)}
+    result = hearing_type(ac, bc)
+    assert result["type"] == "Normal"
+    assert result["significant_air_bone_gap"] is True
+    assert "20 dB air-bone gap" in result["air_bone_gap_note"]
+
+
 def test_missing_bc_flags_provisional():
     ac = flat(50)
     result = hearing_type(ac, {})
@@ -112,24 +131,24 @@ def test_partial_bc_flags_provisional_but_classifies():
 
 # ------------------------------------------------------ RPwD disability ----
 
-def test_rpwd_monaural_formula_and_intermediates():
+def test_rpwd_monaural_ready_reckoner_and_intermediates():
+    # Gazette S.O. 76(E) 2018 ready reckoner: 55 dB -> 23% (not 1.5 x (55-25)).
     result = rpwd_disability(55.0, 55.0)
-    # 1.5 * (55 - 25) = 45%
-    assert result["right"]["pct"] == 45.0
-    assert result["binaural_pct"] == 45.0
-    assert result["benchmark_disability"] is True
-    assert "1.5 ×" in result["right"]["formula"]
+    assert result["right"]["pct"] == 23.0
+    assert result["binaural_pct"] == 23.0
+    assert result["benchmark_disability"] is False
+    assert "ready reckoner 55 dB = 23%" in result["right"]["formula"]
 
 
-def test_rpwd_clamps_low_at_zero():
-    result = rpwd_disability(10.0, 10.0)  # 1.5*(10-25) = -22.5 -> 0
+def test_rpwd_zero_up_to_25_db():
+    result = rpwd_disability(10.0, 10.0)  # ready reckoner: 0-25 dB -> 0%
     assert result["right"]["pct"] == 0.0
     assert result["binaural_pct"] == 0.0
     assert result["benchmark_disability"] is False
 
 
-def test_rpwd_clamps_high_at_100():
-    result = rpwd_disability(120.0, 120.0)  # 1.5*95 = 142.5 -> 100
+def test_rpwd_full_at_95_and_above():
+    result = rpwd_disability(120.0, 120.0)  # table ends at 95 dB = 100%
     assert result["right"]["pct"] == 100.0
     assert result["binaural_pct"] == 100.0
 
@@ -141,11 +160,16 @@ def test_rpwd_binaural_weighting_favors_better_ear():
     assert result["benchmark_disability"] is False  # 16.67% < 40%
 
 
-def test_rpwd_benchmark_at_exactly_40():
-    # binaural exactly 40: both ears monaural 40 -> PTA = 40/1.5+25 = 51.667
-    result = rpwd_disability(51.6667, 51.6667)
-    assert result["binaural_pct"] == pytest.approx(40.0, abs=0.01)
-    assert result["benchmark_disability"] is True
+def test_rpwd_benchmark_starts_at_a_60_db_better_ear():
+    # 59 dB -> 27%, 60 dB -> 40%: the step is in the Gazette's table.
+    assert rpwd_disability(59.0, 59.0)["benchmark_disability"] is False
+    at_60 = rpwd_disability(60.0, 60.0)
+    assert at_60["binaural_pct"] == 40.0
+    assert at_60["benchmark_disability"] is True
+
+
+def test_rpwd_from_a_bare_pta_is_never_certifiable():
+    assert rpwd_disability(60.0, 60.0)["certifiable"] is False
 
 
 # ------------------------------------------------------------ full test ----

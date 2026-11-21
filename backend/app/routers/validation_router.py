@@ -73,7 +73,11 @@ async def batch_photos(files: List[UploadFile] = File(...)):
                 "grade": (ear.get("who_grade") or {}).get("grade"),
                 "type": ear.get("type"),
                 "provisional": ear.get("provisional"),
+                "air_bone_gap_note": ear.get("air_bone_gap_note"),
                 "pattern": m.get("pattern_label") if m else None,
+                "pattern_key": m.get("pattern") if m else None,
+                "pattern_reliable": m.get("reliable") if m else None,
+                "reliability_note": m.get("reliability_note") if m else None,
                 "confidence": m.get("confidence") if m else None,
                 "ood": m.get("ood") if m else None,
             }
@@ -90,6 +94,12 @@ async def batch_photos(files: List[UploadFile] = File(...)):
             "left": summarize("left"),
             "binaural_disability_pct": disability.get("binaural_pct"),
             "benchmark_disability": disability.get("benchmark_disability"),
+            # False when the percentage is a provisional estimate that cannot
+            # go on a certificate (a PTA frequency untested); thresholds read
+            # off a photograph are suggestions until a clinician confirms them.
+            "disability_certifiable": (disability.get("certifiable", True)
+                                       if disability else None),
+            "certification_note": disability.get("certification_note"),
             "urgent": safety["has_urgent"],
             "alerts": [a["title"] for a in safety["alerts"]
                        if a["level"] in ("emergency", "urgent")],

@@ -33,7 +33,11 @@ is `symptom_kb.py`'s job and it does it from a declared knowledge base; this
 module reports type, side, mechanism and certainty. The single named condition
 anywhere in it is the vestibular schwannoma, and only as the thing an ABR is
 ordered to EXCLUDE — which is a statement about why a test is worth doing, not
-a diagnosis. It does not override any other
+a diagnosis. The history line quotes the symptom module's leading possibility,
+and once thresholds exist it quotes it as `symptoms.reconcile` re-ranks it
+against the measured type of hearing — a history-only leader that the
+audiogram contradicts (CAPD beside a measured sensorineural loss) is never
+repeated here as though nothing had been measured. It does not override any other
 module — where `consistency.py` has found a contradiction, that contradiction is
 carried through, never smoothed away. And it never reports a diagnosis as
 complete while a critical test is outstanding, because a confident answer built
@@ -49,6 +53,9 @@ audiometry is not obtainable below about six months (`boa.py`).
 from __future__ import annotations
 
 from typing import Dict, List, Optional
+
+from app.clinical import correlation
+from app.clinical.symptoms import occupation_prompt, reconcile
 
 #: The full battery, in the order a workup runs. ``essential`` marks the tests
 #: without which no interpretation should be called complete for ANY patient;
@@ -174,6 +181,113 @@ def _urgent(value) -> bool:
     return any(word in key for word in ("urgent", "emergency", "immediate"))
 
 
+def _occupational_noise(analysis: Optional[dict],
+                        assessment: Optional[dict]) -> Optional[dict]:
+    """A prompt to take a noise history, when the recorded job calls for one.
+
+    The occupation lives on the patient record, which reaches this module
+    with the audiogram, while the noise-exposure answer lives in the history.
+    Neither screen alone can notice that a powerloom weaver was never asked.
+    """
+    occupation = (((analysis or {}).get("patient") or {}).get("occupation")
+                  or (assessment or {}).get("occupation"))
+    if not isinstance(occupation, str) or not occupation.strip():
+        return None
+    reported = ((assessment or {}).get("reported") or {}).get("symptoms") or []
+    present = {s.get("key") for s in reported if isinstance(s, dict)}
+    return occupation_prompt(occupation, present)
+
+
+def _history_line(analysis, assessment) -> dict:
+    """The history's leading possibility — reconciled with the audiogram.
+
+    Before thresholds exist this is the symptom module's own leader. After,
+    it is the leader of the same differential re-ranked by
+    ``symptoms.reconcile``: a possibility that predicts a type of hearing the
+    audiogram did not measure is ranked down with its reason, so the summary
+    can never repeat a history-only leader the measurement has overtaken.
+    Nor does it name a replacement the history does not single out: when
+    none qualifies it says so, counts the disagreement as a conflict, and —
+    when the loss has a conductive component — points at otoscopy and
+    tympanometry. A provisional type — bone conduction not tested or not
+    obtained — overrules nothing. Thresholds within normal limits neither
+    support nor contradict a leader that predicts a loss, and are reported
+    as exactly that.
+    """
+    a_ = assessment or {}
+    diff = a_.get("differential") or []
+    top = _label(diff[0].get("name")) if diff and isinstance(diff[0], dict) else None
+    flags = a_.get("red_flags") or []
+    notes: List[str] = []
+    conflict = None
+    says = (f"Leading possibility: {top}." if top
+            else "Recorded, no ranked possibility returned.")
+
+    if top:
+        rec = reconcile(a_, analysis)
+        if rec.get("available"):
+            history = rec["history_leading"]
+            outcome = rec["outcome"]
+            if outcome == "unresolved":
+                if rec["all_contradicted"]:
+                    says = ("No possibility the history raised fits the measured "
+                            f"audiogram (on the history alone: {top}).")
+                    conflict = ("history and audiogram: none of the possibilities "
+                                "the history raised fits the measured type of "
+                                "hearing — revisit the history and the thresholds")
+                else:
+                    says = ("No well-supported possibility the history raised "
+                            "fits the measured audiogram (on the history alone: "
+                            f"{top}).")
+                    notes.append("nothing the history raised that the audiogram "
+                                 "leaves open is singled out by what the patient "
+                                 "reported, so none is named in its place")
+                    conflict = ("history and audiogram: no well-supported "
+                                "possibility the history raised fits the measured "
+                                "type of hearing — revisit the history and the "
+                                "thresholds")
+                notes.insert(0, f"on the history alone {top} led, but "
+                                f"{history['reason']}")
+                if rec.get("next_step"):
+                    notes.append(rec["next_step"])
+            elif outcome == "replaced":
+                leading = rec["leading"]
+                says = ("Leading possibility once the audiogram is considered: "
+                        f"{leading['name']}.")
+                notes.append(f"on the history alone {top} led, but "
+                             f"{rec.get('replaced_because') or history['reason']}")
+                # A lifted penalty's note is already the reason above.
+                if leading["type_note"] and not leading.get("report_conflict_lifted"):
+                    notes.append(f"for {leading['name']}, {leading['type_note']}")
+            elif history["audiogram"] == "undetermined":
+                notes.append("the audiogram can neither confirm nor set it aside "
+                             f"by type: {history['type_note']}")
+            elif history["audiogram"] == "within normal limits":
+                notes.append(history["type_note"])
+            elif history["audiogram"] == "compatible":
+                notes.append("not contradicted by the measured type of hearing"
+                             + (f", though {history['type_note']}"
+                                if history["type_note"] else ""))
+
+    if flags:
+        notes.append(f"{len(flags)} red flag(s) raised")
+    noise = _occupational_noise(analysis, a_)
+    if noise:
+        notes.append(f"the recorded occupation (“{noise['occupation']}”) "
+                     f"is in a high-noise sector ({noise['sector']}) and no noise "
+                     "exposure is recorded — ask about it")
+
+    line = {
+        "key": "symptoms", "label": "History and symptoms",
+        "says": says,
+        "alarm": bool(flags),
+        "detail": ("; ".join(notes) + ".") if notes else None,
+    }
+    if conflict:
+        line["conflict"] = conflict
+    return line
+
+
 def _findings(analysis, assessment, otoscopy, aep, tuning_fork, boa,
               done: Dict[str, bool]) -> List[dict]:
     """One line per modality performed — what it actually said."""
@@ -182,16 +296,7 @@ def _findings(analysis, assessment, otoscopy, aep, tuning_fork, boa,
     out: List[dict] = []
 
     if done["symptoms"]:
-        diff = (assessment or {}).get("differential") or []
-        top = _label(diff[0].get("name")) if diff and isinstance(diff[0], dict) else None
-        flags = (assessment or {}).get("red_flags") or []
-        out.append({
-            "key": "symptoms", "label": "History and symptoms",
-            "says": (f"Leading possibility: {top}." if top
-                     else "Recorded, no ranked possibility returned."),
-            "alarm": bool(flags),
-            "detail": f"{len(flags)} red flag(s) raised." if flags else None,
-        })
+        out.append(_history_line(analysis, assessment))
 
     if done["otoscopy"]:
         o = otoscopy or {}
@@ -205,8 +310,15 @@ def _findings(analysis, assessment, otoscopy, aep, tuning_fork, boa,
             "alarm": _urgent(o.get("urgency")),
             # The classifier is weak and the interface says so everywhere else;
             # a summary that quietly dropped the caveat would undo that.
-            "detail": (f"ranked first at {prob:.0%} — a ranked differential, "
-                       f"not an identification"
+            # The top probability is not a likelihood of being right: on
+            # held-out photographs the classifier averages a high top
+            # probability on its wrong answers too (model card), so the line
+            # carries its reliability note rather than the bare figure.
+            "detail": ((f"closest reference pattern ({prob:.0%} of the model's "
+                        "weight) — not validated for diagnosis"
+                        + (f"; {o['reliability_note']}"
+                           if isinstance(o.get("reliability_note"), str)
+                           and o.get("reliability_note") else ""))
                        if isinstance(prob, (int, float))
                        else _label(o.get("urgency"))),
         })
@@ -230,7 +342,12 @@ def _findings(analysis, assessment, otoscopy, aep, tuning_fork, boa,
 
     if done["masking"]:
         review = (a.get("safety") or {}).get("masking_review") or {}
-        warned = bool((a.get("safety") or {}).get("validity_warning"))
+        # Read from the masking review itself: safety.validity_warning is set
+        # by ANY validity alert (a battery contradiction, an infant probe
+        # tone), and would print "masking was indicated" beside a review that
+        # says none was required.
+        warned = bool(review.get("any_unmasked")) or any(
+            (review.get(s) or {}).get("warning") for s in ("right", "left"))
         out.append({
             "key": "masking", "label": "Masking",
             "says": (review.get("headline")
@@ -271,11 +388,24 @@ def _findings(analysis, assessment, otoscopy, aep, tuning_fork, boa,
 
     if done["aep"]:
         bat = (aep or {}).get("battery") or aep or {}
+        # A borderline or indeterminate level is not a normal result, and a
+        # limitation (e.g. the eighth nerve not assessed with Wave I absent)
+        # bounds what a normal one can claim; both are carried in the detail
+        # so the line is never read as a clean normal.
+        uncertain = [str(u.get("level") or u.get("name") or u) if isinstance(u, dict)
+                     else str(u) for u in (bat.get("uncertain_levels") or [])]
+        limits = [str(x) for x in (bat.get("limitations") or [])]
+        detail_parts = []
+        if uncertain:
+            detail_parts.append("borderline or indeterminate: " + ", ".join(uncertain))
+        if limits:
+            detail_parts.append("; ".join(limits))
         out.append({
             "key": "aep", "label": "Evoked potentials",
             "says": bat.get("headline") or "Evoked potentials recorded.",
             "alarm": bool(bat.get("abnormal")),
-            "detail": None,
+            "caution": bool(uncertain) and not bat.get("abnormal"),
+            "detail": " — ".join(detail_parts) or None,
         })
 
     if done["boa"]:
@@ -400,7 +530,10 @@ def next_tests(analysis: Optional[dict], done: Dict[str, bool],
             "recommended", "hearing loss present", "speech")
 
     # --- validity: an unmasked threshold may be the wrong ear ------------
-    if safety.get("validity_warning") and not done["masking"]:
+    review = safety.get("masking_review") or {}
+    masking_owed = bool(review.get("any_unmasked")) or any(
+        (review.get(s) or {}).get("warning") for s in ("right", "left"))
+    if masking_owed and not done["masking"]:
         add("Masked thresholds",
             "Masking was indicated and not recorded, so a threshold on the "
             "poorer side may be a shadow of the better ear rather than that "
@@ -409,10 +542,15 @@ def next_tests(analysis: Optional[dict], done: Dict[str, bool],
 
     # --- the history is not optional -------------------------------------
     if not done["symptoms"]:
-        add("Signs and symptoms history",
-            "Without the complaint, the audiogram is a measurement without a "
-            "question. Onset in particular decides whether this is an "
-            "emergency.",
+        why = ("Without the complaint, the audiogram is a measurement without a "
+               "question. Onset in particular decides whether this is an "
+               "emergency.")
+        noise = _occupational_noise(a, None)
+        if noise:
+            why += (f" The recorded occupation (“{noise['occupation']}”) "
+                    f"is in a high-noise sector ({noise['sector']}), so ask "
+                    "specifically about noise exposure.")
+        add("Signs and symptoms history", why,
             "critical" if any_loss else "recommended",
             "no history recorded", "symptoms")
 
@@ -459,9 +597,19 @@ def _convergence(analysis, findings, tuning_fork) -> dict:
     grid = (tuning_fork or {}).get("grid") or {}
     if grid.get("loss_type") and grid.get("side"):
         rules = a.get("rules") or {}
-        ear = (rules.get(grid["side"]) or {}).get("type", "").lower()
+        rules_ear = rules.get(grid["side"]) or {}
+        ear = (rules_ear.get("type") or "").lower()
         fork = grid["loss_type"].replace("_bilateral", "")
-        if ear and fork in ear:
+        # An ear within normal limits is typed Normal even with a significant
+        # air-bone gap (rules.hearing_type); forks that read the gap as
+        # conductive are then agreeing with the audiogram, not disagreeing.
+        if ear == "normal" and fork == "conductive" \
+                and rules_ear.get("significant_air_bone_gap"):
+            agrees.append(
+                f"{grid['side']}: the fork battery reads conductive and the "
+                "audiogram shows an air-bone gap behind normal hearing, from "
+                "independent measurements")
+        elif ear and fork in ear:
             agrees.append(
                 f"{grid['side']}: the fork battery and the audiogram both read "
                 f"{fork}, from independent measurements")
@@ -471,6 +619,10 @@ def _convergence(analysis, findings, tuning_fork) -> dict:
                 f"reads {ear} — recheck the forks with the non-test ear masked")
     if grid.get("level") == "contradiction":
         conflicts.append(f"tuning forks: {grid.get('headline')}")
+
+    # A history none of whose possibilities fits the measured audiogram is a
+    # disagreement between two modalities, and is counted as one.
+    conflicts.extend(f["conflict"] for f in findings if f.get("conflict"))
 
     alarms = [f["label"] for f in findings if f.get("alarm")]
     return {"agreements": agrees, "conflicts": conflicts, "alarms": alarms}
@@ -488,7 +640,8 @@ def diagnostic_picture(analysis: Optional[dict] = None,
                        tuning_fork: Optional[dict] = None,
                        boa: Optional[dict] = None,
                        age_months: Optional[float] = None,
-                       skipped: Optional[Dict[str, str]] = None) -> dict:
+                       skipped: Optional[Dict[str, str]] = None,
+                       otoscopy_ears: Optional[Dict[str, dict]] = None) -> dict:
     """Coverage, convergence, and the next test — the whole workup at a glance.
 
     ``skipped`` maps a modality key to the reason the clinician gave for not
@@ -514,6 +667,30 @@ def diagnostic_picture(analysis: Optional[dict] = None,
                      "alarm": False, "detail": None}]
     gaps = next_tests(analysis, done, age_months)
     conv = _convergence(analysis, findings, tuning_fork)
+
+    # Checks BETWEEN modalities that no single module can make — emissions
+    # against evoked potentials, an objective response against a volunteered
+    # threshold, the otoscope against the emissions, the forks against the
+    # tympanogram, an infant's response level against a measured one. Folded
+    # into convergence so they count toward the confidence rating rather than
+    # sitting in a panel of their own that nobody reads: a cross-test
+    # contradiction has to be able to make a workup "conflicted".
+    #
+    # Same defensive wrapping as `_findings` above and for the same reason:
+    # this aggregates several independently-evolving payloads, and one of them
+    # changing shape must cost a line rather than the whole panel.
+    try:
+        cross = correlation.correlate_case(
+            analysis=analysis, otoscopy=otoscopy, otoscopy_ears=otoscopy_ears,
+            aep=aep, tuning_fork=tuning_fork, boa=boa)
+    except Exception:  # noqa: BLE001 — deliberately broad; see the note above
+        cross = {"available": False, "findings": [], "conflicts": [],
+                 "agreements": [], "notes": [], "conflict_count": 0,
+                 "agreement_count": 0,
+                 "headline": "The cross-test checks could not be run.",
+                 "note": ""}
+    conv["agreements"].extend(f["detail"] for f in cross["agreements"])
+    conv["conflicts"].extend(f["detail"] for f in cross["conflicts"])
 
     performed = sum(1 for v in done.values() if v)
     coverage = [
@@ -573,6 +750,11 @@ def diagnostic_picture(analysis: Optional[dict] = None,
         "agreements": conv["agreements"],
         "conflicts": conv["conflicts"],
         "alarms": conv["alarms"],
+        #: The cross-modality checks in full, each with the pair of tests that
+        #: produced it and what to do about it — so the UI can show a
+        #: disagreement with its resolution rather than only the sentence that
+        #: was folded into `conflicts` above.
+        "cross_test": cross,
         "next_tests": gaps,
         "skipped": skipped,
         # A skip that has since become critical is the one worth naming: the

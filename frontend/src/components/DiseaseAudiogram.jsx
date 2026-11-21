@@ -33,7 +33,14 @@ function Bar({ value, label }) {
   )
 }
 
-export default function DiseaseAudiogram({ analysis, side = 'right' }) {
+/**
+ * @param embedded true when the caller already provides the card and the
+ *        heading (a collapsible section on the results page), so this renders
+ *        only its contents. Without it the panel drew a second card with the
+ *        same title inside the first one.
+ */
+export default function DiseaseAudiogram({ analysis, side = 'right',
+                                           embedded = false }) {
   const [result, setResult] = useState(null)
   const [selected, setSelected] = useState(null)
 
@@ -61,23 +68,36 @@ export default function DiseaseAudiogram({ analysis, side = 'right' }) {
   }, [result, active])
 
   if (!result?.available) {
-    return (
-      <div className="rounded-2xl border border-dashed border-slate-300 p-5 text-[12.5px] text-slate-400">
-        {result?.note || 'Run an audiogram to match it against the disease patterns.'}
-      </div>
-    )
+    const note = result?.note
+      || 'Run an audiogram to match it against the disease patterns.'
+    return embedded
+      ? <p className="text-[12.5px] text-slate-500">{note}</p>
+      : (
+        <div className="rounded-2xl border border-dashed border-slate-300 p-5 text-[12.5px] text-slate-400">
+          {note}
+        </div>
+      )
   }
 
+  const Wrapper = embedded ? 'div' : 'div'
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-[15px] font-semibold text-slate-900">
-          Diseases matching this audiogram
-        </h2>
-        <span className="text-[11.5px] capitalize text-slate-500">
+    <Wrapper className={embedded
+      ? '' : 'rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm'}>
+      {!embedded && (
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-[15px] font-semibold text-slate-900">
+            Diseases matching this audiogram
+          </h2>
+          <span className="text-[11.5px] capitalize text-slate-500">
+            {side} ear · no history used
+          </span>
+        </div>
+      )}
+      {embedded && (
+        <div className="mb-2 text-[11.5px] capitalize text-slate-500">
           {side} ear · no history used
-        </span>
-      </div>
+        </div>
+      )}
       <p className={`mt-2 rounded-lg border px-3 py-2 text-[12.5px] leading-relaxed ${
         result.normal_audiogram
           ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
@@ -162,6 +182,6 @@ export default function DiseaseAudiogram({ analysis, side = 'right' }) {
       </div>
 
       <p className="mt-3 text-[11px] leading-relaxed text-slate-400">{result.note}</p>
-    </div>
+    </Wrapper>
   )
 }

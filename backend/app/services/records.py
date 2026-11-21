@@ -136,6 +136,56 @@ def list_patients(query: str = "") -> List[dict]:
         return [dict(r) for r in rows]
 
 
+def _disability_from_record(record: dict) -> Optional[dict]:
+    """The RPwD percentage re-derived from a visit's stored thresholds.
+
+    ``disability_pct`` is the figure as computed on the day the visit was
+    saved. Visits saved before the Gazette method (S.O. 76(E) 2018 ready
+    reckoner, NR = 95 dB) carry a figure from a superseded formula — 52/52 dB
+    was stored as 40.5% and "benchmark", where the Gazette gives 20% — so the
+    figure shown for any stored visit is recomputed from its thresholds by
+    the current rules engine rather than trusted.
+    """
+    from app.clinical.rules import rpwd_disability_from_thresholds
+
+    right = ((record or {}).get("right") or {}).get("ac") or {}
+    left = ((record or {}).get("left") or {}).get("ac") or {}
+    try:
+        return rpwd_disability_from_thresholds(right, left)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+
+def _reconcile_disability(visit: dict) -> None:
+    """Replace a visit's stored disability figure with the re-derived one,
+    keeping the stored value (and saying so) wherever the two differ."""
+    stored = visit.get("disability_pct")
+    current = _disability_from_record(visit.get("record") or {})
+    if current is not None:
+        visit["disability_pct"] = current["binaural_pct"]
+        visit["disability_certifiable"] = current["certifiable"]
+        visit["benchmark_disability"] = current["benchmark_disability"]
+        visit["disability_superseded"] = (
+            stored is not None and abs(float(stored) - current["binaural_pct"]) > 0.005)
+        if visit["disability_superseded"]:
+            visit["disability_pct_as_stored"] = stored
+            visit["disability_note"] = (
+                f"The {float(stored):g}% stored with this visit came from a superseded "
+                f"formula; recomputed from the stored thresholds by {current['method']}: "
+                f"{current['binaural_pct']:g}%.")
+        return
+    visit["disability_superseded"] = stored is not None
+    if stored is not None:
+        # No thresholds to re-derive it from: the stored figure cannot be
+        # verified against the current method, so it is not shown as one.
+        visit["disability_pct_as_stored"] = stored
+        visit["disability_pct"] = None
+        visit["disability_certifiable"] = False
+        visit["disability_note"] = (
+            "The disability figure stored with this visit cannot be re-derived "
+            "(its thresholds are not in the record); retest before any certification.")
+
+
 def patient_history(patient_id: int) -> Optional[dict]:
     """Every visit for one patient, oldest first, with the trend."""
     with _connect() as conn:
@@ -153,6 +203,7 @@ def patient_history(patient_id: int) -> Optional[dict]:
     for r in rows:
         v = dict(r)
         v["record"] = json.loads(v.pop("record_json"))
+        _reconcile_disability(v)
         visits.append(v)
 
     trend = None

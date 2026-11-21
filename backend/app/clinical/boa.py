@@ -10,8 +10,9 @@ THE CENTRAL POINT, AND THE ONE MOST OFTEN LOST: **BOA DOES NOT MEASURE
 THRESHOLDS.** It measures the level at which a behaviour becomes visible to an
 observer, which is far above the level at which the infant can hear. Those are
 minimum response levels, and a normal-hearing newborn's MRL to a warble tone is
-around 78 dB SPL — some 75 dB above their actual threshold. Recording an MRL as
-a threshold produces an audiogram showing a hearing loss in a normal ear.
+around 78 dB (labelled SPL here; the reference level is unverified, see
+BOA_NORMS) — far above their actual threshold. Recording an MRL as a threshold
+produces an audiogram showing a hearing loss in a normal ear.
 
 Three further limits, all of which the module states rather than assumes away:
 
@@ -42,9 +43,16 @@ from typing import Dict, List, Optional
 #: Age above which visual reinforcement audiometry replaces BOA, months.
 VRA_FROM_MONTHS = 6
 
-#: Minimum response levels by age. ``warble`` and ``speech`` are dB SPL, the
-#: unit these norms are published in. ``startle`` is the level at which a Moro
-#: or startle reflex is expected.
+#: Minimum response levels by age. ``warble`` and ``speech`` are labelled dB
+#: SPL. ``startle`` is the level at which a Moro or startle reflex is expected.
+#:
+#: The numbers are Northern & Downs' Auditory Behavior Index. Its reference
+#: level is NOT confirmed: the index is often reproduced with the warble-tone
+#: and speech columns referenced to audiometric zero (dB HL) and only the
+#: noisemaker column in approximate dB SPL, and the source itself could not be
+#: checked. The dB SPL label is therefore kept (field names are part of the
+#: API) but every result carries LEVEL_REFERENCE_NOTE, so the level is entered
+#: on the same reference as the norm rather than converted on a guess.
 #:
 #: The trend is the finding: the level falls steeply over the first two years
 #: as the infant's *behaviour* matures, not their hearing. A 9-month-old
@@ -59,7 +67,7 @@ BOA_NORMS: List[dict] = [
     {"band": "6 weeks - 4 months", "low_months": 1.5, "high_months": 4,
      "warble_db_spl": 70, "speech_db_spl": 47, "startle_db_spl": 65,
      "expected": ["Eye widening", "Eye shift toward sound", "Cessation of activity",
-                  "Rudimentary head turn"],
+                  "Rudimentary head turn (emerging by about 4 months)"],
      "note": "Eye widening and shifting replace the pure startle."},
     {"band": "4-7 months", "low_months": 4, "high_months": 7,
      "warble_db_spl": 51, "speech_db_spl": 21, "startle_db_spl": 65,
@@ -105,13 +113,41 @@ BOA_RESPONSES: Dict[str, str] = {
     "limb_movement": "Limb movement",
 }
 
+#: Age (months) from which each localising behaviour appears in BOA_NORMS. A
+#: behaviour recorded before then is questioned. These follow the bands, so
+#: the flag cannot contradict the expected-behaviour list a clinician reads:
+#: Northern & Downs list a rudimentary head turn in the 6 weeks - 4 months
+#: band ("beginning ... by 4 months"), and the true lateral head turn toward
+#: the sound — localisation — from 4 months.
+LOCALISING_FROM_MONTHS: Dict[str, float] = {
+    "head_turn": 1.5,
+    "localisation": 4,
+}
+#: Below this a head turn is the rudimentary one: recorded, not questioned,
+#: but not yet the localising response VRA builds on.
+TRUE_HEAD_TURN_MONTHS = 4
+
 #: An infant this many dB above the age-typical MRL warrants objective testing.
 CONCERN_MARGIN_DB = 20
+
+#: Stated with every result while the normative reference level is unverified
+#: (see BOA_NORMS).
+LEVEL_REFERENCE_NOTE = (
+    "Reference level unverified: these Northern & Downs response levels are "
+    "labelled dB SPL here, but the warble-tone and speech columns of the "
+    "Auditory Behavior Index are often reproduced as dB HL (re: audiometric "
+    "zero). Enter the observed level on the same reference as the norms — do "
+    "not convert between HL and SPL to match the label — and treat a "
+    "difference close to the 20 dB concern margin as uncertain.")
 
 CITATIONS = [
     "Northern, J. L., & Downs, M. P. Hearing in Children — minimum response levels",
     "JCIH (2019) — objective testing follows a failed behavioural screen",
 ]
+
+
+def _months(value: float) -> str:
+    return f"{value:g} month" + ("" if value == 1 else "s")
 
 
 def age_band(age_months: float) -> Optional[dict]:
@@ -163,14 +199,18 @@ def analyze_boa(age_months: float,
     labels = [BOA_RESPONSES.get(r, r) for r in responses]
     age_appropriate = None
     if responses:
-        localising = {"head_turn", "localisation"}
         reflexive = {"eye_blink", "startle", "arousal"}
-        if age_months < 4 and (localising & set(responses)):
+        early = [r for r in responses
+                 if r in LOCALISING_FROM_MONTHS and age_months < LOCALISING_FROM_MONTHS[r]]
+        if early:
             flags.append("response_beyond_age")
+            named = "; ".join(
+                f"{BOA_RESPONSES[r].lower()} (expected from "
+                f"{_months(LOCALISING_FROM_MONTHS[r])})" for r in early)
             findings.append(
-                "A head turn or localisation was recorded below four months, "
-                "which is earlier than that behaviour normally appears. Confirm "
-                "it was time-locked to the stimulus rather than spontaneous.")
+                f"Recorded at {_months(age_months)}, earlier than the age bands "
+                f"place it: {named}. Confirm it was time-locked to the stimulus "
+                "rather than spontaneous.")
             age_appropriate = False
         elif age_months >= 7 and set(responses) <= reflexive:
             flags.append("only_reflexive_responses")
@@ -182,6 +222,13 @@ def analyze_boa(age_months: float,
             age_appropriate = False
         else:
             age_appropriate = True
+            if "head_turn" in responses and age_months < TRUE_HEAD_TURN_MONTHS:
+                findings.append(
+                    f"A head turn at {_months(age_months)} is the rudimentary "
+                    "head turn of the 6 weeks - 4 months band, which emerges by "
+                    "about 4 months (Northern & Downs). It is age-appropriate, "
+                    "but it is not yet the lateral localising turn that appears "
+                    "from 4 months; confirm it was time-locked to the stimulus.")
 
     if observers < 2:
         flags.append("single_observer")
@@ -230,11 +277,17 @@ def analyze_boa(age_months: float,
             "Minimum response levels are consistent with the age band."
             if observed_level_db_spl is not None else
             "No response level recorded yet."),
+        # The caveat is the one BOA text the result panel always shows, so it
+        # carries the reference-level uncertainty itself rather than leaving
+        # it to unit_note alone.
         "caveat": (
             "These are MINIMUM RESPONSE LEVELS, not thresholds. A normal-hearing "
-            "newborn responds to a warble tone near 78 dB SPL — roughly 75 dB "
-            "above the level they can actually hear. Plotting these values on an "
-            "audiogram would show a hearing loss in a normal ear."),
+            "newborn responds to a warble tone near 78 dB — far above the level "
+            "they can actually hear. Plotting these values on an audiogram would "
+            "show a hearing loss in a normal ear. The levels are labelled dB SPL, "
+            "but whether the source norms are dB SPL or dB HL is unverified: "
+            "enter the observed level on the same reference as the norms."),
+        "unit_note": LEVEL_REFERENCE_NOTE,
         "citations": list(CITATIONS),
     }
 
@@ -254,5 +307,7 @@ def boa_reference() -> dict:
             "It is not ear-specific and not frequency-specific.",
             "A concerning result is followed by ABR or ASSR, not by more BOA.",
         ],
+        "localising_from_months": dict(LOCALISING_FROM_MONTHS),
+        "unit_note": LEVEL_REFERENCE_NOTE,
         "citations": list(CITATIONS),
     }

@@ -112,8 +112,11 @@ DEMO_CASES = [
         },
     },
     {
+        # PTA4 111 dB (right) / 115 dB (left): WHO 2021 grades 95 dB HL or more
+        # as "Complete or total", so the label follows the grade. The id stays
+        # "profound" because links and tests address the case by it.
         "id": "profound",
-        "label": "Profound Loss",
+        "label": "Complete or Total Loss",
         "description": "34-year-old with corner audiogram — residual low-frequency hearing only",
         "record": {
             "patient": {"name": "Karthik Raja", "age": 34, "sex": "male",

@@ -18,7 +18,8 @@ from app.clinical import rules
 from app.clinical.safety import safety_review
 from app.clinical.triage import sort_worklist, triage_case, worklist_summary
 from app.ml import classifier
-from app.models.schemas import AC_FREQS, BC_FREQS, EarData
+from app.ml.features import COLES_NOTCH_DB, NORMAL_FREQ_LIMIT, noise_notch_with_loss
+from app.models.schemas import AC_FREQS, BC_FREQS, EarData, ear_to_numeric
 
 router = APIRouter(prefix="/api")
 
@@ -100,6 +101,8 @@ async def batch(file: UploadFile = File(...)):
             except FileNotFoundError:
                 pass
 
+            acs = {"right": r_ac, "left": l_ac}
+
             def summarize(side):
                 ear, m = rr[side], ml[side]
                 return {
@@ -108,8 +111,16 @@ async def batch(file: UploadFile = File(...)):
                     "type": ear.get("type"),
                     "provisional": ear.get("provisional"),
                     "pattern": m.get("pattern_label") if m else None,
+                    "pattern_key": m.get("pattern") if m else None,
+                    "pattern_reliable": m.get("reliable") if m else None,
+                    "reliability_note": m.get("reliability_note") if m else None,
                     "confidence": m.get("confidence") if m else None,
                     "ood": m.get("ood") if m else None,
+                    # Rule-based, independent of the classifier: the cohort
+                    # notch rate must not inherit the model's forced labels.
+                    # None = not assessable from the tested frequencies.
+                    "noise_notch": noise_notch_with_loss(
+                        ear_to_numeric(acs[side])),
                 }
 
             disability = rr.get("disability") or {}
@@ -137,6 +148,10 @@ async def batch(file: UploadFile = File(...)):
             "left": summarize("left"),
             "binaural_disability_pct": disability.get("binaural_pct"),
             "benchmark_disability": disability.get("benchmark_disability"),
+            # False when the percentage is a provisional estimate (e.g. a PTA
+            # frequency untested) that cannot go on a certificate.
+            "disability_certifiable": (disability.get("certifiable", True)
+                                       if disability else None),
             "urgent": safety["has_urgent"],
             "alerts": [a["title"] for a in safety["alerts"] if a["level"] in ("emergency", "urgent")],
             "triage": triage,
@@ -203,12 +218,22 @@ def camp_summary(results: List[dict]) -> dict:
 
     impaired = [r for r in results if is_impaired(r)]
     benchmark = [r for r in results if r["benchmark_disability"]]
+    benchmark_provisional = [r for r in benchmark
+                             if r.get("disability_certifiable") is False]
     urgent = [r for r in results if r.get("urgent")]
 
-    # Noise-notch pattern in either ear = early occupational damage signal.
+    # Noise notch in either ear = early occupational damage signal. Counted
+    # from the thresholds by the Coles, Lutman & Buffin (2000) notch rule
+    # with the 4 kHz threshold outside normal limits — never from the
+    # classifier label: the model has no normal class, so its label would
+    # count normal-hearing ears with a 5 dB wobble at 4 kHz as notched.
     def has_notch(r):
-        return any((r[s]["pattern"] or "").startswith("Noise notch") for s in ("right", "left"))
+        return any(r[s].get("noise_notch") is True for s in ("right", "left"))
+
+    def notch_assessable(r):
+        return any(r[s].get("noise_notch") is not None for s in ("right", "left"))
     notch = [r for r in results if has_notch(r)]
+    assessable = [r for r in results if notch_assessable(r)]
 
     by_age = {}
     for lo, hi, label in AGE_BANDS:
@@ -231,6 +256,10 @@ def camp_summary(results: List[dict]) -> dict:
     ood = [r for r in results if any(r[s]["ood"] for s in ("right", "left"))]
     provisional = [r for r in results
                    if any(r[s]["provisional"] for s in ("right", "left"))]
+    # "Needs review" is the triage decision each row carries — the same one
+    # the worklist counts — so a provisional type, a validity alert or a
+    # benchmark percentage is counted, not only an atypical pattern.
+    review = [r for r in results if (r.get("triage") or {}).get("review_required")]
 
     return {
         "total": total,
@@ -238,16 +267,31 @@ def camp_summary(results: List[dict]) -> dict:
         "impaired_pct": round(100 * len(impaired) / total, 1),
         "benchmark_disability": len(benchmark),
         "benchmark_pct": round(100 * len(benchmark) / total, 1),
+        # Of those, how many rest on a percentage that cannot be certified
+        # as measured — they need retesting before a certification camp.
+        "benchmark_not_certifiable": len(benchmark_provisional),
         "urgent_referrals": len(urgent),
         "noise_notch": len(notch),
         "noise_notch_pct": round(100 * len(notch) / total, 1),
-        "needs_review": len(ood),
+        # People with at least one ear in which the notch rule could be
+        # applied (4 kHz, 8 kHz and 1 or 2 kHz tested). Screening sets that
+        # skip 8 kHz cannot show a notch, so a low rate there means "not
+        # measured", not "absent".
+        "noise_notch_assessable": len(assessable),
+        "noise_notch_definition": (
+            f"4 kHz threshold at least {COLES_NOTCH_DB:g} dB worse than at 1 or 2 kHz "
+            f"and than at 8 kHz (Coles, Lutman & Buffin 2000), and above "
+            f"{NORMAL_FREQ_LIMIT:g} dB HL"
+        ),
+        "needs_review": len(review),
+        "atypical_pattern": len(ood),
         "provisional_type": len(provisional),
         "by_age_band": by_age,
         "by_grade": dict(sorted(by_grade.items(), key=lambda kv: -kv[1])),
         "headline": (
             f"{round(100 * len(notch) / total)}% of this cohort shows a 4 kHz noise "
-            "notch — the signature of occupational noise exposure."
+            "notch with hearing loss at 4 kHz (Coles et al. 2000 criteria) — the "
+            "audiometric signature of noise exposure; take noise-exposure histories."
         ) if len(notch) / total >= 0.15 else (
             f"{round(100 * len(impaired) / total)}% of this cohort has measurable "
             "hearing loss (PTA ≥ 20 dB HL)."

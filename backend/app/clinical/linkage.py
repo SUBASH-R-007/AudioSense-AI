@@ -25,11 +25,13 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence
 
+from app.clinical.consistency import REFLEX_PRESENT_UNEXPECTED_PTA, middle_ear_status
 from app.clinical.rules import WHO_GRADES
 from app.clinical.symptom_kb import (
     DISEASE_AUDIOGRAM, DISEASES, OTOSCOPY_DISEASE_LINKS, OTOSCOPY_LINKS,
     REFLEX_LINKS, SYMPTOM_LABELS, TYMPANOGRAM_LINKS,
 )
+from app.clinical.symptoms import _ear_reading, _measured_ears
 
 #: Frequencies compared when matching an audiogram against a disease's
 #: characteristic shape.
@@ -106,8 +108,9 @@ def otoscopy_vs_symptoms(otoscopy: Optional[dict],
     if expects:
         findings.append(_finding(
             "agreement",
-            f"History matches the otoscopic appearance",
-            f"{otoscopy['prediction']['name']} typically presents with "
+            "History matches the image's closest reference pattern",
+            f"{otoscopy['prediction']['name']} (the image's closest reference "
+            "pattern, not a validated diagnosis) typically presents with "
             f"{', '.join(_label(s).lower() for s in link['expects'])}. "
             f"This patient reports {', '.join(_label(s).lower() for s in expects)}.",
             weight=len(expects) / max(len(link["expects"]), 1),
@@ -138,8 +141,9 @@ def otoscopy_vs_symptoms(otoscopy: Optional[dict],
             "agreement",
             "Image and history point at the same condition",
             f"The symptom differential ranks {top['name']} at "
-            f"{round(top['score'] * 100)}, and the otoscopic appearance "
-            f"({otoscopy['prediction']['name']}) independently points there.",
+            f"{round(top['score'] * 100)}, and the image's closest reference "
+            f"pattern ({otoscopy['prediction']['name']}, not validated for "
+            "diagnosis) independently points there.",
             weight=1.2,
         ))
     elif ranked and link["conditions"]:
@@ -173,8 +177,9 @@ def otoscopy_vs_symptoms(otoscopy: Optional[dict],
         findings.append(_finding(
             "conflict",
             "Dangerous appearance with no supporting symptoms",
-            f"{otoscopy['prediction']['name']} is present on the image while the "
-            "history is unremarkable. Early attic disease and small middle-ear "
+            f"The image's closest reference pattern is "
+            f"{otoscopy['prediction']['name'].lower()} (not a validated diagnosis) "
+            "while the history is unremarkable. Early attic disease and small middle-ear "
             "masses are frequently silent — the absence of symptoms is not "
             "reassurance here.",
             action="Refer on the examination, not the history.",
@@ -208,13 +213,26 @@ def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
     the ranked class probabilities weight the disease scores, so a picture the
     model cannot separate produces a differential that is correspondingly
     spread out instead of a confident answer built on a coin flip.
+
+    A CLINICIAN-CONFIRMED PATTERN IS NOT A DISTRIBUTION. Where the pattern was
+    set by examination rather than predicted, the model's spread is not
+    uncertainty about the appearance any more — the appearance is known — so
+    the differential is built from the confirmed pattern alone at full weight.
+    Weighting it by the model's own probabilities would let a classifier the
+    clinician has just overruled keep most of its say in the answer.
     """
     if not otoscopy:
         return {"available": False, "note": "No otoscope image recorded."}
 
-    ranked_patterns = otoscopy.get("ranked") or []
+    prediction = otoscopy.get("prediction") or {}
+    confirmed = prediction.get("kind") == "clinician_confirmed"
+
+    if confirmed and prediction.get("label"):
+        ranked_patterns = [{"label": prediction["label"], "probability": 1.0}]
+    else:
+        ranked_patterns = otoscopy.get("ranked") or []
     if not ranked_patterns:
-        label = (otoscopy.get("prediction") or {}).get("label")
+        label = prediction.get("label")
         if not label:
             return {"available": False, "note": "No otoscopic pattern to work from."}
         ranked_patterns = [{"label": label, "probability": 1.0}]
@@ -267,12 +285,19 @@ def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
         len(differential) == 1
         or differential[0]["score"] - differential[1]["score"] >= 0.15)
 
-    leading = (otoscopy.get("prediction") or {}).get("label")
+    leading = prediction.get("label")
     if leading == "normal":
         headline = ("A normal drum excludes the middle-ear causes; it cannot "
                     "rank the cochlear and neural ones against each other.")
+    elif confirmed and differential:
+        headline = (f"{prediction.get('name', 'The confirmed appearance')}, as "
+                    f"examined, points to {differential[0]['name']}"
+                    + (" — the appearance does not separate it from the others "
+                       "below." if not separated else "."))
     elif separated:
-        headline = f"The appearance points to {differential[0]['name']}."
+        headline = (f"The image's closest reference patterns point to "
+                    f"{differential[0]['name']} — a prompt, not a validated "
+                    "diagnosis.")
     elif len(tied) > 1:
         headline = ("The appearance does not discriminate between "
                     + ", ".join(tied[:3]) + ".")
@@ -285,8 +310,9 @@ def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
     return {
         "available": True,
         "from": "otoscopy",
-        "pattern": otoscopy["prediction"]["name"],
-        "certainty": otoscopy["prediction"].get("certainty"),
+        "pattern": prediction.get("name"),
+        "certainty": prediction.get("certainty"),
+        "clinician_confirmed": confirmed,
         "differential": differential,
         "separated": separated,
         "tied": tied if len(tied) > 1 else [],
@@ -295,10 +321,20 @@ def otoscopy_vs_diseases(otoscopy: Optional[dict]) -> dict:
                            for k in sorted(excluded) if excluded[k] >= 0.5],
         "other_conditions": other,
         "reasoning": reasoning,
-        "note": ("Ranked from the image alone, weighted by the classifier's own "
-                 "uncertainty. It needs no history and no audiogram — and it "
-                 "inherits the classifier's accuracy, so read it as a prompt "
-                 "list rather than a conclusion."),
+        "note": (
+            # The caveat has to change with the source of the pattern: quoting
+            # the classifier's accuracy against a pattern a clinician confirmed
+            # would understate the finding, and dropping the caveat for a
+            # predicted one would overstate it.
+            "Ranked from the appearance you confirmed on examination. The "
+            "ranking itself comes from the reference set's disease links, so "
+            "it is a differential to work through rather than a diagnosis — "
+            "but it no longer depends on the classifier being right."
+            if confirmed else
+            "Ranked from the image alone, weighted by the classifier's own "
+            "uncertainty. It needs no history and no audiogram — and it "
+            "inherits the classifier's accuracy, so read it as a prompt "
+            "list rather than a conclusion."),
     }
 
 
@@ -355,7 +391,11 @@ def audiogram_vs_diseases(analysis: Optional[dict], side: str = "right") -> dict
     rules_ear = (analysis.get("rules") or {}).get(side) or {}
     pta = (rules_ear.get("ac_pta") or {}).get("value")
     ear_type = (rules_ear.get("type") or "").lower()
-    conductive = "conductive" in ear_type
+    # rules.hearing_type types an ear within normal limits Normal even with a
+    # significant air-bone gap; for matching a disease's TYPE that gap still
+    # counts as a conductive component.
+    gap_only = "normal" in ear_type and bool(rules_ear.get("significant_air_bone_gap"))
+    conductive = "conductive" in ear_type or gap_only
     mixed = "mixed" in ear_type
 
     rules = analysis.get("rules") or {}
@@ -431,12 +471,17 @@ def audiogram_vs_diseases(analysis: Optional[dict], side: str = "right") -> dict
     # conditions in the reference set present with normal pure tones, and
     # pattern-matching would otherwise rank one of them first and read as a
     # diagnosis of a patient whose hearing is fine.
-    normal_audiogram = pta is not None and pta < 20 and not (conductive or mixed)
+    normal_audiogram = (pta is not None and pta < 20
+                        and not ("conductive" in ear_type or mixed))
     if normal_audiogram:
         headline = (f"The {side} ear is within normal limits ({pta:g} dB HL) — no "
                     "loss pattern to match. The conditions below are the ones "
                     "that present WITH a normal audiogram; they are not ranked "
                     "against a loss.")
+        if gap_only:
+            headline += (" " + (rules_ear.get("air_bone_gap_note")
+                                or "There is an air-bone gap behind normal hearing; "
+                                   "check it with tympanometry and otoscopy."))
     elif best:
         headline = (f"The {side} audiogram most closely matches {best['name']}"
                     + ("." if separated
@@ -517,25 +562,43 @@ def symptoms_vs_audiogram(assessment: Optional[dict],
     best = min(measured)
     worst = max(measured)
     asymmetry = round(worst - best, 1)
+    laterality = disease.get("laterality", "either")
 
     # --- type ------------------------------------------------------------
+    # Each ear is read exactly as the Results line and the Symptoms page read
+    # it (symptoms._ear_reading), so the three screens cannot disagree about
+    # the same ear: an air-conduction-only "Sensorineural (provisional)" ear
+    # leaves the type undetermined, a mixed prediction fits a measured part of
+    # either kind, and an ear within normal limits neither fits nor
+    # contradicts a condition that predicts a loss.
     expected_type = disease.get("expected_type", "any")
+    type_undetermined: List[str] = []
     if expected_type != "any":
+        readings = {e["side"]: (e, _ear_reading(expected_type, e))
+                    for e in _measured_ears(analysis)}
+        affected = [s for s, (_e, r) in readings.items() if r != "normal"]
         for side in ("right", "left"):
-            if ptas[side] is None:
+            if side not in readings:
                 continue
-            lowered = types[side].lower()
-            conductive = "conductive" in lowered
-            mixed = "mixed" in lowered
-            if expected_type == "conductive":
-                fits = conductive or mixed
-            elif expected_type == "mixed":
-                fits = mixed
-            elif expected_type == "sensorineural":
-                fits = "sensorineural" in lowered or (
-                    not conductive and not mixed and ptas[side] >= 20)
-            else:
-                fits = ptas[side] < 20
+            ear, reading = readings[side]
+            if reading == "undetermined":
+                type_undetermined.append(side)
+                continue
+            if reading == "normal":
+                # A one-sided (or either-sided) condition is expected to leave
+                # the other ear normal; for a two-sided one the symmetry check
+                # below names the problem.
+                if affected and laterality in ("unilateral", "either"):
+                    findings.append(_finding(
+                        "agreement",
+                        f"{side.title()} ear within normal limits, as expected",
+                        f"{top['name']} is usually one-sided; the {side} ear is "
+                        f"within normal limits at {ptas[side]:g} dB HL while the "
+                        f"{affected[0]} ear carries the loss.",
+                        weight=0.5,
+                    ))
+                continue
+            fits = reading == "fits"
             findings.append(_finding(
                 "agreement" if fits else "conflict",
                 f"{side.title()} ear type "
@@ -552,43 +615,51 @@ def symptoms_vs_audiogram(assessment: Optional[dict],
     # test-retest variation, so a value just past the edge of a range is not a
     # contradiction — but it is not "inside the range" either, and saying so
     # would be a false statement about a number printed next to it.
+    #
+    # A condition that affects one ear is judged on the ear it affects (the
+    # worse ear): a normal opposite ear is the expected half of its picture,
+    # not evidence that the loss is too mild. A two-sided condition is judged
+    # on the better ear, as WHO 2021 grades hearing.
     lo, hi = disease.get("expected_pta", (0, 120))
-    grade = _grade(best)
+    one_sided_condition = laterality in ("unilateral", "either")
+    level = worst if one_sided_condition else best
+    which = "worse" if one_sided_condition and len(measured) == 2 else "better"
+    grade = _grade(level)
     TOLERANCE_DB = 5
-    if best < lo - TOLERANCE_DB:
+    if level < lo - TOLERANCE_DB:
         findings.append(_finding(
             "conflict",
             f"Thresholds are better than {top['name']} would produce",
-            f"The better ear averages {best:g} dB HL ({grade}), while "
+            f"The {which} ear averages {level:g} dB HL ({grade}), while "
             f"{top['name']} typically produces {lo}-{hi} dB HL. Either the "
             "condition is early, or it is not the explanation for this "
             "patient's complaint.",
             action="Consider causes that leave pure tones normal — central "
                    "processing, neural dys-synchrony, or a non-auditory cause.",
         ))
-    elif best > hi + TOLERANCE_DB:
+    elif level > hi + TOLERANCE_DB:
         findings.append(_finding(
             "conflict",
             f"Thresholds are worse than {top['name']} would produce",
-            f"The better ear averages {best:g} dB HL ({grade}), beyond the "
+            f"The {which} ear averages {level:g} dB HL ({grade}), beyond the "
             f"{lo}-{hi} dB HL this condition usually causes. A second, "
             "additive pathology may be present.",
             action="Look for a coexisting cause rather than attributing all of "
                    "the loss to one diagnosis.",
         ))
-    elif lo <= best <= hi:
+    elif lo <= level <= hi:
         findings.append(_finding(
             "agreement",
             f"Degree of loss fits {top['name']}",
-            f"Better-ear average {best:g} dB HL ({grade}) sits inside the "
-            f"{lo}-{hi} dB HL range this condition typically produces.",
+            f"{which.capitalize()}-ear average {level:g} dB HL ({grade}) sits inside "
+            f"the {lo}-{hi} dB HL range this condition typically produces.",
         ))
     else:
-        over = best > hi
+        over = level > hi
         findings.append(_finding(
             "agreement",
             f"Degree of loss is borderline for {top['name']}",
-            f"Better-ear average {best:g} dB HL ({grade}) is just "
+            f"{which.capitalize()}-ear average {level:g} dB HL ({grade}) is just "
             f"{'above' if over else 'below'} the {lo}-{hi} dB HL range this "
             f"condition typically produces — within test-retest variation, so "
             "not a contradiction, but not a comfortable fit either.",
@@ -596,7 +667,6 @@ def symptoms_vs_audiogram(assessment: Optional[dict],
         ))
 
     # --- symmetry ---------------------------------------------------------
-    laterality = disease.get("laterality", "either")
     if laterality != "either" and len(measured) == 2:
         one_sided = asymmetry >= 15
         if laterality == "unilateral" and not one_sided:
@@ -667,6 +737,11 @@ def symptoms_vs_audiogram(assessment: Optional[dict],
         "expected_type": expected_type,
         "expected_pta": [lo, hi],
         "expected_laterality": laterality,
+        "degree_judged_on": which,
+        # Ears whose type is provisional (bone conduction untested, incomplete
+        # or no response), so the predicted part is neither confirmed nor
+        # excluded.
+        "type_undetermined": type_undetermined,
         "measured": {"better_ear_pta": best, "worse_ear_pta": worst,
                      "asymmetry_db": asymmetry, "grade": grade,
                      "right": ptas["right"], "left": ptas["left"]},
@@ -744,8 +819,9 @@ def immittance_vs_diseases(analysis: Optional[dict],
     oae = (analysis.get("oae") or {}).get(side) or {}
     rules_ear = (analysis.get("rules") or {}).get(side) or {}
     pta = (rules_ear.get("ac_pta") or {}).get("value")
-    conductive = "conductive" in (rules_ear.get("type") or "").lower() or \
-                 "mixed" in (rules_ear.get("type") or "").lower()
+    lowered = (rules_ear.get("type") or "").lower()
+    conductive = ("conductive" in lowered or "mixed" in lowered
+                  or bool(rules_ear.get("significant_air_bone_gap")))
 
     reflex_notes: List[dict] = []
     if reflexes:
@@ -753,8 +829,20 @@ def immittance_vs_diseases(analysis: Optional[dict],
         if pattern == "absent" and conductive:
             reflex_notes.append(REFLEX_LINKS["absent_conductive"])
         if pattern == "absent" and oae.get("present_freqs"):
-            reflex_notes.append(REFLEX_LINKS["absent_with_emissions"])
-        if pattern == "present" and pta is not None and pta > 60:
+            # The same middle-ear gate as the battery (consistency.py): a
+            # middle-ear disorder abolishes the reflex on its own (Jerger,
+            # Anthony, Jerger & Mauldin 1974), so "beyond the cochlea" is
+            # inferred only when the middle ear does not already explain it.
+            status, reason = middle_ear_status(tymp, rules_ear, immittance)
+            if status != "abnormal":
+                beyond = dict(REFLEX_LINKS["absent_with_emissions"])
+                if status == "unknown":
+                    beyond["meaning"] = (f"{beyond['meaning']} Note that {reason}: "
+                                         "confirm the middle ear is normal before "
+                                         "acting on this.")
+                reflex_notes.append(beyond)
+        if pattern == "present" and pta is not None \
+                and pta > REFLEX_PRESENT_UNEXPECTED_PTA:
             reflex_notes.append(REFLEX_LINKS["present_with_severe_loss"])
 
     return _summarise(findings, extra={

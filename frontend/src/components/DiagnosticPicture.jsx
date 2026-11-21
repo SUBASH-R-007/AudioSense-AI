@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api.js'
+import Collapsible, { Reveal } from './Collapsible.jsx'
 import { useApp } from '../lib/store.jsx'
 
 const CONFIDENCE = {
@@ -106,8 +107,44 @@ function Coverage({ coverage, performed, total, skipped }) {
   )
 }
 
+/** The cross-test checks that are not conflicts, rendered the same way. */
+function CrossList({ items }) {
+  if (!items?.length) return null
+  return (
+    <ul className="space-y-2">
+      {items.map((f, i) => (
+        <li key={i} className={`rounded-lg px-2.5 py-2 ${
+          f.kind === 'agreement' ? 'bg-emerald-50' : 'bg-slate-50'}`}>
+          <div className={`text-[12px] font-semibold ${
+            f.kind === 'agreement' ? 'text-emerald-900' : 'text-slate-700'}`}>
+            {f.kind === 'agreement' ? '✓' : '·'} {f.title}
+            {f.side && (
+              <span className="ml-1.5 text-[10px] uppercase tracking-wide opacity-70">
+                {f.side}
+              </span>
+            )}
+          </div>
+          <div className={`mt-0.5 text-[11.5px] leading-relaxed ${
+            f.kind === 'agreement' ? 'text-emerald-900' : 'text-slate-600'}`}>
+            {f.detail}
+          </div>
+          {f.action && (
+            <div className="mt-1 text-[11.5px] font-medium text-slate-700">
+              → {f.action}
+            </div>
+          )}
+          <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-400">
+            {f.tests.join(' ↔ ')}
+          </div>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 export default function DiagnosticPicture({ analysis }) {
-  const { assessment, otoscopy, aep, tuningFork, boa, skipped } = useApp()
+  const { assessment, otoscopy, otoscopyEars, aep, tuningFork, boa,
+          skipped } = useApp()
   const [picture, setPicture] = useState(null)
   const [reference, setReference] = useState(null)
   const [error, setError] = useState(null)
@@ -150,12 +187,19 @@ export default function DiagnosticPicture({ analysis }) {
     api.diagnosisPicture({
       analysis, assessment, otoscopy, aep, tuning_fork: tuningFork, boa,
       age_months: ageMonths, skipped: skippedModalities,
+      // Both ears, so the cross-checks reconcile each ear's own image against
+      // that ear's emissions. One reading for the case would hold the right
+      // drum against the left cochlea.
+      otoscopy_ears: {
+        right: otoscopyEars?.right || null,
+        left: otoscopyEars?.left || null,
+      },
     })
       .then((p) => { if (!cancelled) { setPicture(p); setError(null) } })
       .catch((e) => { if (!cancelled) setError(e.message) })
     return () => { cancelled = true }
-  }, [analysis, assessment, otoscopy, aep, tuningFork, boa, ageMonths,
-      skippedModalities])
+  }, [analysis, assessment, otoscopy, otoscopyEars, aep, tuningFork, boa,
+      ageMonths, skippedModalities])
 
   if (error) {
     return (
@@ -302,6 +346,66 @@ export default function DiagnosticPicture({ analysis }) {
                 {picture.agreements.map((a, i) => <li key={i}>· {a}</li>)}
               </ul>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* THE CROSS-TEST CHECKS, each naming the two tests that produced it
+          and what to do about it. The sentences above are folded into the
+          convergence lists so they count toward the confidence rating; these
+          are the same findings with their resolution attached, which is the
+          part a clinician acts on. Conflicts are never collapsed. */}
+      {picture.cross_test?.available && (
+        <div className="mt-4">
+          {picture.cross_test.conflicts.length > 0 ? (
+            <div className="rounded-xl border border-amber-300 bg-amber-50/70 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+                Between the tests — {picture.cross_test.headline}
+              </div>
+              <ul className="mt-2 space-y-2">
+                {picture.cross_test.conflicts.map((f, i) => (
+                  <li key={i} className="rounded-lg bg-white/70 px-2.5 py-2">
+                    <div className="text-[12px] font-semibold text-amber-900">
+                      ⚠ {f.title}
+                      {f.side && (
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide opacity-70">
+                          {f.side}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 text-[11.5px] leading-relaxed text-amber-900">
+                      {f.detail}
+                    </div>
+                    <div className="mt-1 text-[11.5px] font-medium text-amber-900">
+                      → {f.action}
+                    </div>
+                    <div className="mt-1 text-[10px] uppercase tracking-wide text-amber-700/70">
+                      {f.tests.join(' ↔ ')}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {(picture.cross_test.agreements.length > 0
+                || picture.cross_test.notes.length > 0) && (
+                <Reveal className="mt-2"
+                  label={`${picture.cross_test.agreements.length + picture.cross_test.notes.length} other cross-test check(s)`}>
+                  <CrossList
+                    items={[...picture.cross_test.agreements,
+                            ...picture.cross_test.notes]} />
+                </Reveal>
+              )}
+            </div>
+          ) : (
+            <Collapsible title="Between the tests"
+              subtitle={picture.cross_test.headline}
+              badge={picture.cross_test.agreement_count || null}
+              badgeTone="good">
+              <CrossList items={[...picture.cross_test.agreements,
+                                 ...picture.cross_test.notes]} />
+              <p className="mt-2.5 text-[11px] leading-relaxed text-slate-400">
+                {picture.cross_test.note}
+              </p>
+            </Collapsible>
           )}
         </div>
       )}

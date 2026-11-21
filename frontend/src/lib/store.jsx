@@ -25,11 +25,42 @@ export function AppProvider({ children }) {
   // that only exists inside one page's local state cannot be cross-checked
   // from another.
   const [assessment, setAssessmentRaw] = useState(() => load('as_assessment', null))
-  const [otoscopy, setOtoscopyRaw] = useState(() => load('as_otoscopy', null))
+  // OTOSCOPY IS PER EAR, and that is not a refinement — it is a correctness
+  // fix. This used to be one result for the whole case, so examining the right
+  // ear and then the left overwrote the first: the page showed one reading
+  // while the ear selector said the other, and the cross-checks reconciled the
+  // wrong ear's picture against the audiogram. Two ears are two findings, and a
+  // perforated left drum beside a normal right one is the commonest thing an
+  // otoscope sees.
+  //
+  // `last` names the ear most recently read, so consumers that genuinely have
+  // no ear in hand (the whole-case diagnostic picture) still get a sensible
+  // single result instead of always defaulting to the right.
+  const [otoscopyEars, setOtoscopyEarsRaw] = useState(() => {
+    const stored = load('as_otoscopy_ears', null)
+    if (stored && typeof stored === 'object' && ('right' in stored || 'left' in stored)) {
+      return { right: stored.right || null, left: stored.left || null,
+               last: stored.last || null }
+    }
+    // Migrate a case saved by the previous single-result build, so a
+    // consultation in progress across a reload does not lose its examination.
+    const legacy = load('as_otoscopy', null)
+    const side = legacy?.side === 'left' ? 'left' : 'right'
+    return legacy
+      ? { right: side === 'right' ? legacy : null,
+          left: side === 'left' ? legacy : null, last: side }
+      : { right: null, left: null, last: null }
+  })
   // Evoked potentials, tuning forks and behavioural observation used to live
   // only on their own screens, so a case could be fully worked up and the
   // dashboard would still show three of its modalities as never performed.
-  const [aep, setAepRaw] = useState(() => load('as_aep', null))
+  // An AEP record without a "recorded" stamp was auto-stored by the older
+  // Evoked Potentials page from its example values, not attached by a
+  // clinician; it must not tick the AEP step or reach the results.
+  const [aep, setAepRaw] = useState(() => {
+    const stored = load('as_aep', null)
+    return stored && typeof stored === 'object' && stored.recorded ? stored : null
+  })
   const [tuningFork, setTuningForkRaw] = useState(() => load('as_tuning_fork', null))
   const [boa, setBoaRaw] = useState(() => load('as_boa', null))
   // The exact request last sent to /api/analyze. Kept so a test performed
@@ -82,8 +113,33 @@ export function AppProvider({ children }) {
 
   const setAssessment = useCallback(
     (a) => persist('as_assessment', a, setAssessmentRaw), [persist])
-  const setOtoscopy = useCallback(
-    (o) => persist('as_otoscopy', o, setOtoscopyRaw), [persist])
+  // Writes into the ear the RESULT itself names (the backend stamps `side` on
+  // every analysis), so existing callers keep working unchanged and cannot
+  // file a left-ear reading under the right ear by forgetting an argument.
+  const setOtoscopyEar = useCallback((side, result) => {
+    const ear = side === 'left' ? 'left' : 'right'
+    setOtoscopyEarsRaw((prev) => {
+      const next = { ...prev, [ear]: result || null }
+      // Clearing an ear must not leave `last` pointing at it.
+      next.last = result ? ear : (next[ear === 'right' ? 'left' : 'right'] ? (ear === 'right' ? 'left' : 'right') : null)
+      try { sessionStorage.setItem('as_otoscopy_ears', JSON.stringify(next)) } catch { /* ignore */ }
+      return next
+    })
+  }, [])
+
+  const setOtoscopy = useCallback((o) => {
+    setOtoscopyEar(o?.side === 'left' ? 'left' : 'right', o)
+  }, [setOtoscopyEar])
+
+  const clearOtoscopy = useCallback(() => {
+    setOtoscopyEarsRaw({ right: null, left: null, last: null })
+    try { sessionStorage.removeItem('as_otoscopy_ears') } catch { /* ignore */ }
+  }, [])
+
+  // The single result for consumers with no ear in hand. Prefers the ear just
+  // read; an explicit side should always use `otoscopyEars[side]` instead.
+  const otoscopy = (otoscopyEars.last && otoscopyEars[otoscopyEars.last])
+    || otoscopyEars.right || otoscopyEars.left || null
   const setAep = useCallback(
     (v) => persist('as_aep', v, setAepRaw), [persist])
   const setTuningFork = useCallback(
@@ -118,11 +174,17 @@ export function AppProvider({ children }) {
   // the last one's otoscopy image and tuning-fork battery and the dashboard
   // reports findings that belong to somebody else.
   const resetCase = useCallback(() => {
-    for (const k of ['as_analysis', 'as_assessment', 'as_otoscopy', 'as_aep',
+    // 'as_otoscopy' stays in this list although nothing writes it any more:
+    // a browser that ran the previous build still has one, and the per-ear
+    // state migrates from it on load, so leaving it behind would resurrect
+    // the last patient's examination for the next one.
+    for (const k of ['as_analysis', 'as_assessment', 'as_otoscopy',
+                     'as_otoscopy_ears', 'as_aep',
                      'as_tuning_fork', 'as_boa', 'as_babble', 'as_record', 'as_patient', 'as_skipped']) {
       try { sessionStorage.removeItem(k) } catch { /* ignore */ }
     }
-    setAnalysisRaw(null); setAssessmentRaw(null); setOtoscopyRaw(null)
+    setAnalysisRaw(null); setAssessmentRaw(null)
+    setOtoscopyEarsRaw({ right: null, left: null, last: null })
     setAepRaw(null); setTuningForkRaw(null); setBoaRaw(null); setBabbleScreenRaw(null); setRecordRaw(null)
     setPatientRaw(null); setSkippedRaw({})
   }, [])
@@ -259,7 +321,8 @@ export function AppProvider({ children }) {
     <AppContext.Provider
       value={{
         analysis, setAnalysis, history,
-        assessment, setAssessment, otoscopy, setOtoscopy,
+        assessment, setAssessment,
+        otoscopy, setOtoscopy, otoscopyEars, setOtoscopyEar, clearOtoscopy,
         aep, setAep, tuningFork, setTuningFork, boa, setBoa, babbleScreen, setBabbleScreen, record, setRecord,
         patient, setPatient, skipped, skipStep, unskipStep, resetCase,
         aiStatus, refreshAiStatus, toast, showToast,

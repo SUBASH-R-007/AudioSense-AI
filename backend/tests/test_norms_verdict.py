@@ -164,10 +164,14 @@ def test_verdict_recommends_aids_for_moderate_loss():
     assert "hearing-aid" in v["action"] or "hearing aid" in v["action"]
 
 
-def test_verdict_includes_hearing_age_number():
-    case = next(c for c in DEMO_CASES if c["id"] == "presbycusis")
-    v = client.post("/api/analyze", json=case["record"]).json()["verdict"]
-    assert any(n["label"] == "Hearing age" for n in v["numbers"])
+def test_verdict_does_not_include_hearing_age_number():
+    """The age comparison was withdrawn from the Results page (NIEPMD)."""
+    for case in DEMO_CASES:
+        v = client.post("/api/analyze", json=case["record"]).json()["verdict"]
+        labels = " ".join(n["label"].lower() for n in v["numbers"])
+        units = " ".join(str(n.get("unit") or "").lower() for n in v["numbers"])
+        assert "hearing age" not in labels, case["id"]
+        assert "vs actual" not in units, case["id"]
 
 
 def test_verdict_caps_the_number_of_figures():
@@ -257,7 +261,9 @@ def test_verdict_headlines_the_worse_ear_when_the_ears_differ():
     # by a future safety rule and quietly stop testing the grade at all.
     assert body["safety"]["has_emergency"] is False
     headline = body["verdict"]["headline"].lower()
-    assert "profound" in headline
+    # A 95 dB HL ear is WHO 2021 "Complete or total", the worst grade there
+    # is; a severity order that does not know it would headline the normal ear.
+    assert "complete or total" in headline
     assert "normal limits" not in headline
     assert body["verdict"]["tone"] == "loss"
 

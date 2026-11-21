@@ -24,6 +24,7 @@ CSV columns: the same threshold columns as batch upload, plus any of
 from __future__ import annotations
 
 import io
+import re
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -55,6 +56,13 @@ PATTERN_ALIASES = {
 }
 
 
+#: An audiogram within normal limits has no loss configuration; the
+#: classifier reports it as "normal" (WHO 2021 normal-limits gate), so an
+#: expert label saying the same must match it. Whole-label match only, so
+#: "abnormal" or "normal to mild sloping" are not read as normal.
+_NORMAL_PATTERN = re.compile(r"(?:within normal limits|wnl|normal(?: hearing)?)")
+
+
 def normalize_pattern(value: str) -> Optional[str]:
     if value is None:
         return None
@@ -62,6 +70,8 @@ def normalize_pattern(value: str) -> Optional[str]:
     key = " ".join(key.split())
     if not key:
         return None
+    if _NORMAL_PATTERN.fullmatch(key):
+        return "normal"
     if key.replace(" ", "_") in classifier.PATTERN_LABELS:
         return key.replace(" ", "_")
     for alias, canonical in PATTERN_ALIASES.items():
@@ -70,30 +80,86 @@ def normalize_pattern(value: str) -> Optional[str]:
     return key.replace(" ", "_")
 
 
+#: Expert grade words -> the rules engine's WHO 2021 labels. Checked in this
+#: order, so the more specific phrase always wins: "moderately severe" before
+#: "severe" and "moderate". Each alias must appear as a whole word, or as
+#: that word with the adverb ending "-ly" ("profoundly deaf", "severely
+#: impaired", "mildly impaired"), which names the same degree. Any other word
+#: that merely contains an alias does not name that grade: "abnormal". A label
+#: the harness does not recognise is returned as written, to surface as a
+#: disagreement, never silently mapped onto a grade.
+GRADE_ALIASES = (
+    ("profound", "Profound hearing loss"),
+    ("moderately severe", "Moderately severe hearing loss"),
+    ("severe", "Severe hearing loss"),
+    ("moderate", "Moderate hearing loss"),
+    ("mild", "Mild hearing loss"),
+    ("normal", "Normal hearing"),
+)
+
+#: WHO 2021 grades 95 dB HL or more as "Complete or total hearing loss". The
+#: words "complete" and "total" name that grade only when they qualify the
+#: loss itself — "total deafness", "complete hearing loss", "totally deaf" —
+#: or stand alone as the label. Elsewhere they are ordinary words:
+#: "completely normal", "test complete", "total of 4 freqs", "incomplete",
+#: "subtotal", "completed" name no grade, and are read for any other grade
+#: word they contain.
+_COMPLETE_LOSS = re.compile(
+    r"\b(?:complete|total)(?:ly)?\s+(?:or\s+total\s+)?"
+    r"(?:hearing\s+loss|hearing\s+impairment|deaf(?:ness)?|loss|anacusis)\b")
+_COMPLETE_ALONE = {"complete", "total", "complete or total"}
+
+#: "near-total", "almost complete", "not totally", "sub-total", "partial":
+#: a qualifier that says the loss is short of complete. WHO 2021 has no such
+#: grade, so these labels are not mapped to "Complete or total" (they fall
+#: through to any other grade word in the label, else stay as written).
+_QUALIFIED_COMPLETE = re.compile(
+    r"\b(?:near|nearly|almost|not|sub|partial|partially)\s+(?:complete|total)(?:ly)?\b")
+
+_COMPLETE_GRADE = "Complete or total hearing loss"
+
+
+def _label_words(value) -> str:
+    """Lower-case label with "_" and "-" read as spaces ("severe-to-profound")."""
+    key = str(value).strip().lower().replace("_", " ").replace("-", " ")
+    return " ".join(key.split())
+
+
+def _has_grade_word(phrase: str, key: str) -> bool:
+    """``phrase`` as a whole word, or with the adverb ending "-ly"."""
+    return re.search(rf"\b{re.escape(phrase)}(?:ly)?\b", key) is not None
+
+
 def normalize_grade(value: str) -> Optional[str]:
     if value is None or str(value).strip() == "":
         return None
-    key = str(value).strip().lower()
-    for grade in ("profound", "moderately severe", "severe", "moderate", "mild", "normal"):
-        if grade in key:
-            return {
-                "normal": "Normal hearing",
-                "mild": "Mild hearing loss",
-                "moderate": "Moderate hearing loss",
-                "moderately severe": "Moderately severe hearing loss",
-                "severe": "Severe hearing loss",
-                "profound": "Profound hearing loss",
-            }[grade]
+    key = _label_words(value)
+    if _QUALIFIED_COMPLETE.search(key) is None and (
+            key in _COMPLETE_ALONE or _COMPLETE_LOSS.search(key)):
+        return _COMPLETE_GRADE
+    for word, canonical in GRADE_ALIASES:
+        if _has_grade_word(word, key):
+            return canonical
     return str(value).strip()
+
+
+#: Expert type words -> rules-engine types. Matched at the START of a word
+#: ("conductive", "conduction"; "sensorineural", "sensory"), so "abnormal"
+#: is not read as "normal".
+TYPE_ALIASES = (
+    (r"\bmixed\b", "Mixed"),
+    (r"\bconduct", "Conductive"),
+    (r"\bsensor", "Sensorineural"),
+    (r"\bnormal\b", "Normal"),
+)
 
 
 def normalize_type(value: str) -> Optional[str]:
     if value is None or str(value).strip() == "":
         return None
-    key = str(value).strip().lower()
-    for word, canonical in (("mixed", "Mixed"), ("conduct", "Conductive"),
-                            ("sensor", "Sensorineural"), ("normal", "Normal")):
-        if word in key:
+    key = _label_words(value)
+    for pattern, canonical in TYPE_ALIASES:
+        if re.search(pattern, key):
             return canonical
     return str(value).strip()
 

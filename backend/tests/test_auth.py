@@ -267,16 +267,54 @@ def test_the_documented_public_paths_answer_without_a_token(signed_in, path):
     assert signed_in.get(path).status_code == 200
 
 
+#: Every route that is deliberately reachable without a session, and why.
+#: A route becoming public without being added here fails the test below,
+#: which is the point: the default is closed and each exception is argued for.
+INTENTIONALLY_PUBLIC = {
+    "/api/health": "uptime probes run before anyone signs in",
+    "/api/auth/login": "signing in cannot require being signed in",
+    "/api/auth/status": "the UI must know whether to show a login screen",
+    "/api/handout/": "the patient's own counselling sheet, opened by QR",
+    "/api/verify/": "whoever holds a printout checks it is genuine",
+    "/api/report-view/": (
+        "the clinical report the QR on a printed PDF opens — a clinician "
+        "scanning their own printout is on a phone with no session"),
+    "/api/qr": "rendered into an <img>, which cannot carry a header",
+    "/api/otoscopy/image/": "reference atlas photographs, also loaded as <img>",
+}
+
+
 def test_the_public_list_does_not_shadow_a_protected_route(signed_in):
     """Every public prefix must be specific enough to cover nothing else."""
     protected = {r.path for r in app.routes
                  if getattr(r, "methods", None) and r.path.startswith("/api/")}
     for path in protected:
         if A.is_public(path):
-            assert any(path.startswith(p) for p in (
-                "/api/health", "/api/auth/login", "/api/auth/status",
-                "/api/handout/", "/api/verify/", "/api/qr",
-                "/api/otoscopy/image/")), path
+            assert any(path.startswith(p) for p in INTENTIONALLY_PUBLIC), path
+
+
+def test_generating_a_report_still_requires_a_session(signed_in):
+    """The report VIEW is public; the route that makes one is not.
+
+    These two live at deliberately different paths so one prefix cannot open
+    the other: /api/report-view/<hash> is the capability URL a QR opens, and
+    POST /api/report is a protected route that runs the report engine over a
+    patient's analysis.
+    """
+    assert A.is_public("/api/report-view/40f3615324ca8e64")
+    assert not A.is_public("/api/report")
+    assert not A.is_public("/api/report/")
+    # And nothing that merely starts with the same letters.
+    assert not A.is_public("/api/report-viewer")
+    assert not A.is_public("/api/reports")
+    assert signed_in.post("/api/report", json={}).status_code == 401
+
+
+def test_the_public_report_view_exposes_only_the_document(signed_in):
+    """A capability URL must not become a window onto everything else."""
+    assert signed_in.get("/api/report-view/notarealhash").status_code == 404
+    # Patient records are not reachable by the same trick.
+    assert signed_in.get("/api/records/patients").status_code == 401
 
 
 # ================================================== password hashing itself

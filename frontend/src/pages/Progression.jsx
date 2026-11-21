@@ -105,13 +105,20 @@ function ForecastPanel({ forecast }) {
       {forecast.disability_projected && (
         <div className="mt-3 rounded-xl border border-slate-200 px-3 py-2 text-[12.5px] text-slate-600">
           Projected binaural disability rises from{' '}
-          <b>{forecast.disability_now.binaural_pct}%</b> to{' '}
+          <b>{forecast.disability_now?.binaural_pct ?? '—'}%</b> to{' '}
           <b className={forecast.disability_projected.benchmark_disability ? 'text-rose-600' : ''}>
             {forecast.disability_projected.binaural_pct}%
           </b>
           {forecast.disability_projected.benchmark_disability &&
-            ' — crossing the RPwD 40% benchmark'}
+            ' — would cross the RPwD 40% benchmark'}
           .
+          {/* A projection is never a certificate figure (Gazette S.O. 76(E)
+              para 20.2.2 certifies measured thresholds only). */}
+          {forecast.disability_projected.certification_note && (
+            <div className="mt-1 text-[11px] text-slate-400">
+              {forecast.disability_projected.certification_note}
+            </div>
+          )}
         </div>
       )}
 
@@ -127,6 +134,23 @@ export default function Progression() {
   const [baseIdx, setBaseIdx] = useState('')
   const [currIdx, setCurrIdx] = useState('')
   const [busy, setBusy] = useState(false)
+  // OSHA's STS (29 CFR 1910.95(g)(10)) and the 1904.10 recording rule
+  // average 2000, 3000 and 4000 Hz; the audiogram grid stops at the octaves,
+  // so 3000 Hz is entered here when it was tested. Blank = not tested.
+  const [t3k, setT3k] = useState({ baseline: { right: '', left: '' },
+    current: { right: '', left: '' } })
+  const t3kValue = (v) => {
+    const s = String(v).trim().toUpperCase()
+    if (s === '') return null
+    if (s === 'NR') return 'NR'
+    const n = Number(s)
+    return Number.isFinite(n) ? n : null
+  }
+  const t3kPayload = {
+    baseline: { right: t3kValue(t3k.baseline.right), left: t3kValue(t3k.baseline.left) },
+    current: { right: t3kValue(t3k.current.right), left: t3kValue(t3k.current.left) },
+  }
+  const t3kKey = JSON.stringify(t3kPayload)
 
   const loadDemo = async () => {
     try {
@@ -151,11 +175,11 @@ export default function Progression() {
   useEffect(() => {
     if (!pair) return
     setBusy(true)
-    api.progression(pair.baseline, pair.current)
+    api.progression(pair.baseline, pair.current, JSON.parse(t3kKey))
       .then(setResult)
       .catch((e) => showToast(`Progression failed: ${e.message}`, 'error'))
       .finally(() => setBusy(false))
-  }, [pair, showToast])
+  }, [pair, showToast, t3kKey])
 
   const chartData = result
     ? AC_FREQS.map((f) => ({
@@ -174,13 +198,47 @@ export default function Progression() {
           <div className="flex items-center justify-between">
             <span className="text-[13px] font-semibold text-slate-800">OSHA Standard Threshold Shift</span>
             <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-              prog.osha_sts.flag ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
-              {prog.osha_sts.flag ? 'FLAGGED' : 'clear'}
+              prog.osha_sts.flag ? 'bg-rose-600 text-white'
+                : prog.osha_sts.proxy ? 'bg-amber-500 text-white' : 'bg-emerald-600 text-white'}`}>
+              {/* Without 3000 Hz the shift is read on a 2k/4k proxy, which can
+                  miss an STS, so "clear" is only said when OSHA's own three
+                  frequencies were compared. */}
+              {prog.osha_sts.flag ? (prog.osha_sts.proxy ? 'FLAGGED (proxy)' : 'FLAGGED')
+                : prog.osha_sts.proxy ? 'not flagged on proxy' : 'clear'}
             </span>
           </div>
           <div className="mt-1 text-[12px] text-slate-600">
-            Avg shift at 2k/4k: <b>{prog.osha_sts.avg_shift ?? '—'} dB</b> (criterion ≥ 10 dB)
+            Avg shift: <b>{prog.osha_sts.avg_shift ?? '—'} dB</b>
+            {' '}({prog.osha_sts.criterion || 'criterion ≥ 10 dB'})
           </div>
+          {prog.osha_sts.proxy_note && (
+            <div className="mt-1 text-[11.5px] leading-snug text-amber-800">
+              {prog.osha_sts.proxy_note}
+              {/* The server words the condition: a zero or negative shift
+                  needed means only an improvement at that frequency could
+                  undo the STS, which "a shift of -40 dB or more" hides. */}
+              {prog.osha_sts.missing_shift_note ? (
+                <> {prog.osha_sts.missing_shift_note}</>
+              ) : prog.osha_sts.missing_shift_needed_db > 0 && prog.osha_sts.missing_freq ? (
+                <> A shift of {prog.osha_sts.missing_shift_needed_db} dB or more at{' '}
+                  {prog.osha_sts.missing_freq} Hz would make it an STS.</>
+              ) : null}
+            </div>
+          )}
+          {prog.osha_recordable && (
+            <div className="mt-1.5 text-[11.5px] leading-snug text-slate-600">
+              OSHA 1904.10 recordability:{' '}
+              <b>{{
+                recordable: 'recordable if work-related',
+                not_recordable: 'not recordable',
+                met_on_proxy: 'met on proxy — confirm with 3000 Hz',
+                undetermined: 'cannot be decided without 3000 Hz',
+              }[prog.osha_recordable.status] || prog.osha_recordable.status}</b>
+              {prog.osha_recordable.hearing_level_avg != null && (
+                <> · hearing level {prog.osha_recordable.hearing_level_avg} dB HL (≥ 25 needed)</>
+              )}
+            </div>
+          )}
         </div>
         <div className={`rounded-xl p-3 ${prog.asha_ototoxicity.flag ? 'bg-rose-50' : 'bg-emerald-50'}`}>
           <div className="flex items-center justify-between">
@@ -230,6 +288,20 @@ export default function Progression() {
           className="rounded-lg border border-slate-300 px-4 py-2 text-[13px] font-semibold text-slate-700 hover:border-teal-400 hover:text-teal-700">
           Compare
         </button>
+        <div className="flex w-full flex-wrap items-end gap-2 border-t border-slate-100 pt-3">
+          <span className="text-[12px] text-slate-500">
+            3000 Hz, if tested (dB HL or NR) — OSHA averages 2/3/4 kHz:
+          </span>
+          {[['baseline', 'right'], ['baseline', 'left'], ['current', 'right'], ['current', 'left']]
+            .map(([test, ear]) => (
+              <label key={`${test}-${ear}`} className="text-[11.5px] text-slate-500">
+                <span className="block capitalize">{test} {ear}</span>
+                <input value={t3k[test][ear]} placeholder="—"
+                  onChange={(e) => setT3k({ ...t3k, [test]: { ...t3k[test], [ear]: e.target.value } })}
+                  className="w-20 rounded-lg border border-slate-300 px-2 py-1.5 text-[13px]" />
+              </label>
+            ))}
+        </div>
       </div>
 
       {busy && <div className="mt-8 text-center text-sm text-slate-400">Comparing…</div>}

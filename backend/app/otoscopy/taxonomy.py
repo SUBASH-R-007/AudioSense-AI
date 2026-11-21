@@ -258,11 +258,14 @@ TAXONOMY: Dict[str, dict] = {
 }
 
 #: Coarse category per class. Distinguishing a central from a marginal
-#: perforation is genuinely hard from a photograph, and on the reference set
-#: the model does it barely above chance. Distinguishing "there is a hole"
-#: from "the canal is full of wax" is much more reliable, and it is already
-#: enough to decide what happens next — so the category is reported alongside
-#: the fine label, with its own (higher) measured accuracy.
+#: perforation is genuinely hard from a photograph. Distinguishing "there is
+#: a hole" from "the canal is full of wax" is easier in principle, and it is
+#: already enough to decide what happens next — so the category is reported
+#: alongside the fine label. Whether the model actually does it better is a
+#: measurement, not an assumption: the model card gives the held-out
+#: category accuracy beside the score of always answering the commonest
+#: category, and a coarse level with a few unbalanced bands can score well
+#: on that alone.
 CATEGORY: Dict[str, str] = {
     "normal": "normal",
     "cerumen_impaction": "canal_obstruction",
@@ -283,8 +286,11 @@ CATEGORY_LABEL: Dict[str, str] = {
     "mass": "Mass lesion",
 }
 
-#: How urgently each pattern needs to be acted on. Coarser still, and the
-#: most reliable output of the three.
+#: How urgently each pattern needs to be acted on. Coarser still. Four
+#: unbalanced bands make a high raw score easy — always answering "urgent"
+#: is right for every attic, marginal and mass view — so the held-out
+#: urgency accuracy on the model card is only meaningful beside its
+#: always-commonest-band rate, which the card states with it.
 URGENCY: Dict[str, str] = {
     "normal": "routine",
     "cerumen_impaction": "routine",

@@ -27,10 +27,19 @@ const SIDES = ['right', 'left']
 
 const DIR = '/anatomy'
 
-export default function EarAnatomyVideo({ analysis, otoscopy, side, onSideChange }) {
+/**
+ * @param otoscopyEars per-ear otoscopy readings, `{right, left}`. Preferred
+ *        over `otoscopy`: this component switches ear on its own, so a single
+ *        result would describe the wrong drum as soon as the reader toggled.
+ * @param otoscopy fallback single reading, for callers with only one.
+ */
+export default function EarAnatomyVideo({ analysis, otoscopy, otoscopyEars,
+                                          side, onSideChange,
+                                          embedded = false }) {
   const [internalSide, setInternalSide] = useState(side || 'right')
   const ear = side || internalSide
   const setEar = onSideChange || setInternalSide
+  const earOtoscopy = otoscopyEars ? (otoscopyEars[ear] || null) : otoscopy
 
   const [selection, setSelection] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -43,12 +52,12 @@ export default function EarAnatomyVideo({ analysis, otoscopy, side, onSideChange
     let cancelled = false
     setBusy(true)
     setFailed(false)
-    api.anatomyVideo({ analysis, otoscopy, side: ear })
+    api.anatomyVideo({ analysis, otoscopy: earOtoscopy, side: ear })
       .then((r) => { if (!cancelled) setSelection(r) })
       .catch(() => { if (!cancelled) { setSelection(null); setFailed(true) } })
       .finally(() => { if (!cancelled) setBusy(false) })
     return () => { cancelled = true }
-  }, [analysis, otoscopy, ear])
+  }, [analysis, earOtoscopy, ear])
 
   const key = selection?.available ? selection.key : null
   const src = key ? `${DIR}/${key}.mp4` : null
@@ -104,15 +113,21 @@ export default function EarAnatomyVideo({ analysis, otoscopy, side, onSideChange
 
   if (!analysis) return null
 
+  // `embedded`: the caller supplies the card and the heading (a collapsible
+  // section on the results page), so this renders only its contents rather
+  // than drawing a second card with the same title inside the first.
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"
+    <div className={embedded
+      ? '' : 'rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm'}
       data-tour="anatomy-video">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-[15px] font-semibold text-slate-900">
-            Show the patient what is happening
-          </h2>
-          <p className="mt-0.5 text-[12px] text-slate-500">
+          {!embedded && (
+            <h2 className="text-[15px] font-semibold text-slate-900">
+              Show the patient what is happening
+            </h2>
+          )}
+          <p className={`text-[12px] text-slate-500 ${embedded ? '' : 'mt-0.5'}`}>
             {selection?.journey
               || 'Ear canal and eardrum, through the middle-ear bones, into the cochlea.'}
           </p>

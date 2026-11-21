@@ -1,15 +1,29 @@
-"""Age- and sex-matched hearing norms (ISO 7029).
+"""Age- and sex-matched hearing norms (ISO 7029:2000).
 
 "PTA 30 dB HL" means nothing to a patient and little to a non-specialist.
 "Your ears are performing like a typical 61-year-old's" lands immediately,
 and it is the same fact.
 
-ISO 7029 models the median age-related threshold shift in an otologically
-normal population as a quadratic in age:
+EDITION. This module follows ISO 7029:2000 (second edition), which models
+the median age-related threshold shift in an otologically normal population
+as a quadratic in age:
 
-    H_median(age, freq, sex) = a(freq, sex) x (age - 18)^2      18 <= age <= 80
+    H_median(age, freq, sex) = a(freq, sex) x (age - 18)^2      18 <= age <= 70
 
-with the reference at 18 years. Two things fall out of that curve:
+with the reference at 18 years. The 2000 edition covers ages 18 to 70 at
+every frequency. ISO 7029:2017 (third edition) replaced it with new data and
+modified formulae, extending the range to 80 years at 2000 Hz and below
+only; those formulae are not implemented here. Outside 18-70 this module
+therefore EXTRAPOLATES the 2000 curve: ages 71-80 follow the same quadratic,
+ages above 80 are clamped to the 80-year value, and ages below 18 are compared
+with the 18-year reference. Every such comparison — and every hearing age
+above 70 — is flagged as extrapolated in the payload.
+
+SEX. The standard is sex-specific. When sex is not recorded as male or
+female, the mean of the male and female coefficients is used and the payload
+says so, rather than silently assuming either.
+
+Two things fall out of the median curve:
 
   PERCENTILE   where this person sits among peers of the same age and sex
   HEARING AGE  the age at which the median person would have this threshold
@@ -33,15 +47,22 @@ from typing import Dict, List, Optional
 
 from app.models.schemas import AC_FREQS, ThresholdValue, ear_to_numeric
 
-#: ISO 7029 median coefficients a(freq, sex), applied to (age - 18)^2.
+#: ISO 7029:2000 median coefficients a(freq, sex), applied to (age - 18)^2.
 #: Hearing deteriorates faster with age at high frequencies, and faster in
 #: men than women — both visible directly in these numbers.
 A_MALE = {250: 0.0030, 500: 0.0035, 1000: 0.0040,
           2000: 0.0070, 4000: 0.0160, 8000: 0.0220}
 A_FEMALE = {250: 0.0030, 500: 0.0035, 1000: 0.0040,
             2000: 0.0060, 4000: 0.0090, 8000: 0.0150}
+#: Sex not recorded: the mean of the two curves, never a silent default to
+#: either. At 4 kHz the sexes differ by 7 dB at age 60, so a guess matters.
+A_UNSPECIFIED = {f: round((A_MALE[f] + A_FEMALE[f]) / 2, 5) for f in A_MALE}
 
+STANDARD = "ISO 7029:2000"
 REFERENCE_AGE = 18
+#: Upper age of ISO 7029:2000 at every frequency.
+STANDARD_MAX_AGE = 70
+#: Ages above the standard follow the same quadratic up to here, then clamp.
 MAX_MODELLED_AGE = 80
 
 #: Approximation of the ISO 7029 spread, widening as the median shift grows.
@@ -57,13 +78,40 @@ MAX_MODELLED_AGE = 80
 SD_FLOOR_DB = 9.0
 SD_GROWTH = 0.20
 
+#: Upper edge of clinically normal thresholds: WHO (2021) World Report on
+#: Hearing grades 20 dB HL as the start of mild loss, so a threshold is
+#: within normal limits only BELOW 20 dB HL. The same edge decides hearing-aid
+#: candidacy (prescription.NORMAL_LIMIT_DB) and the rules engine's normal
+#: grade, so one payload never calls 20 dB HL both normal and a loss.
+NORMAL_BELOW_DB = 20.0
 
-def _coefficients(sex: str) -> Dict[int, float]:
-    return A_FEMALE if str(sex).strip().lower().startswith("f") else A_MALE
+
+def sex_basis(sex: Optional[str]) -> str:
+    """Which ISO 7029 curve applies: "male", "female" or "unspecified"."""
+    s = str(sex or "").strip().lower()
+    if s in ("f", "female", "woman", "girl") or s.startswith("fem"):
+        return "female"
+    if s in ("m", "male", "man", "boy") or s.startswith("mal"):
+        return "male"
+    return "unspecified"
 
 
-def median_threshold(age: float, freq: int, sex: str = "male") -> Optional[float]:
-    """Expected threshold for an otologically normal person of this age."""
+def _coefficients(sex: Optional[str]) -> Dict[int, float]:
+    return {"female": A_FEMALE, "male": A_MALE}.get(sex_basis(sex), A_UNSPECIFIED)
+
+
+def age_within_standard(age: float) -> bool:
+    """Whether ISO 7029:2000 covers this age directly (18-70 years)."""
+    return REFERENCE_AGE <= float(age) <= STANDARD_MAX_AGE
+
+
+def median_threshold(age: float, freq: int, sex: str = "unspecified") -> Optional[float]:
+    """Expected threshold for an otologically normal person of this age.
+
+    Ages 71-80 extrapolate the ISO 7029:2000 quadratic beyond its 70-year
+    limit, ages above 80 clamp to the 80-year value and ages below 18 take
+    the 18-year reference; callers flag those with ``age_within_standard``.
+    """
     a = _coefficients(sex).get(freq)
     if a is None:
         return None
@@ -79,7 +127,8 @@ def _normal_cdf(z: float) -> float:
     return 0.5 * (1 + math.erf(z / math.sqrt(2)))
 
 
-def percentile(threshold: float, age: float, freq: int, sex: str = "male") -> Optional[dict]:
+def percentile(threshold: float, age: float, freq: int,
+               sex: str = "unspecified") -> Optional[dict]:
     """Where this threshold sits among age- and sex-matched peers.
 
     Reported as "better than N% of peers": hearing better than the median
@@ -101,10 +150,11 @@ def percentile(threshold: float, age: float, freq: int, sex: str = "male") -> Op
         "better_than_pct": better_than_pct,
         "worse_than_pct": round(100 - better_than_pct, 1),
         "within_normal_variation": abs(threshold - median) <= sd,
+        "age_extrapolated": not age_within_standard(age),
     }
 
 
-def hearing_age(threshold: float, freq: int, sex: str = "male") -> Optional[float]:
+def hearing_age(threshold: float, freq: int, sex: str = "unspecified") -> Optional[float]:
     """The age whose median threshold equals this one — invert the curve.
 
     Returns None below the reference age (a threshold better than the
@@ -117,10 +167,31 @@ def hearing_age(threshold: float, freq: int, sex: str = "male") -> Optional[floa
     return round(REFERENCE_AGE + years, 1)
 
 
+def _extrapolation_note(age: float, overall_age: Optional[float]) -> Optional[str]:
+    """Plain statement of where the comparison leaves ISO 7029:2000's range."""
+    a = float(age)
+    if a > MAX_MODELLED_AGE:
+        return (f"{STANDARD} covers ages {REFERENCE_AGE}-{STANDARD_MAX_AGE}; at age "
+                f"{a:.0f} the expected thresholds are extrapolated and held at the "
+                f"{MAX_MODELLED_AGE}-year value, so treat the comparison as "
+                "approximate.")
+    if a > STANDARD_MAX_AGE:
+        return (f"{STANDARD} covers ages {REFERENCE_AGE}-{STANDARD_MAX_AGE}; at age "
+                f"{a:.0f} the expected thresholds are extrapolated along its curve, "
+                "so treat the comparison as approximate.")
+    if a < REFERENCE_AGE:
+        return (f"{STANDARD} starts at {REFERENCE_AGE} years; this ear is compared "
+                "with the young-adult reference, which is not a paediatric norm.")
+    if overall_age is not None and overall_age > STANDARD_MAX_AGE:
+        return (f"A hearing age above {STANDARD_MAX_AGE} lies beyond the range "
+                f"{STANDARD} covers and is extrapolated from its curve.")
+    return None
+
+
 def ear_norms(
     ac: Dict[int, Optional[ThresholdValue]],
     age: float,
-    sex: str = "male",
+    sex: str = "unspecified",
 ) -> Optional[dict]:
     """Full age-matched comparison for one ear."""
     numeric = ear_to_numeric(ac)
@@ -138,6 +209,7 @@ def ear_norms(
             continue
         ha = hearing_age(value, f, sex)
         p["hearing_age"] = ha
+        p["hearing_age_extrapolated"] = ha is not None and ha > STANDARD_MAX_AGE
         per_freq.append(p)
         if ha is not None:
             hearing_ages.append(ha)
@@ -155,19 +227,34 @@ def ear_norms(
     mean_gap = round(sum(p["difference"] for p in per_freq) / len(per_freq), 1)
     # Whether the thresholds themselves are still inside clinical normal
     # limits changes what a raised hearing age means.
-    clinically_normal = all(p["threshold"] <= 20 for p in per_freq)
+    clinically_normal = all(p["threshold"] < NORMAL_BELOW_DB for p in per_freq)
+
+    basis = sex_basis(sex)
+    extrapolation = _extrapolation_note(age, overall_age)
+    summary = _summary(overall_age, age, worst, mean_gap, clinically_normal, basis)
+    if extrapolation and overall_age is not None:
+        summary = f"{summary} {extrapolation}"
 
     return {
         "age": age,
         "sex": sex,
+        "sex_basis": basis,
         "per_frequency": per_freq,
         "hearing_age": overall_age,
         "age_gap": None if overall_age is None else round(overall_age - float(age), 0),
         "mean_difference_db": mean_gap,
         "worst_frequency": worst,
         "clinically_normal": clinically_normal,
-        "summary": _summary(overall_age, age, worst, mean_gap, clinically_normal),
-        "method": "ISO 7029 median age-related threshold curves",
+        "age_in_standard_range": age_within_standard(age),
+        "hearing_age_extrapolated": overall_age is not None and overall_age > STANDARD_MAX_AGE,
+        "extrapolated": extrapolation is not None,
+        "extrapolation_note": extrapolation,
+        "summary": summary,
+        "standard": STANDARD,
+        "method": f"{STANDARD} median age-related threshold curves",
+        "sex_note": (None if basis != "unspecified" else
+                     "Sex not recorded as male or female: expected thresholds use the "
+                     "mean of the ISO 7029 male and female curves."),
         "caveat": ("ISO 7029 describes otologically screened populations, so it is a "
                    "demanding reference; percentiles use a normal approximation to its "
                    "spread and are indicative. Hearing age comes from the median curve "
@@ -176,13 +263,16 @@ def ear_norms(
     }
 
 
-def _summary(overall_age, actual_age, worst, mean_gap, clinically_normal=False) -> str:
+def _summary(overall_age, actual_age, worst, mean_gap, clinically_normal=False,
+             basis: str = "male") -> str:
     actual = float(actual_age)
     if overall_age is None:
         return "Age-matched comparison unavailable."
 
+    peers = ("for its age and sex" if basis != "unspecified" else
+             "for its age (sex not recorded; male and female norms averaged)")
     at_freq = (f"At {worst['freq']} Hz this ear sits in the bottom "
-               f"{worst['better_than_pct']:g}% for its age and sex.")
+               f"{worst['better_than_pct']:g}% {peers}.")
 
     if overall_age <= actual + 3:
         return ("Hearing is what would be expected at this age. " + at_freq
@@ -204,7 +294,7 @@ def _summary(overall_age, actual_age, worst, mean_gap, clinically_normal=False) 
     return f"{lead} {at_freq}"
 
 
-def analyze_norms(right_ac, left_ac, age: float, sex: str = "male") -> Optional[dict]:
+def analyze_norms(right_ac, left_ac, age: float, sex: str = "unspecified") -> Optional[dict]:
     """Age-matched norms for both ears."""
     if age is None:
         return None
@@ -216,15 +306,23 @@ def analyze_norms(right_ac, left_ac, age: float, sex: str = "male") -> Optional[
     ages = [e["hearing_age"] for e in (right, left)
             if e and e["hearing_age"] is not None]
     worse_age = max(ages) if ages else None
+    extrapolation = _extrapolation_note(age, worse_age)
+    headline = (
+        f"Hearing age {worse_age:.0f} versus an actual age of {float(age):.0f}."
+        if worse_age is not None and worse_age > float(age) + 3 else
+        "Hearing is age-appropriate."
+    )
+    if extrapolation:
+        headline += f" (Extrapolated beyond {STANDARD}'s {REFERENCE_AGE}–{STANDARD_MAX_AGE}-year range.)"
     return {
         "right": right,
         "left": left,
         "hearing_age": worse_age,
         "age_gap": None if worse_age is None else round(worse_age - float(age), 0),
-        "headline": (
-            f"Hearing age {worse_age:.0f} versus an actual age of {float(age):.0f}."
-            if worse_age is not None and worse_age > float(age) + 3 else
-            "Hearing is age-appropriate."
-        ),
-        "method": "ISO 7029",
+        "headline": headline,
+        "extrapolated": extrapolation is not None,
+        "extrapolation_note": extrapolation,
+        "sex_basis": sex_basis(sex),
+        "standard": STANDARD,
+        "method": STANDARD,
     }

@@ -270,7 +270,10 @@ def _mechanism(analysis: dict, side: str,
         return _TYMP_MECHANISM[ttype], because
 
     if oto in _OTOSCOPY_MECHANISM:
-        because.append(f"otoscopy of this ear: {oto.replace('_', ' ')}")
+        # The image classifier names the closest reference pattern, not a
+        # validated finding (its model card), so the reason says so.
+        because.append(f"otoscopy of this ear — closest reference pattern, not "
+                       f"validated for diagnosis: {oto.replace('_', ' ')}")
         return _OTOSCOPY_MECHANISM[oto], because
 
     return None, because
@@ -321,6 +324,11 @@ def select(analysis: Optional[dict], side: str = "right",
         key = mech or "normal"
         if not mech:
             because.append("thresholds within normal limits")
+        # rules.hearing_type reports an air-bone gap behind normal hearing
+        # apart from the type; the clip shows a normal ear, so the reason
+        # carries the finding the picture cannot.
+        if rules.get("air_bone_gap_note"):
+            because.append(rules["air_bone_gap_note"])
     else:
         key = mech or "conductive_unspecified"
 

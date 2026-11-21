@@ -8,6 +8,8 @@ import ThresholdGrid from '../components/ThresholdGrid.jsx'
 import ScreeningRunner from '../components/ScreeningRunner.jsx'
 import { nextStep } from '../lib/flow.js'
 import StepNav from '../components/StepNav.jsx'
+import Collapsible, { Reveal } from '../components/Collapsible.jsx'
+import ReportScanResult from '../components/ReportScanResult.jsx'
 
 const EMPTY = () => ({ right: { ac: {}, bc: {} }, left: { ac: {}, bc: {} } })
 
@@ -105,11 +107,36 @@ export default function NewTest() {
   const [screeningInfo, setScreeningInfo] = useState(null)
   const [analyzing, setAnalyzing] = useState(false)
   const fileRef = useRef(null)
+  // Scanned-report ingestion — a separate control and separate state from the
+  // chart photo, because they read different documents.
+  const reportRef = useRef(null)
+  const [scanning, setScanning] = useState(false)
+  const [reportScan, setReportScan] = useState(null)
+  const [reportImage, setReportImage] = useState(null)
+  const [reportCapability, setReportCapability] = useState(null)
+  //: Field key -> the value the clinician has confirmed or typed.
+  const [reportFields, setReportFields] = useState({})
 
   useEffect(() => {
     api.demoCases().then((d) => setDemoCases(d.cases)).catch(() =>
       showToast('Backend not reachable — start the FastAPI server on :8000', 'error'))
   }, [showToast])
+
+  // Asked before any upload so the panel can say up front whether the printed
+  // fields will be read automatically. Finding out afterwards is worse.
+  useEffect(() => {
+    api.reportCapability().then(setReportCapability).catch(() => setReportCapability(null))
+  }, [])
+
+  // Seed the confirmable fields from whatever the scan managed to read.
+  useEffect(() => {
+    if (!reportScan) return
+    setReportFields(Object.fromEntries(
+      Object.entries(reportScan.fields || {}).map(([k, v]) => [k, v.value])))
+  }, [reportScan])
+
+  useEffect(() => () => { if (reportImage) URL.revokeObjectURL(reportImage) },
+    [reportImage])
 
   const loadDemo = (c) => {
     setPatient({ onset: 'unknown', symptoms: [], ...c.record.patient })
@@ -175,6 +202,48 @@ export default function NewTest() {
     setDigitizing(false)
   }
 
+  // A WHOLE REPORT PAGE, not a photo of a chart.
+  //
+  // Separate from onPhoto on purpose. The chart path is the one with a
+  // ground-truth regression test behind it, and a clinician holding a photo
+  // of a chart should not be put through page-layout analysis to read it.
+  // This path locates the audiogram on the sheet, digitizes that, and brings
+  // back the printed fields — or, where it cannot read them, the crops of the
+  // page that hold them so they can be confirmed by eye.
+  const onReport = async (file) => {
+    if (!file) return
+    setScanning(true)
+    setReportScan(null)
+    try {
+      const res = await api.digitizeReport(file)
+      setReportScan(res)
+      const t = res.thresholds
+      if (t?.ok) {
+        setThresholds({
+          right: { ac: t.right.ac || {}, bc: t.right.bc || {} },
+          left: { ac: t.left.ac || {}, bc: t.left.bc || {} },
+        })
+        setConfidence(t.confidence)
+        setDigitizeInfo(t)
+        setScreeningInfo(null)
+      }
+      // The page itself is kept so the field crops can be cut from it in the
+      // browser — the server sends coordinates, not twenty base64 thumbnails.
+      setReportImage((prev) => {
+        if (prev) URL.revokeObjectURL(prev)
+        return URL.createObjectURL(file)
+      })
+      const read = Object.keys(res.fields || {}).length
+      showToast(t?.ok
+        ? `Read the audiogram off the page${read ? ` and ${read} printed field(s)` : ''} — confirm everything below.`
+        : 'The page was scanned but the audiogram could not be read — see the notes.',
+        t?.ok ? 'info' : 'warn')
+    } catch (e) {
+      showToast(`Could not read that report: ${e.message}`, 'error')
+    }
+    setScanning(false)
+  }
+
   // The measured run lands in the AC rows and nowhere else. Bone conduction is
   // cleared rather than carried over, because a screening cannot measure it: a
   // BC row left over from a demo case or an earlier photo, sitting under freshly
@@ -192,7 +261,7 @@ export default function NewTest() {
         setBabbleScreen({ ...scored, trials: run.babble.trials,
                           reversals: run.babble.reversals,
                           when: new Date().toISOString() })
-        showToast(`Speech-in-babble SRT ${scored.result.srt_db_snr} dB SNR — ${scored.result.band}. Shown on the dashboard.`)
+        showToast(`Speech-in-babble SRT ${scored.result.srt_db_snr} dB SNR — ${scored.result.band}. Shown on the dashboard.${scored.result.reliable === false ? ' (provisional — too few reversals; see the dashboard)' : ''}`)
       } catch (e) {
         showToast(`Scoring failed: ${e.message}`, 'error')
       }
@@ -401,6 +470,71 @@ export default function NewTest() {
               )}
             </div>
           )}
+        </div>
+
+        {/* A WHOLE SCANNED REPORT — the document a clinic actually hands over.
+            Collapsed, because most visits are a fresh test rather than a
+            transcription, and it sits beside Snap-to-Digitize because it is
+            the same job on a different document. */}
+        <div className="mt-4">
+          <Collapsible title="Scan a whole audiometry report"
+            subtitle={reportCapability?.fields_automatic
+              ? 'A full page — letterhead, details, the audiogram and the printed results. The chart and the fields are both read.'
+              : 'A full page — letterhead, details, the audiogram and the printed results. The chart is read; the printed fields are shown as crops to confirm.'}
+            badge={reportScan ? (reportScan.thresholds?.ok ? 'read' : 'partial') : null}
+            badgeTone={reportScan?.thresholds?.ok ? 'good' : 'alert'}>
+            <div
+              onClick={() => reportRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); onReport(e.dataTransfer.files?.[0]) }}
+              className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 px-6 py-7 text-center transition hover:border-teal-400 hover:bg-teal-50/30">
+              <svg viewBox="0 0 24 24" className="h-7 w-7 text-slate-400" fill="none"
+                stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                <path d="M14 2v6h6M8 13h8M8 17h5" />
+              </svg>
+              <div className="mt-2 text-[13px] font-medium text-slate-700">
+                {scanning ? 'Reading the page…'
+                  : 'Drop a scanned or photographed report page, or click to browse'}
+              </div>
+              <div className="mt-1 text-[11.5px] text-slate-400">
+                The audiogram is found on the page and read from its symbols —
+                works on a black-and-white photocopy.
+              </div>
+              <input ref={reportRef} type="file" accept="image/*" className="hidden"
+                onChange={(e) => onReport(e.target.files?.[0])} />
+            </div>
+
+            {reportCapability && !reportCapability.fields_automatic && (
+              <p className="mt-2.5 text-[11.5px] leading-relaxed text-slate-500">
+                {reportCapability.note}
+              </p>
+            )}
+
+            {reportScan && (
+              <ReportScanResult
+                scan={reportScan} pageUrl={reportImage}
+                fields={reportFields} onField={(k, v) =>
+                  setReportFields((prev) => ({ ...prev, [k]: v }))}
+                onApplyPatient={() => {
+                  const next = {
+                    ...(patient || {}),
+                    ...(reportFields.name ? { name: reportFields.name } : {}),
+                    ...(reportFields.age != null && reportFields.age !== ''
+                      ? { age: Number(reportFields.age) } : {}),
+                    ...(reportFields.sex ? { sex: reportFields.sex } : {}),
+                  }
+                  if (!next.name || next.age == null) {
+                    return showToast(
+                      'A name and an age are both needed before this becomes the patient on file.',
+                      'warn')
+                  }
+                  setPatient(next)
+                  showToast(`Patient details taken from the report — ${next.name}, ${next.age}.`)
+                }}
+              />
+            )}
+          </Collapsible>
         </div>
 
         {/* Measure them here — the third way in, for a room with no audiometer.

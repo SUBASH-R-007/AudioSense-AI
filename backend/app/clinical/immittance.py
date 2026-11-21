@@ -16,10 +16,55 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from app.clinical.tympanometry import classify
+from app.clinical.tympanometry import (
+    TYMPANOGRAM_TYPES, _untyped_reason, classify,
+)
 
 #: Acoustic reflex thresholds are normally 70-100 dB SL above threshold.
 REFLEX_SL_NORMAL = (70, 100)
+
+#: Age (years) below which the battery cannot trust its tympanogram. JCIH
+#: (2019, p.14) recommends the 1000 Hz probe "up to age 9 months", because a
+#: 226 Hz probe in the compliant infant ear can trace a normal-looking peak
+#: over a middle ear full of fluid; reflexes in newborns and infants under 9
+#: months are likewise measured with a 1000 Hz probe. The battery records no
+#: probe tone and PatientInfo.age is whole years, so age 0 spans birth to 11
+#: months and cannot be split at 9 — every age-0 result is treated as
+#: possibly 226 Hz in an infant.
+INFANT_PROBE_AGE_YEARS = 1.0
+
+INFANT_PROBE_CAVEAT = (
+    "Patient is under 12 months and the probe tone was not recorded. Under about "
+    "9 months a 226 Hz probe can show a normal-looking trace over a middle ear full "
+    "of fluid (JCIH 2019), so this type is provisional — confirm with a 1000 Hz "
+    "probe tympanogram before relying on it."
+)
+
+INFANT_PROBE_UNTYPED = (
+    "Patient is under 12 months and the probe tone was not recorded, so the "
+    "tympanogram was not typed: a 226 Hz probe can show a normal-looking trace "
+    "over a middle ear full of fluid in a young infant (JCIH 2019). Record a "
+    "1000 Hz probe tympanogram."
+)
+
+#: Reflexes recorded without a tympanogram still carry the probe-tone problem.
+#: In newborns a 226 Hz probe records the reflex less often, and at higher
+#: levels, than a 1000 Hz probe (Jacob-Corteletti et al. 2015, CoDAS), so an
+#: "absent" here may be the probe rather than the ear.
+INFANT_REFLEX_CAVEAT = (
+    "Patient is under 12 months and the probe tone was not recorded. Infant "
+    "acoustic reflexes are measured with a 1000 Hz probe (JCIH 2019); a 226 Hz "
+    "probe misses reflexes that are present in many young infants, so these "
+    "reflex results are provisional — repeat with a 1000 Hz probe before relying "
+    "on them."
+)
+
+
+def infant_probe_caveat(age_years: Optional[float]) -> Optional[str]:
+    """The probe-tone caveat for an infant, or None when it does not apply."""
+    if age_years is None or age_years >= INFANT_PROBE_AGE_YEARS:
+        return None
+    return INFANT_PROBE_CAVEAT
 
 
 def classify_tympanogram(
@@ -36,6 +81,66 @@ def classify_tympanogram(
     page could disagree about the same ear.
     """
     return classify(peak_pressure, compliance, ecv, age_years=age_years)
+
+
+def from_recorded_type(type_key: Optional[str]) -> Optional[dict]:
+    """A tympanogram type taken straight off a printout, with no numbers.
+
+    The type is most of what a tympanogram contributes to a diagnosis — it is
+    the field ``linkage.py`` reads to move diseases on and off the
+    differential — so a clinic that has only the type should be able to record
+    it rather than leave the test blank.
+
+    What it cannot give, and says so:
+
+    - THE TYPE B SPLIT. Type B means effusion at a normal canal volume,
+      perforation or a patent grommet at a large one, and wax or a blocked
+      probe at a small one. That last is an ARTEFACT being reported as
+      middle-ear disease, and only the volume separates them. A recorded
+      Type B therefore stays ambiguous between all three.
+    - THE GRADIENT. A peak of normal height that is too broad is an early
+      effusion, and a type letter cannot carry that.
+    - ANY NORMATIVE CHECK. There are no values to compare against a band, so
+      the age-specific norms do not enter into it.
+    """
+    if not type_key:
+        return None
+    key = str(type_key).strip()
+    # Accept "Type A" and "a" as well as "A"; the letter case is meaningful
+    # (As vs AS is the same type, Ad vs AD likewise) so only the first letter
+    # is upper-cased and any 's'/'d' suffix lower-cased.
+    key = key.replace("Type", "").replace("type", "").strip()
+    if not key:
+        return None
+    key = key[0].upper() + key[1:].lower()
+    entry = TYMPANOGRAM_TYPES.get(key)
+    if entry is None:
+        return None
+
+    caveats = ["Type recorded directly, with no peak pressure, static "
+               "admittance or canal volume behind it, so the normal ranges "
+               "were not applied and the gradient is unknown."]
+    if key == "B":
+        caveats.append(
+            "A recorded Type B does not say which of the three it is: an "
+            "effusion (normal canal volume), a perforation or patent grommet "
+            "(large volume), or wax or a blocked probe (small volume) — the "
+            "last being an artefact rather than middle-ear disease. Enter the "
+            "ear-canal volume to separate them.")
+    return {
+        "type": key,
+        "label": entry["label"],
+        "shape": entry["shape"],
+        "interpretation": (f"{entry['label']} as recorded. "
+                           + ", ".join(entry["disorders"]) + "."),
+        "disorders": list(entry["disorders"]),
+        "suggests_conductive": entry["suggests_conductive"],
+        "ecv_flag": None,
+        "normative": None,
+        "entry_mode": "type",
+        "recorded_type": True,
+        "caveats": caveats,
+    }
 
 
 def analyze_reflexes(
@@ -94,10 +199,61 @@ def analyze_immittance(ear, pta: Optional[float] = None,
     and the divergence changes both the Jerger type and the Type B ECV split,
     which is the difference between an effusion behind an intact drum and a
     perforation.
+
+    Under a year of age the type is marked provisional with the probe-tone
+    caveat (see ``INFANT_PROBE_AGE_YEARS``). The standalone tympanometry page
+    knows the probe tone and does this itself; the battery does not, so it
+    must assume the worst rather than report "normal middle-ear function"
+    from a probe that cannot show an infant's effusion.
     """
     tymp = classify_tympanogram(ear.tymp_pressure, ear.tymp_compliance,
                                 ear.tymp_ecv, age_years=age_years)
+    # Measured values win over a recorded type: they support strictly more
+    # (the Type B volume split, the gradient, the normative comparison), so a
+    # type recorded alongside them would only ever subtract information.
+    recorded_type = None
+    if tymp is None:
+        recorded_type = from_recorded_type(getattr(ear, "tymp_type", None))
+        if recorded_type is not None:
+            tymp = recorded_type
     reflexes = analyze_reflexes(ear.reflexes or {}, pta)
+    caveat = infant_probe_caveat(age_years)
+    if caveat and reflexes:
+        reflexes = {**reflexes, "provisional": True,
+                    "note": f"{reflexes['note']} Provisional: reflexes in infants "
+                            "under 9 months are measured with a 1000 Hz probe "
+                            "(JCIH 2019)."}
+    entered = (ear.tymp_pressure is not None or ear.tymp_compliance is not None
+               or recorded_type is not None)
+    if caveat and entered and tymp is None:
+        # The classifier may refuse an infant trace outright rather than type
+        # it. The values were still entered, so the reader is told why no type
+        # came back instead of seeing the tympanogram silently disappear.
+        return {"tympanogram": None, "tympanogram_untyped": True,
+                "reflexes": reflexes, "infant_warning": INFANT_PROBE_UNTYPED,
+                "not_typed": INFANT_PROBE_UNTYPED}
+    if entered and tymp is None:
+        # Values entered but not enough to type (a static admittance with no
+        # peak pressure, or the reverse): say why, in the instrument page's
+        # words, rather than dropping the entered admittance without a trace.
+        return {"tympanogram": None, "tympanogram_untyped": True,
+                "reflexes": reflexes, "infant_warning": None,
+                "not_typed": _untyped_reason("jerger", {}, ear.tymp_pressure,
+                                             ear.tymp_compliance)}
     if tymp is None and reflexes is None:
         return None
-    return {"tympanogram": tymp, "reflexes": reflexes}
+    if caveat and tymp:
+        tymp = {
+            **tymp,
+            "provisional": True,
+            "infant_warning": tymp.get("infant_warning") or caveat,
+            "interpretation": f"Provisional (infant, probe tone not recorded). "
+                              f"{tymp['interpretation']}",
+        }
+    # Reflexes alone still need the caveat surfaced, not only tucked into
+    # their note: they feed the battery's neural-pathway inferences.
+    warning = None
+    if caveat:
+        warning = caveat if tymp else INFANT_REFLEX_CAVEAT if reflexes else None
+    return {"tympanogram": tymp, "tympanogram_untyped": False,
+            "reflexes": reflexes, "infant_warning": warning}

@@ -115,17 +115,19 @@ const STEPS = [
   {
     chapter: 'Intake', at: '/otoscopy', on: '[data-tour="otoscopy-result"]',
     title: 'What the picture predicts',
-    body: 'The part that does not depend on the classifier being right: what this '
-        + 'appearance should produce — a large canal volume, a Type B trace, a '
-        + '20–45 dB gap — checked against what was actually measured.',
+    body: 'What the matched pattern should produce — a large canal volume, a Type B '
+        + 'trace, a 20–45 dB gap — checked against what was actually measured. A '
+        + 'conflict is worth a look whichever side is wrong; an agreement only '
+        + 'backs a pattern match that is not validated.',
   },
   {
     chapter: 'Intake', at: '/otoscopy', on: '[data-tour="otoscopy-limits"]',
     title: 'And what it cannot do',
     body: 'The measured accuracy is printed on the page, not buried in a footnote. '
-        + 'The atlas is 62 crops from 22 source photographs, so the classifier is '
-        + 'well above chance and well below diagnostic. The durable value is the '
-        + 'retrieval, not the label.',
+        + 'The atlas is 62 crops from 22 source photographs. On photographs it has '
+        + 'not seen, the classifier is above chance (27%, 95% CI 15–42%, against '
+        + '12.5%) and far below diagnostic. The durable value is the retrieval, '
+        + 'not the label.',
   },
 
   // ------------------------------------------------------------- the measuring
@@ -170,8 +172,8 @@ const STEPS = [
     chapter: 'Measuring', at: '/new-test', on: '[data-tour="boa"]',
     title: 'Infants, honestly',
     body: 'Behavioural observation gives minimum response levels, not thresholds — '
-        + 'a normal newborn responds around 78 dB SPL, some 75 dB above what they '
-        + 'can hear. The panel never offers to write one into the grid above.',
+        + 'a normal newborn responds around 78 dB, far above what they can hear. '
+        + 'The panel never offers to write one into the grid above.',
   },
   {
     chapter: 'Measuring', at: '/immittance', on: '[data-tour="tympanogram"]',
@@ -185,8 +187,9 @@ const STEPS = [
     chapter: 'Measuring', at: '/immittance', on: '[data-tour="oae"]',
     title: 'Damage before the audiogram moves',
     body: 'Outer hair cells die before thresholds shift. Absent emissions with a '
-        + 'normal audiogram is injury that is still preventable — the difference '
-        + 'between screening for harm already done and harm you can stop.',
+        + 'normal audiogram is injury that is still preventable, once tympanometry '
+        + 'confirms a normal middle ear — the difference between screening for '
+        + 'harm already done and harm you can stop.',
   },
   {
     chapter: 'Measuring', at: '/immittance', on: '[data-tour="speech-audiometry"]',
@@ -209,9 +212,10 @@ const STEPS = [
     chapter: 'Measuring', at: '/evoked-potentials', on: '[data-tour="abr-latency"]',
     title: 'A latency needs its intensity',
     body: 'Wave V sits near 5.4 ms at 90 dB nHL and near 7.5 ms at 20 dB, so every '
-        + 'measurement is judged against the normative row for the level actually '
-        + 'used. Interpeak intervals lead: a conductive loss delays every wave '
-        + 'equally, a retrocochlear lesion stretches the gaps between them.',
+        + 'measurement is judged against norms interpolated to the level actually '
+        + 'used. Interpeak intervals lead, judged against the adult interpeak limits '
+        + '(I–V about 4.4 ms): a conductive loss delays every wave equally, a '
+        + 'retrocochlear lesion stretches the gaps between them.',
   },
 
   // ---------------------------------------------------------- the interpreting
@@ -425,8 +429,15 @@ export default function GuidedTour({ onClose }) {
           const atlas = await api.otoscopyAtlas()
           const src = atlas?.classes?.[0]?.images?.[0]
           if (src) {
-            const blob = await fetch(apiUrl(src)).then((r) => r.blob())
-            const file = new File([blob], 'reference.jpg', { type: 'image/jpeg' })
+            // no-store: a copy cached from a plain <img> load can lack the
+            // CORS headers this fetch needs. The upload keeps the image's real
+            // type and a matching extension.
+            const res = await fetch(apiUrl(src), { cache: 'no-store' })
+            if (!res.ok) throw new Error(`reference image ${res.status}`)
+            const blob = await res.blob()
+            const type = blob.type || 'image/jpeg'
+            const ext = type === 'image/png' ? 'png' : type === 'image/webp' ? 'webp' : 'jpg'
+            const file = new File([blob], `reference.${ext}`, { type })
             setOtoscopy(await api.otoscopy(file, 'right', result))
           }
         } catch { /* the otoscopy step will simply be skipped */ }

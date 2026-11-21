@@ -15,10 +15,24 @@ here, unchanged in substance:
    something useful in an audiology clinic: it says which test to run next.
 
 Everything a clinician sees carries its source, so nothing here is an
-unattributable assertion by a piece of software. Weights are the one addition
+unattributable assertion by a piece of software. Weights are the main addition
 — the documents rank causes but do not say how strongly each symptom argues
 for each disease — and they are declared, not hidden, so they can be argued
-with.
+with. The same holds for the other ranking inputs added on top of the
+documents: a per-condition typical age range (finer than the three bands where
+a cited source supports it), a commonness tier, the one condition-specific
+gate on adult CAPD, the one definitional exclusion on a complaint-guide
+cause (GUIDE_ARGUES_AGAINST), the two guide causes whose hearing loss is
+acute (GUIDE_ACUTE_CAUSES), and, per condition, the reported features that
+distinguish it from a hearing loss in general. Each carries its citation or
+reason where it is declared.
+
+One condition is not from the project's documents: sudden sensorineural
+hearing loss, encoded from the AAO-HNS clinical practice guideline. The
+sudden-loss red flag needs a disease entry behind it — without one, "sudden
+hearing loss" on its own ranks only conditions that merely include it among
+their features, such as perilymphatic fistula and meningitis. That entry is
+marked with its own ``source``.
 
 References carried by the source documents:
   American Academy of Otolaryngology-Head and Neck Surgery. (n.d.).
@@ -26,6 +40,26 @@ References carried by the source documents:
   Merck Manual Professional Edition. (n.d.).
   American Speech-Language-Hearing Association. (n.d.). Practice portal.
   Hall, J. W. (2020). New handbook of auditory evoked responses.
+
+References for the additions:
+  Chandrasekhar, S. S., et al. (2019). Clinical practice guideline: Sudden
+    hearing loss (update). Otolaryngol Head Neck Surg, 161(1 Suppl), S1-S45.
+  Prince, A. D. P., & Stucken, E. Z. (2021). Sudden sensorineural hearing
+    loss: A diagnostic and therapeutic emergency. J Am Board Fam Med, 34(1),
+    216-223.
+  ISO 7029:2017. Acoustics — Statistical distribution of hearing thresholds
+    related to age and gender.
+  Ralston, S. H., et al. (2019). Diagnosis and management of Paget's disease
+    of bone in adults: A clinical guideline. J Bone Miner Res, 34(4), 579-604.
+  American Speech-Language-Hearing Association. (2005). (Central) auditory
+    processing disorders [Technical report].
+  World Health Organization. (2021). World report on hearing.
+  Strupp, M., et al. (2022). Acute unilateral vestibulopathy/vestibular
+    neuritis: Diagnostic criteria. Consensus document of the Barany Society.
+    J Vestib Res, 32(5), 389-406.
+  NIOSH. (1998). Criteria for a recommended standard: Occupational noise
+    exposure (revised criteria), and NIOSH occupational hearing-loss
+    surveillance by industry.
 """
 from __future__ import annotations
 
@@ -150,6 +184,26 @@ SYMPTOM_SYNONYMS: Dict[str, List[str]] = {
     "hearing_aid_user": ["hearing aid", "hearing aids"],
     "family_history": ["family history", "runs in family", "mother deaf",
                        "father deaf"],
+    # The adult route into central auditory processing disorder: ASHA (2005)
+    # describes (C)APD in adults as most often secondary to neurological
+    # disease, insult or injury. "Head injury" stays with recent trauma — it
+    # is what a patient says about the ear as much as about the brain.
+    "neurological_history": ["stroke", "brain injury", "traumatic brain injury",
+                             "concussion", "neurological disease",
+                             "neurological disorder", "neurological condition",
+                             "multiple sclerosis", "brain tumour", "brain tumor",
+                             "brain surgery"],
+}
+
+#: A specific form of a symptom implies the general one. Ticking "gradually
+#: worsening hearing" is a report of hearing loss; without the implication,
+#: every condition that weights plain hearing loss would get no credit for it,
+#: and the CAPD rule "a real hearing loss argues against" would never fire for
+#: the patient who described the loss precisely. Implied symptoms are scored
+#: and reported, and always labelled as implied.
+IMPLIED_SYMPTOMS: Dict[str, List[str]] = {
+    "hearing_loss": ["sudden_hearing_loss", "gradual_hearing_loss",
+                     "fluctuating_hearing_loss"],
 }
 
 #: Grouped for the intake form, so a clinician ticks boxes rather than typing.
@@ -171,7 +225,8 @@ SYMPTOM_GROUPS: Dict[str, List[str]] = {
     "History and exposure": ["noise_exposure", "ototoxic_medication", "recent_trauma",
                              "barotrauma", "straining", "swimming", "diabetes",
                              "immunosuppression", "hearing_aid_user", "itching",
-                             "ear_blisters", "family_history"],
+                             "ear_blisters", "family_history",
+                             "neurological_history"],
 }
 
 SYMPTOM_LABELS: Dict[str, str] = {
@@ -223,6 +278,7 @@ SYMPTOM_LABELS: Dict[str, str] = {
     "swimming": "Swimming or water exposure",
     "hearing_aid_user": "Hearing aid user",
     "family_history": "Family history of hearing loss",
+    "neurological_history": "Stroke, brain injury or neurological disease",
 }
 
 # --------------------------------------------------------------------------
@@ -422,6 +478,75 @@ COMPLAINTS: Dict[str, dict] = {
 #: ``symptoms`` maps a canonical symptom to how strongly it argues FOR this
 #: disease (0-3). ``age_bands`` is the "most prone age group" column.
 #: ``tests`` is reproduced from the "audiological tests" column, in order.
+#:
+#: Optional ranking fields, all declared additions to the source document:
+#:
+#: ``age_ranges``  typical ages as (min, max) pairs, where a cited source is
+#:                 finer than the three bands. Without it the ranges are the
+#:                 entry's ``age_bands``. Ages outside are tapered, not cut —
+#:                 see AGE_TAPER_YEARS.
+#: ``age_defining`` the condition is defined by age, so the taper runs down
+#:                 to AGE_DEFINING_FLOOR instead of AGE_FIT_FLOOR.
+#: ``commonness``  "common" / "uncommon" / "rare", weighting the symptom
+#:                 score (COMMONNESS_WEIGHT). The complaint guide's rank already
+#:                 carries commonness for the conditions it names; this does
+#:                 the same job for the disease reference, which has none.
+#: ``adult_context`` a history that must be present in adults for the
+#:                 presentation to be read as this condition (adult CAPD).
+#: ``contradicted_by_report`` reported symptoms that contradict the
+#:                 condition's definition until a test rules them out (a
+#:                 hearing loss, for CAPD); they weigh like an absent defining
+#:                 feature, and ``symptoms.reconcile`` lifts that once the
+#:                 audiogram has ruled them out.
+#: ``age_prior``   a cited curve that replaces the linear taper below the
+#:                 typical range: {"curve": "iso7029"} follows the ISO 7029
+#:                 median age-related shift (presbycusis); {"curve":
+#:                 "doubling", "years": n} halves the prior for every n years
+#:                 younger, for an incidence that doubles every n years of age
+#:                 (Paget's disease).
+#: ``source``      set only on an entry that is not from the project's
+#:                 disease reference.
+#: ``characteristic_audiogram`` False for a condition defined by something
+#:                 other than its audiometric configuration (SSNHL: by onset).
+#:                 It then has no DISEASE_AUDIOGRAM shape and is never ranked
+#:                 from thresholds alone.
+#:
+#: Declared on every entry:
+#:
+#: ``distinguishing`` the reported features that point at this condition
+#:                 rather than at a hearing loss in general. Read only when the
+#:                 audiogram sets the history's leader aside: a possibility is
+#:                 named in its place only if the patient stated one of these
+#:                 (``symptoms.reconcile``), because the audiogram leaving a
+#:                 possibility open is no evidence for it. A loss of any onset,
+#:                 tinnitus and difficulty in noise never qualify, except the
+#:                 onset that defines a condition (sudden, for SSNHL). Empty when
+#:                 no reported symptom separates the condition: an age-defined
+#:                 one is then separated by age, and any other is never named in
+#:                 a contradicted leader's place on the history alone.
+
+#: Outside a condition's typical age range the score tapers linearly to
+#: AGE_FIT_FLOOR over this many years, instead of dropping at a band edge — an
+#: 18-year-old is not a different patient from a 17-year-old. The floor is the
+#: factor the band model applied to every out-of-band age; it is kept so that
+#: age alone never removes a condition from the list.
+AGE_TAPER_YEARS = 25
+AGE_FIT_FLOOR = 0.6
+
+#: Floor for a condition whose definition IS an age (``age_defining``):
+#: age-related hearing loss in a child is not a less likely presbycusis, it is
+#: a different diagnosis. The same weight the scorer gives an absent defining
+#: feature, so age counts against it exactly as strongly as a missing symptom
+#: would. An entry that declares a cited ``age_prior`` curve (presbycusis
+#: does) follows that curve instead below its typical range.
+AGE_DEFINING_FLOOR = 0.35
+
+#: Commonness tier -> weight on the disease-reference symptom score. Ranking
+#: weights, not prevalence estimates. A condition with a ``red_flag`` is never
+#: weighted down for rarity: for a not-to-be-missed diagnosis the cost of
+#: missing it, not its base rate, decides how high it sits.
+COMMONNESS_WEIGHT: Dict[str, float] = {"common": 1.0, "uncommon": 0.85, "rare": 0.7}
+
 DISEASES: Dict[str, dict] = {
     "bacterial_meningitis": {
         "name": "Bacterial meningitis",
@@ -430,6 +555,9 @@ DISEASES: Dict[str, dict] = {
                      "photophobia": 2, "drowsiness": 3, "seizures": 3,
                      "hearing_loss": 1, "sudden_hearing_loss": 2},
         "requires_any": ["stiff_neck", "drowsiness", "seizures", "photophobia"],
+        # Meningism or altered consciousness; fever and headache accompany
+        # most ear infections.
+        "distinguishing": ["stiff_neck", "drowsiness", "seizures", "photophobia"],
         "age_bands": ["pediatric", "geriatric"],
         "age_note": "Infants under 1 year highest risk; 1-5 years increased; 65+.",
         "tests": ["Pure-tone audiometry once stable",
@@ -452,8 +580,33 @@ DISEASES: Dict[str, dict] = {
                      "speech_in_noise_difficulty": 3, "asks_repetition": 2,
                      "tinnitus": 2, "poor_speech_discrimination": 1},
         "requires_any": [],
+        # Every symptom it produces is a generic hearing complaint; age is
+        # what separates it (``age_defining``).
+        "distinguishing": [],
         "age_bands": ["geriatric"],
-        "age_note": "65 years and older.",
+        # The source document's "most prone" group is 65+, but age-related
+        # threshold shift is a continuum: ISO 7029:2017 gives median
+        # deviations rising from age 18 to 80, largest at the high frequencies
+        # and accelerating with age. The typical range starts at 50 (a declared
+        # choice, not an ISO figure) so that a 55-year-old's presbycusis is not
+        # ranked as though it were a child's.
+        "age_ranges": [(50, 200)],
+        "age_defining": True,
+        # Younger ages follow the ISO 7029:2000 median curve the norms module
+        # implements (a x (age - 18)^2): the prior is the median shift at this
+        # age as a fraction of the shift at 50, the same fraction at every
+        # frequency and for either sex. At 30 it is (12/32)^2 = 0.14 — about
+        # 3 dB at 8 kHz in men, less than one 5 dB audiometric step, which
+        # cannot be the hearing loss a 30-year-old reports — and 0 at 18, the
+        # standard's reference age, where by definition no age-related shift
+        # has accrued. A linear taper to a fixed floor would let presbycusis
+        # lead a 30-year-old's differential on generic symptoms alone.
+        "age_prior": {"curve": "iso7029"},
+        # WHO World report on hearing (2021): age-related loss is the commonest
+        # cause of adult hearing loss.
+        "commonness": "common",
+        "age_note": "65 years and older; age-related threshold shift begins "
+                    "earlier and accelerates with age.",
         "tests": ["Pure-tone audiometry",
                   "Speech audiometry (SRT and word recognition)",
                   "Otoacoustic emissions",
@@ -476,7 +629,46 @@ DISEASES: Dict[str, dict] = {
                      "difficulty_following_instructions": 3,
                      "poor_speech_discrimination": 3, "hearing_loss": -1},
         "requires_any": [],
+        # Normal pure tones separate it from a peripheral loss, not a symptom
+        # (ASHA, 2005): its complaints are the ones a peripheral loss produces.
+        "distinguishing": [],
         "age_bands": ["pediatric", "adult"],
+        # School age onward: the source document's 7-17, and in adults at any
+        # age — ASHA (2005) places (C)APD anywhere in the life span, and the
+        # neurological route (stroke above all) is commonest in older adults.
+        # The adult gate below, not the age range, carries that condition.
+        "age_ranges": [(7, 200)],
+        "commonness": "uncommon",
+        # In an adult, difficulty in noise with no neurological history is far
+        # more often an unmeasured peripheral loss than a central one, and the
+        # audiogram has not been run yet. Ranked down, not out: ASHA (2005)
+        # also recognises developmental (C)APD persisting into adulthood, so
+        # the gate phases in from ``from_age`` over AGE_TAPER_YEARS rather
+        # than switching on at it — a young adult's lifelong listening
+        # difficulty is still most often the developmental disorder.
+        "adult_context": {
+            "from_age": 18,
+            "requires_any": ["neurological_history"],
+            "factor": 0.5,
+            "note": ("In adults, CAPD usually follows stroke, brain injury or "
+                     "neurological disease (ASHA, 2005). Without that history, "
+                     "a peripheral hearing loss is the likelier explanation "
+                     "until the audiogram says otherwise."),
+        },
+        # CAPD is defined by normal peripheral hearing (ASHA, 2005): the
+        # complaint is attributed to central processing only once a
+        # peripheral loss is ruled out. Before any audiogram, a reported
+        # hearing loss is that unexcluded peripheral loss, at any age, so it
+        # weighs like an absent defining feature, not only by its -1 symptom
+        # weight. ``symptoms.reconcile`` lifts this once the thresholds are
+        # measured within normal limits — a loss perceived with normal pure
+        # tones is the presentation CAPD describes.
+        "contradicted_by_report": {
+            "symptoms": ["hearing_loss"],
+            "note": ("A reported hearing loss has to be ruled out as a "
+                     "peripheral loss by pure-tone audiometry before the "
+                     "complaint can be put down to central processing."),
+        },
         "age_note": "Most often diagnosed in school-aged children (7-17); in "
                     "adults after brain injury, stroke or neurological disorder.",
         "tests": ["Dichotic listening tests",
@@ -504,7 +696,9 @@ DISEASES: Dict[str, dict] = {
                      "speech_in_noise_difficulty": 2, "delayed_speech": 3,
                      "hearing_loss": 1},
         "requires_any": [],
+        "distinguishing": ["inconsistent_response_to_sound"],
         "age_bands": ["pediatric", "adult"],
+        "commonness": "uncommon",
         "age_note": "Commonly identified in newborns and infants (0-5); less "
                     "common in adults, where it follows neurological disease.",
         "tests": ["Auditory brainstem response (ABR/BERA) - typically absent or abnormal",
@@ -530,6 +724,9 @@ DISEASES: Dict[str, dict] = {
                      "aural_fullness": 2, "recent_trauma": 3, "barotrauma": 3,
                      "straining": 3, "sudden_hearing_loss": 2},
         "requires_any": ["recent_trauma", "barotrauma", "straining", "vertigo"],
+        # The entry's own audiology note: "The link to straining or pressure
+        # change is the diagnosis." Vertigo alone is any vestibular disorder.
+        "distinguishing": ["recent_trauma", "barotrauma", "straining"],
         "age_bands": ["pediatric", "adult", "geriatric"],
         "age_note": "Any age; most often after trauma, barotrauma or a sudden "
                     "pressure change.",
@@ -556,6 +753,10 @@ DISEASES: Dict[str, dict] = {
                      "speech_in_noise_difficulty": 1, "vertigo": 1,
                      "imbalance": 2, "gradual_hearing_loss": 1},
         "requires_any": ["ototoxic_medication"],
+        "distinguishing": ["ototoxic_medication"],
+        # No commonness tier: the exposure gate above already restricts this
+        # to patients on an ototoxic drug, and a population base rate says
+        # nothing about them.
         "age_bands": ["pediatric", "adult", "geriatric"],
         "age_note": "Any age; higher risk in children on chemotherapy or certain "
                     "antibiotics, and in older adults on multiple medications.",
@@ -583,7 +784,9 @@ DISEASES: Dict[str, dict] = {
         "symptoms": {"vertigo": 3, "fluctuating_hearing_loss": 3, "tinnitus": 3,
                      "aural_fullness": 3, "hearing_loss": 1},
         "requires_any": ["vertigo", "fluctuating_hearing_loss"],
+        "distinguishing": ["vertigo", "fluctuating_hearing_loss"],
         "age_bands": ["adult", "geriatric"],
+        "commonness": "uncommon",
         "age_note": "Most commonly 40-60 years; less common but possible in 65+.",
         "tests": ["Pure-tone audiometry (fluctuating sensorineural loss)",
                   "Speech audiometry",
@@ -609,7 +812,11 @@ DISEASES: Dict[str, dict] = {
                      "speech_in_noise_difficulty": 3, "tinnitus": 3,
                      "muffled_hearing": 2, "hearing_loss": 1},
         "requires_any": ["noise_exposure"],
+        "distinguishing": ["noise_exposure"],
         "age_bands": ["adult", "pediatric", "geriatric"],
+        # WHO World report on hearing (2021): noise is the leading avoidable
+        # cause of adult hearing loss.
+        "commonness": "common",
         "age_note": "Most often working-age adults through occupational or "
                     "recreational exposure; also children through loud music "
                     "and gaming devices.",
@@ -636,6 +843,7 @@ DISEASES: Dict[str, dict] = {
                      "aural_fullness": 2, "imbalance": 1, "vertigo": 1,
                      "bloody_discharge": 2},
         "requires_any": ["pulsatile_tinnitus"],
+        "distinguishing": ["pulsatile_tinnitus"],
         "age_bands": ["adult", "geriatric"],
         "age_note": "Most commonly 40-70 years; occurrence rises with age.",
         "tests": ["Pure-tone audiometry (conductive or mixed loss)",
@@ -660,7 +868,11 @@ DISEASES: Dict[str, dict] = {
         "symptoms": {"aural_fullness": 3, "muffled_hearing": 3, "ear_pain": 2,
                      "popping": 3, "hearing_loss": 1, "barotrauma": 2},
         "requires_any": [],
+        # A blocked or popping ear, or symptoms with pressure change. Muffled
+        # hearing is how any loss sounds.
+        "distinguishing": ["aural_fullness", "popping", "barotrauma"],
         "age_bands": ["pediatric", "adult", "geriatric"],
+        "commonness": "common",
         "age_note": "Most common in children, whose tubes are shorter and more "
                     "horizontal; in adults with allergies, infection or pressure change.",
         "tests": ["Pure-tone audiometry",
@@ -685,6 +897,9 @@ DISEASES: Dict[str, dict] = {
                      "hearing_loss": 2, "aural_fullness": 1, "ear_pain": 1,
                      "tinnitus": 1, "facial_weakness": 2, "vertigo": 1},
         "requires_any": ["ear_discharge", "foul_smelling_discharge", "hearing_loss"],
+        # Its defining features above include a hearing loss, which every
+        # hearing complaint satisfies; the discharge is what points at it.
+        "distinguishing": ["foul_smelling_discharge", "ear_discharge"],
         "age_bands": ["pediatric", "adult", "geriatric"],
         "age_note": "Common in children through Eustachian tube dysfunction and "
                     "recurrent infection; in adults through chronic ear disease.",
@@ -713,6 +928,7 @@ DISEASES: Dict[str, dict] = {
         # Fever accompanies most ear infections; swelling behind the ear is
         # what makes this mastoiditis rather than any of them.
         "requires_any": ["postauricular_swelling"],
+        "distinguishing": ["postauricular_swelling"],
         "age_bands": ["pediatric", "adult", "geriatric"],
         "age_note": "Most common in children, especially under 2 years, after "
                     "frequent middle-ear infection.",
@@ -741,6 +957,11 @@ DISEASES: Dict[str, dict] = {
         # than any other painful ear. Without them it should not outrank
         # conditions that explain the whole picture.
         "requires_any": ["ear_blisters"],
+        "distinguishing": ["ear_blisters"],
+        # No commonness tier: blisters on the drum are close to
+        # pathognomonic, and the scorer has no penalty for a symptom a
+        # condition cannot explain — so a base-rate weight here would only let
+        # conditions that cannot account for the blisters outrank this one.
         "age_bands": ["pediatric", "adult", "geriatric"],
         "age_note": "Most common in children after frequent middle-ear infection.",
         "tests": ["Pure-tone audiometry",
@@ -765,7 +986,28 @@ DISEASES: Dict[str, dict] = {
         "symptoms": {"gradual_hearing_loss": 3, "hearing_loss": 2, "tinnitus": 2,
                      "vertigo": 1, "imbalance": 2, "facial_weakness": 2},
         "requires_any": [],
+        # No reported symptom separates it from presbycusis — the bone
+        # disease does, on radiographs or a radionuclide bone scan, with serum
+        # total alkaline phosphatase as the first-line test (Ralston et al.,
+        # 2019) — so the audiogram setting a leader aside never puts it first
+        # on the history alone.
+        "distinguishing": [],
         "age_bands": ["adult", "geriatric"],
+        # Ralston et al. (2019): incidence roughly doubles each decade after 50,
+        # and the UK prevalence figure is quoted for people over 55. Below 55
+        # the score tapers, so a 45-year-old's gradual loss does not rank a
+        # rare bone disease above the common causes.
+        "age_ranges": [(55, 200)],
+        # Below 55 the prior follows that incidence curve: it halves for each
+        # decade younger (0.5 at 45, 0.18 at 30). Classical Paget's disease
+        # "usually appears at the age of forty and is rarely diagnosed before
+        # the age of fifty" (Banaganapalli et al., 2023, Front Genet
+        # 14:1131182); the linear taper's floor would leave it leading a
+        # teenager's or a 30-year-old's gradual loss on generic symptoms.
+        "age_prior": {"curve": "doubling", "years": 10},
+        # The entry's own audiology note: "Rare, and easily filed as
+        # presbycusis."
+        "commonness": "rare",
         "age_note": "Risk rises through 40-64 years; most common in 65+.",
         "tests": ["Pure-tone audiometry (sensorineural or mixed loss)",
                   "Speech audiometry",
@@ -784,6 +1026,64 @@ DISEASES: Dict[str, dict] = {
                             "conductive component",
         "red_flag": "",
     },
+    # Not in the project's disease reference. Encoded from the AAO-HNS
+    # guideline (Chandrasekhar et al., 2019), with the presentation as
+    # summarised for frontline clinicians by Prince & Stucken (2021):
+    # sensorineural loss of at least 30 dB at three consecutive frequencies
+    # developing within 72 hours, nearly always unilateral, with a normal ear
+    # examination and often a full or blocked ear, tinnitus and dizziness.
+    "ssnhl": {
+        "name": "Sudden sensorineural hearing loss (SSNHL)",
+        "category": "emergency",
+        "source": ("AAO-HNS Clinical Practice Guideline: Sudden Hearing Loss "
+                   "(Update), Chandrasekhar et al., 2019"),
+        "symptoms": {"sudden_hearing_loss": 3, "hearing_loss": 1, "tinnitus": 2,
+                     "aural_fullness": 2, "muffled_hearing": 1, "vertigo": 1},
+        # The speed of onset IS the diagnosis. Without it, tinnitus and a full
+        # ear are any of a dozen conditions.
+        "requires_any": ["sudden_hearing_loss"],
+        "distinguishing": ["sudden_hearing_loss"],
+        "age_bands": ["adult", "geriatric"],
+        # The guideline's scope is patients aged 18 and older. Children are
+        # not excluded from the differential — the taper only ranks them lower
+        # — and the sudden-loss red flag fires at every age.
+        "age_ranges": [(18, 200)],
+        "age_note": "Adults of any age; the AAO-HNS guideline covers patients "
+                    "aged 18 and older. Less common in children.",
+        "tests": ["Otoscopy / video otoscopy to exclude wax, effusion or perforation",
+                  "Tuning fork tests (Weber lateralises to the better ear)",
+                  "Pure-tone audiometry with bone conduction - within 14 days of onset",
+                  "Speech audiometry (word recognition)",
+                  "Tympanometry to confirm a normal middle ear",
+                  "Auditory brainstem response (ABR) where MRI is unavailable",
+                  "MRI of the internal auditory canals (imaging, not an "
+                  "audiological test)",
+                  "Follow-up audiometry at the end of treatment and within 6 months"],
+        "audiology_note": (
+            "Time-critical: treatment is offered within two weeks of onset, so "
+            "audiometry confirms the type and must not delay the referral. "
+            "First separate it from a sudden conductive loss — wax and effusion "
+            "feel the same to the patient (AAO-HNS 2019, key action statement "
+            "1). Routine CT and blood tests are not indicated; MRI or ABR looks "
+            "for a retrocochlear cause."),
+        # The guideline's 30 dB criterion applies to three consecutive
+        # frequencies, not the four-frequency average, so a low- or
+        # high-frequency-only loss can average below 30.
+        "expected_pta": (20, 120),
+        "laterality": "unilateral",
+        "expected_type": "sensorineural",
+        # The guideline defines SSNHL by the size and speed of the change, in
+        # any configuration — flat, low-, high-frequency or profound — so it
+        # has no characteristic audiogram for the thresholds-only matcher to
+        # compare against. A made-up shape would let a symmetric flat loss
+        # with no history "most closely match" an emergency defined by onset.
+        "characteristic_audiogram": False,
+        "expected_pattern": "Unilateral sensorineural loss of at least 30 dB at "
+                            "three consecutive frequencies, developing within "
+                            "72 hours",
+        "red_flag": "Time-critical — same-day ENT referral. Treatment is offered "
+                    "within two weeks of onset.",
+    },
 }
 
 # --------------------------------------------------------------------------
@@ -797,6 +1097,47 @@ GUIDE_TO_DISEASE: Dict[str, str] = {
     "mastoiditis": "mastoiditis",
     "meniere disease": "menieres",
     "eustachian tube dysfunction": "etd",
+}
+
+#: Guide causes that a reported symptom rules against by definition. The
+#: complaint guide gives each cause a one-line presentation and a rank, but
+#: no exclusions, so without this a guide-only cause can never be argued
+#: against — and "sudden severe spinning" puts vestibular neuritis first for a
+#: patient whose vertigo came with a sudden hearing loss, the one feature its
+#: definition excludes. Keyed by the guide's condition name (lower-cased,
+#: parenthetical removed). A declared addition, demoting rather than removing.
+GUIDE_ARGUES_AGAINST: Dict[str, dict] = {
+    "vestibular neuritis": {
+        "symptoms": ["sudden_hearing_loss"],
+        # Strupp et al. (2022), Barany Society criteria for acute unilateral
+        # vestibulopathy/vestibular neuritis, J Vestib Res 32:389-406: an
+        # acute vestibular syndrome WITHOUT acute audiological symptoms or
+        # signs. A gradual or long-standing loss does not exclude it; an
+        # acute one points to labyrinthitis or a sudden sensorineural loss.
+        "note": ("Vestibular neuritis spares hearing by definition (Barany "
+                 "Society criteria, Strupp et al., 2022); vertigo with an acute "
+                 "hearing loss is labyrinthitis or a sudden sensorineural loss."),
+    },
+}
+
+#: Guide causes whose one-line presentation describes an acute hearing loss.
+#: The guide writes "hearing loss" unqualified, and for every other cause any
+#: reported loss — plain, sudden, gradual or fluctuating — satisfies it. For
+#: these it is satisfied by a sudden loss, or a loss of unrecorded onset, but
+#: not by one recorded as gradual or fluctuating: a slowly worsening loss does
+#: not fit "vertigo with hearing loss" any better for being a hearing loss.
+#: Matching on onset rather than on how the loss was entered means a chip, a
+#: free-text phrase and the intake form's onset field score the same.
+#: Keyed like GUIDE_ARGUES_AGAINST. A declared addition.
+GUIDE_ACUTE_CAUSES: Dict[str, str] = {
+    # Strupp et al. (2022): an acute vestibular syndrome with an acute hearing
+    # loss is labyrinthitis (or a sudden sensorineural loss), not neuritis.
+    "labyrinthitis": "an acute vestibular syndrome with an acute hearing loss "
+                     "(Strupp et al., 2022)",
+    # The guide's own presentation: "Sudden ear pain with hearing loss after
+    # injury."
+    "traumatic tympanic membrane perforation": "a hearing loss at the moment "
+                                               "of injury",
 }
 
 #: Conditions that appear only in the complaint guide. The guide gives their
@@ -932,7 +1273,7 @@ OTOSCOPY_LINKS: Dict[str, dict] = {
 # --------------------------------------------------------------------------
 #: Otoscopic pattern -> how strongly it argues for each disease (0-3), the
 #: diseases it argues against, and the named conditions that sit outside the
-#: fourteen-disease reference.
+#: disease reference.
 #:
 #: This is the link that works with nothing else recorded. A photograph alone
 #: produces a ranked differential here, before any history is taken and before
@@ -940,8 +1281,10 @@ OTOSCOPY_LINKS: Dict[str, dict] = {
 #: in, since the scope goes in the ear before the patient is in the booth.
 OTOSCOPY_DISEASE_LINKS: Dict[str, dict] = {
     "normal": {
+        # SSNHL: "patients with SSNHL will almost always have a normal
+        # otoscopic examination" (Prince & Stucken, 2021).
         "supports": {"sensory_presbycusis": 2, "nihl": 2, "menieres": 2,
-                     "ototoxicity": 2, "capd": 2, "ansd": 2,
+                     "ototoxicity": 2, "capd": 2, "ansd": 2, "ssnhl": 2,
                      "bacterial_meningitis": 1, "pagets": 1},
         "excludes": ["cholesteatoma", "mastoiditis", "bullous_myringitis"],
         "other": [],
@@ -1022,7 +1365,7 @@ TYMPANOGRAM_LINKS: Dict[str, dict] = {
     "A": {
         "label": "Type A — normal middle ear",
         "supports": ["sensory_presbycusis", "nihl", "menieres", "ototoxicity",
-                     "capd", "ansd", "bacterial_meningitis"],
+                     "capd", "ansd", "bacterial_meningitis", "ssnhl"],
         "argues_against": ["etd", "cholesteatoma", "mastoiditis",
                            "bullous_myringitis"],
         "also_consider": ["Otosclerosis (a stiff ear can still read Type A early)"],
@@ -1212,6 +1555,8 @@ DISEASE_AUDIOGRAM: Dict[str, dict] = {
         "note": ("Easily filed as presbycusis; the conductive component and the "
                  "systemic bone disease are what separate them."),
     },
+    # No "ssnhl" entry: it declares ``characteristic_audiogram: False`` —
+    # the AAO-HNS guideline defines it by onset, in any configuration.
 }
 
 #: Reflex findings that change the differential regardless of the trace shape.
@@ -1227,16 +1572,22 @@ REFLEX_LINKS: Dict[str, dict] = {
         "supports": ["ansd", "pagets"],
         "also_consider": ["Vestibular schwannoma", "Brainstem lesion"],
         "meaning": ("The cochlea works but the reflex arc does not — the lesion "
-                    "lies beyond the cochlea."),
+                    "lies beyond the cochlea, once a middle-ear cause of the "
+                    "absent reflex is excluded."),
     },
+    # Applied above consistency.REFLEX_PRESENT_UNEXPECTED_PTA (80 dB HL):
+    # "absence of reflex responses is rare for hearing losses of less than
+    # about 80 dB HL when the hearing loss is attributable to cochlear
+    # involvement" (Silman & Gelfand 1981, JSHD 46:312-316).
     "present_with_severe_loss": {
-        "when": "reflexes present despite a severe loss",
+        "when": "reflexes present despite a profound loss",
         "supports": [],
         "also_consider": ["Non-organic (exaggerated) hearing loss",
                           "Cochlear recruitment"],
-        "meaning": ("Reflexes are normally absent once the loss exceeds about "
-                    "60 dB HL. Their presence suggests the thresholds overstate "
-                    "the true loss."),
+        "meaning": ("A cochlear loss rarely abolishes the reflex below about "
+                    "80 dB HL; beyond it, presence is still possible through "
+                    "recruitment but also fits thresholds that overstate the "
+                    "loss."),
     },
 }
 
@@ -1375,3 +1726,47 @@ RED_FLAGS: List[dict] = [
                   "gap warrants MRI.",
     },
 ]
+
+
+# --------------------------------------------------------------------------
+# occupations that should prompt a noise history
+# --------------------------------------------------------------------------
+#: Sector -> patterns matched against the recorded occupation (lower-cased,
+#: punctuation removed). The sectors are the ones NIOSH surveillance finds
+#: with the most workers exposed to hazardous noise — construction,
+#: manufacturing (metal and textile among the largest), mining and quarrying,
+#: agriculture — plus the military, aviation ground work and amplified
+#: music. Weaving is listed by name because Indian power-loom surveys find the
+#: weaving section the loudest area of the mill, well above the 85 dBA NIOSH
+#: limit (Noise & Health, 2025: cognitive performance and hearing in Indian
+#: power-loom employees), and "weaver" contains none of the other words.
+#:
+#: A match is a PROMPT to take a noise history, never a recorded exposure: a
+#: job title does not say how many years, how many hours, or whether
+#: protection was worn, and noise-induced loss stays gated on the
+#: clinician's answer. The lookaheads keep out the senses of a stem that are
+#: not shop-floor work — "machine learning", "data mining", an exercise-bike
+#: "spinning" class — since a prompt that fires on an office job teaches the
+#: reader to ignore it.
+NOISY_OCCUPATIONS: Dict[str, List[str]] = {
+    "textile and weaving": [r"\bweav", r"loom\b", r"\btextile",
+                            r"\bspinning\b(?! (instructor|class|coach|teacher))",
+                            r"\bmills?\b", r"\bginning"],
+    "manufacturing and metalwork": [r"\bfactory", r"\bfactories", r"\bindustrial",
+                                    r"\bmachin(?!e learning)",
+                                    r"\bfoundry", r"\bforg(e|ing)\b", r"\bweld",
+                                    r"\bblacksmith", r"\bmetal", r"\blathe",
+                                    r"\bpress operator", r"\bboiler"],
+    "construction, mining and quarrying": [r"\bconstruction", r"\bmason",
+                                           r"\bdrill", r"\bminers?\b",
+                                           r"(?<!data )\bmining", r"\bquarr",
+                                           r"\bstone ?crush", r"\bblast"],
+    "woodwork": [r"\bcarpent", r"\bsawmill", r"\bwood ?work"],
+    "agriculture": [r"\bfarm", r"\btractor", r"\bthresh"],
+    "military and firearms": [r"\barmy\b", r"\bmilitary", r"\bsoldier",
+                              r"\bnavy\b", r"\bair ?force", r"\bfirearm",
+                              r"\bgunner"],
+    "aviation ground work": [r"\bairport", r"\baircraft", r"\bground crew"],
+    "amplified music": [r"\bmusician", r"\bdrummer", r"\bdj\b",
+                        r"\bdisc jockey", r"\bnightclub"],
+}

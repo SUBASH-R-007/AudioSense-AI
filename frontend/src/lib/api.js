@@ -142,6 +142,16 @@ export const api = {
       body: JSON.stringify(ear),
     }).then(json),
 
+  // A whole report page: the audiogram is located on it and digitized, and
+  // the printed fields are read or returned as crops to confirm.
+  digitizeReport: (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return http('/api/digitize/report', { method: 'POST', body: fd }).then(json)
+  },
+  reportCapability: () =>
+    http('/api/digitize/report/capability').then(json),
+
   digitize: (file) => {
     const fd = new FormData()
     fd.append('file', file)
@@ -155,11 +165,16 @@ export const api = {
       body: JSON.stringify(analysis),
     }).then(json),
 
-  progression: (baseline, current) =>
+  // thresholds_3000: optional {baseline: {right, left}, current: {right, left}}
+  // in dB HL or 'NR' (null = not tested), for OSHA's 2/3/4 kHz average.
+  progression: (baseline, current, thresholds_3000) =>
     http('/api/progression', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ baseline, current }),
+      body: JSON.stringify({
+        baseline, current,
+        ...(thresholds_3000 ? { thresholds_3000 } : {}),
+      }),
     }).then(json),
 
   batch: (file) => {
@@ -318,6 +333,17 @@ export const api = {
     if (analysis) fd.append('analysis', JSON.stringify(analysis))
     return http('/api/otoscopy/analyze', { method: 'POST', body: fd }).then(json)
   },
+  // The whole analysis goes back up rather than the image: the server then
+  // re-derives the clinical consequence, the differential and the
+  // cross-checks from the corrected pattern without decoding the photograph
+  // a second time.
+  otoscopyCorrect: ({ result, corrected, note = '', analysis = null }) =>
+    http('/api/otoscopy/correct', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ result, corrected, note, analysis }),
+    }).then(json),
+  otoscopyCorrections: () => http('/api/otoscopy/corrections').then(json),
 
   // --- signs and symptoms -------------------------------------------------
   symptomCatalog: () => http('/api/symptoms/catalog').then(json),
@@ -363,11 +389,17 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }).then(json),
-  abrThreshold: (series) =>
+  // stimulus: 'click' (server default) | 'tone_burst' | 'nb_chirp' | 'ce_chirp';
+  // frequency_hz is needed for the tone-burst / chirp eHL corrections.
+  abrThreshold: (series, { stimulus, frequency_hz } = {}) =>
     http('/api/aep/abr/threshold', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ series }),
+      body: JSON.stringify({
+        series,
+        ...(stimulus ? { stimulus } : {}),
+        ...(frequency_hz != null ? { frequency_hz } : {}),
+      }),
     }).then(json),
   mlr: (payload) =>
     http('/api/aep/mlr', {

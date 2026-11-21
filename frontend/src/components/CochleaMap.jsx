@@ -45,19 +45,24 @@ function spiralPath(steps = 260) {
 // the same way as the audiogram beside it: red is the right ear, blue is the
 // left. A single shared severity ramp made the two maps indistinguishable
 // once the toggle was off screen.
+//
+// The bands are the WHO World Report on Hearing (2021) grades, the same
+// edges as the rules engine (rules.WHO_GRADES): normal < 20, mild 20-<35,
+// moderate 35-<50, moderately severe 50-<65, severe 65-<80, profound 80-<95,
+// complete or total >= 95 dB HL. Applied here to each threshold for shading;
+// the grade itself is defined on the four-frequency average.
 const RAMPS = {
-  right: ['#fecdd3', '#fda4af', '#fb7185', '#e11d48', '#881337'],
-  left: ['#c7d2fe', '#93c5fd', '#60a5fa', '#2563eb', '#1e3a8a'],
+  right: ['#fecdd3', '#fda4af', '#fb7185', '#f43f5e', '#e11d48', '#9f1239', '#4c0519'],
+  left: ['#c7d2fe', '#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1e40af', '#172554'],
 }
 const EAR_TONE = { right: '#dc2626', left: '#2563eb' }
-const BANDS = ['normal', 'mild', 'moderate', 'severe', 'profound']
+const BANDS = ['normal', 'mild', 'moderate', 'moderately severe', 'severe',
+  'profound', 'complete or total']
+const BAND_EDGES = [20, 35, 50, 65, 80, 95]
 
 const severityIndex = (db) => {
-  if (db < 20) return 0
-  if (db < 35) return 1
-  if (db < 50) return 2
-  if (db < 65) return 3
-  return 4
+  const i = BAND_EDGES.findIndex((edge) => db < edge)
+  return i === -1 ? BAND_EDGES.length : i
 }
 
 const severityColor = (db, ear = 'right') => {

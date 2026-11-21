@@ -4,17 +4,41 @@ Loads the trained bundle lazily; exposes ``classify_ear(ac, bc)`` returning
 pattern, calibrated confidence, full probability table, an
 out-of-distribution flag, and per-frequency importance weights the frontend
 uses to glow the audiogram regions that drove the classification.
+
+The forest only knows seven loss configurations and names one for any
+input. Rule gates around it (``app.ml.features``) decide what is shown:
+too few frequencies -> no pattern; thresholds within normal limits ->
+"normal"; otherwise the model's label, with ``reliable`` saying whether it
+may drive etiology text and advice. The raw model output is always kept in
+the ``model_*`` fields.
 """
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import joblib
 import numpy as np
 
-from app.ml.features import AC_FREQS, FEATURE_FREQS, build_features
+from app.ml.features import (
+    AC_FREQS,
+    FEATURE_FREQS,
+    NORMAL_FREQ_LIMIT,
+    NORMAL_PTA_LIMIT,
+    build_features,
+    coverage,
+    isolated_outliers,
+    label_shape_caveat,
+    normal_average_caveat,
+    notch_retest_note,
+    outlier_blocks,
+    plausibility_reasons,
+    pta4,
+    steep_improvements,
+    steep_worsenings,
+    within_normal_limits,
+)
 from app.models.schemas import ThresholdValue, ear_to_numeric
 
 MODEL_PATH = Path(__file__).resolve().parents[2] / "data" / "model_bundle.joblib"
@@ -22,6 +46,13 @@ MODEL_PATH = Path(__file__).resolve().parents[2] / "data" / "model_bundle.joblib
 #: Predictions with max calibrated probability below this are flagged for
 #: human review regardless of the OOD detector.
 CONFIDENCE_FLOOR = 0.6
+
+#: A label is reliable — fit to drive etiology wording, hearing-protection
+#: advice or a verdict headline — only at or above this calibrated
+#: probability. Between the floor and this value the label is shown as
+#: provisional. The calibration is on synthetic data (see /api/validate), so
+#: the bar is set well above the review floor.
+RELIABLE_CONFIDENCE = 0.8
 
 PATTERN_LABELS = {
     "flat": "Flat",
@@ -31,7 +62,13 @@ PATTERN_LABELS = {
     "noise_notch_4k": "Noise notch (4 kHz)",
     "cookie_bite": "Cookie-bite (mid-frequency)",
     "corner_audiogram": "Corner audiogram",
+    # Rule-gated, never predicted by the model: the training set has no
+    # normal class, so without the gate every normal ear became a loss.
+    "normal": "Within normal limits",
 }
+
+#: Shown in place of a pattern when too few frequencies were tested.
+NOT_CLASSIFIED_LABEL = "Not classified — insufficient frequencies"
 
 
 @lru_cache(maxsize=1)
@@ -57,8 +94,19 @@ def classify_ear(
 
     ``explain=False`` skips counterfactual search and case retrieval — used
     by batch screening, where only the label and confidence are shown.
+
+    Every result carries ``reliable`` and ``reliability_note``. ``reliable``
+    is True only for a model label (not "normal", not unclassified) with
+    calibrated confidence >= RELIABLE_CONFIDENCE, all six frequencies
+    measured (nothing imputed), no out-of-distribution or plausibility
+    flag, and — when the four-frequency average is normal — abnormal
+    thresholds that form the shape named (``normal_average_caveat``).
+    Downstream wording (etiology, advice, cohort statistics) must not act on
+    a label that is not reliable.
     """
-    ac_n = ear_to_numeric(ac)
+    # Only the six model frequencies describe the shape; any other key would
+    # be silently dropped by the feature builder anyway.
+    ac_n = {f: v for f, v in ear_to_numeric(ac).items() if f in AC_FREQS}
     if not any(v is not None for v in ac_n.values()):
         return None
     bc_n = ear_to_numeric(bc)
@@ -73,33 +121,156 @@ def classify_ear(
     confidence = float(probs[order[0]])
 
     iso_score = float(b["iso"].score_samples(x)[0])
-    ood_reasons = []
+    model_ood_reasons = []
     if confidence < CONFIDENCE_FLOOR:
-        ood_reasons.append(
+        model_ood_reasons.append(
             f"low classifier confidence ({confidence:.0%} < {CONFIDENCE_FLOOR:.0%})"
         )
     if iso_score < b["iso_threshold"]:
-        ood_reasons.append(
+        model_ood_reasons.append(
             "audiogram shape far from training distribution (isolation forest)"
         )
 
-    return {
-        "pattern": top,
-        "pattern_label": PATTERN_LABELS.get(top, top),
-        "confidence": round(confidence, 4),
+    cov = coverage(ac_n)
+    raw = {
+        "model_pattern": top,
+        "model_pattern_label": PATTERN_LABELS.get(top, top),
+        "model_confidence": round(confidence, 4),
+        "model_ood_reasons": model_ood_reasons,
         "probabilities": {
             c: round(float(p), 4) for c, p in zip(classes, probs)
         },
+        "frequencies_tested": cov["tested"],
+        "frequencies_imputed": cov["untested"],
+        "model_accuracy": round(float(b["holdout_accuracy"]), 4),
+    }
+
+    # ---- gate 1: too little of the audiogram to describe a shape ---------
+    if not cov["adequate"]:
+        return {
+            **raw,
+            **_gated(None, NOT_CLASSIFIED_LABEL, "insufficient_frequencies",
+                     confidence=0.0, note=cov["note"]),
+            "outliers": [],
+            "outlier_blocks": [],
+            "steep_improvements": [],
+            "steep_worsenings": [],
+            "counterfactual_note": (
+                "Not classified: " + cov["note"] + "." if explain else None),
+        }
+
+    # ---- gate 2: nothing to classify — hearing within normal limits ------
+    if within_normal_limits(ac_n):
+        note = (
+            f"Thresholds within normal limits: PTA {round(pta4(ac_n), 1):g} dB HL "
+            f"(< {NORMAL_PTA_LIMIT:g}, WHO 2021) and no tested threshold above "
+            f"{NORMAL_FREQ_LIMIT:g} dB HL — there is no loss configuration to "
+            "classify"
+            + (f"; {_fmt(cov['untested'])} not tested" if cov["untested"] else "")
+        )
+        # The normal call is a definition applied to measured thresholds, not
+        # an estimate, so it carries full confidence; it is still not
+        # "reliable" because there is no configuration to act on.
+        return {
+            **raw,
+            **_gated("normal", PATTERN_LABELS["normal"], "normal_gate",
+                     confidence=1.0, note=note),
+            "outliers": [],
+            "outlier_blocks": [],
+            "steep_improvements": [],
+            "steep_worsenings": [],
+            "counterfactual_note": (
+                "No configuration is classified for an ear whose thresholds "
+                "are within normal limits." if explain else None),
+        }
+
+    # ---- model label, with its reliability --------------------------------
+    # The label is passed so that a deep 4 kHz noise notch does not withdraw
+    # the noise-notch label it is evidence for; it still asks for a retest.
+    plausibility = plausibility_reasons(ac_n, top)
+    retest = notch_retest_note(ac_n, top)
+    ood_reasons = model_ood_reasons + plausibility
+    caveats: List[str] = list(ood_reasons)
+    if CONFIDENCE_FLOOR <= confidence < RELIABLE_CONFIDENCE:
+        caveats.append(
+            f"classifier confidence {confidence:.0%} is below the "
+            f"{RELIABLE_CONFIDENCE:.0%} needed to act on a configuration label")
+    # An ear graded Normal hearing by its average (WHO 2021) with a threshold
+    # or two above 20 dB HL is not a loss configuration unless those
+    # thresholds form the shape named; the forest, never having seen such
+    # ears, otherwise calls one raised 250 Hz threshold a flat loss.
+    shape = normal_average_caveat(ac_n, top)
+    if shape:
+        caveats.append(shape)
+    mismatch = label_shape_caveat(ac_n, top)
+    if mismatch:
+        caveats.append(mismatch)
+    if cov["untested"]:
+        caveats.append(
+            f"{_fmt(cov['untested'])} not tested — estimated from neighbouring "
+            "thresholds, so the shape there is assumed, not measured")
+    reliable = not caveats
+    if reliable:
+        note = (f"All six frequencies measured, {confidence:.0%} calibrated "
+                "confidence, within the trained distribution")
+    else:
+        note = "; ".join(caveats)
+        note = note[0].upper() + note[1:]
+    if retest:
+        note = f"{note}; {retest}"
+
+    return {
+        **raw,
+        "pattern": top,
+        "pattern_label": PATTERN_LABELS.get(top, top),
+        "pattern_source": "model",
+        "confidence": round(confidence, 4),
         "ood": bool(ood_reasons),
         "ood_reasons": ood_reasons,
         "ood_message": (
             "Atypical audiogram — priority human review" if ood_reasons else None
         ),
+        "reliable": reliable,
+        "reliability_note": note,
+        "retest_note": retest,
+        "outliers": isolated_outliers(ac_n),
+        "outlier_blocks": outlier_blocks(ac_n),
+        "steep_improvements": steep_improvements(ac_n),
+        "steep_worsenings": steep_worsenings(ac_n),
         "freq_importance": _freq_importance(b, x[0]),
-        "model_accuracy": round(float(b["holdout_accuracy"]), 4),
         **(_explanations(b, ac_n, bc_n, top) if explain
            else {"counterfactuals": [], "counterfactual_note": None,
                  "similar_cases": None}),
+    }
+
+
+def _fmt(freqs: List[int]) -> str:
+    return ", ".join(f"{f} Hz" for f in freqs)
+
+
+def _gated(pattern: Optional[str], label: str, source: str,
+           confidence: float, note: str) -> dict:
+    """Fields shared by every rule-gated (non-model) result.
+
+    ``confidence`` stays numeric because consumers compare it with floors;
+    for an unclassified ear it is 0.0 so any such comparison routes the case
+    to a human. The glow overlay and counterfactuals are emptied because no
+    model decision is being shown.
+    """
+    return {
+        "pattern": pattern,
+        "pattern_label": label,
+        "pattern_source": source,
+        "confidence": confidence,
+        "ood": False,
+        "ood_reasons": [],
+        "ood_message": None,
+        "reliable": False,
+        "reliability_note": note,
+        "retest_note": None,
+        "freq_importance": {f: 0.0 for f in AC_FREQS},
+        "counterfactuals": [],
+        "similar_cases": None,
     }
 
 

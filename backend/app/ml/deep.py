@@ -18,6 +18,7 @@ Run:  python -m app.ml.deep
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Dict, List, Optional
 
 import joblib
 import numpy as np
@@ -27,12 +28,45 @@ from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
-from app.ml.features import features_from_dataframe
+from app.ml.features import (
+    BC_FREQS,
+    NORMAL_FREQ_LIMIT,
+    NORMAL_PTA_LIMIT,
+    coverage,
+    features_from_dataframe,
+    label_shape_caveat,
+    normal_average_caveat,
+    notch_retest_note,
+    plausibility_reasons,
+    within_normal_limits,
+)
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DEEP_PATH = DATA_DIR / "deep_ensemble.joblib"
 
 ENSEMBLE_SIZE = 5
+
+#: Mutual information (nats) between members above which the input is
+#: treated as unlike the training data.
+NOVELTY_EPISTEMIC = 0.15
+
+#: Same bar as the forest's ``RELIABLE_CONFIDENCE``: below it the ensemble's
+#: label is shown but is not one to act on.
+RELIABLE_CONFIDENCE = 0.8
+
+#: The training generator caps bone conduction at the bone vibrator's
+#: ~70 dB HL output limit (generate_dataset.synth_ear), so every training ear
+#: with air conduction above 70 dB HL carries an air-bone gap of at least
+#: AC - 70. With bone conduction missing — or entered as NR, beyond that
+#: limit — the gap features read zero or negative, a combination the
+#: networks never saw. They learned the corner audiogram largely from that
+#: gap: on synthetic corner audiograms with AC only they recognised none
+#: (reading them as flat, sometimes sloping). The forest is not affected.
+BC_TRAINING_CEILING = 70.0
+
+#: Labels the ensemble cannot separate from a corner audiogram once the
+#: bone-conduction features are outside training (see above).
+BC_DEPENDENT_PATTERNS = ("corner_audiogram", "flat", "sloping_high_frequency")
 
 
 def train_deep(n_members: int = ENSEMBLE_SIZE) -> dict:
@@ -92,8 +126,20 @@ def _entropy(p: np.ndarray, axis=-1) -> np.ndarray:
     return -np.sum(p * np.log(np.clip(p, 1e-12, 1.0)), axis=axis)
 
 
-def predict_deep(features: np.ndarray, bundle=None) -> dict:
-    """Ensemble prediction with its two uncertainties separated."""
+def predict_deep(
+    features: np.ndarray,
+    bundle=None,
+    ac: Optional[Dict[int, Optional[float]]] = None,
+    bc: Optional[Dict[int, Optional[float]]] = None,
+) -> dict:
+    """Ensemble prediction with its two uncertainties separated.
+
+    Pass the numeric thresholds (``ear_to_numeric``; NR = 120) as ``ac`` and
+    ``bc`` to get the same rule gates as the forest — normal limits,
+    coverage, plausibility, normal-average corroboration — and the
+    bone-conduction check that only this model needs. Without them the input cannot be checked, so ``reliable``
+    is always False; ``novel_input`` then reflects member disagreement only.
+    """
     bundle = bundle or load_deep()
     X = bundle["scaler"].transform(features.reshape(1, -1))
     per_member = _member_probs(bundle["members"], X)   # (M, 1, C)
@@ -108,8 +154,9 @@ def predict_deep(features: np.ndarray, bundle=None) -> dict:
     epistemic = max(0.0, total - expected)
     max_entropy = float(np.log(len(classes)))
 
-    return {
+    result = {
         "pattern": classes[idx],
+        "pattern_source": "model",
         "confidence": round(float(mean[idx]), 4),
         "probabilities": {c: round(float(p), 4) for c, p in zip(classes, mean)},
         "entropy": round(total, 4),
@@ -117,8 +164,115 @@ def predict_deep(features: np.ndarray, bundle=None) -> dict:
         "epistemic_uncertainty": round(epistemic, 4),
         "member_disagreement": round(
             float(np.mean(np.std(per_member[:, 0, :], axis=0))), 4),
-        "novel_input": epistemic > 0.15,
+        "novel_input": epistemic > NOVELTY_EPISTEMIC,
         "ensemble_size": len(bundle["members"]),
+        "model_pattern": classes[idx],
+        "model_confidence": round(float(mean[idx]), 4),
+    }
+    result.update(_assess(result, epistemic, ac, bc))
+    return result
+
+
+def bc_outside_training(
+    ac: Dict[int, Optional[float]], bc: Dict[int, Optional[float]]
+) -> List[int]:
+    """Frequencies where AC exceeds the training BC ceiling but BC is missing
+    or beyond it — inputs the ensemble's air-bone-gap features never saw."""
+    out = []
+    for f in BC_FREQS:
+        a = ac.get(f)
+        if a is None or a <= BC_TRAINING_CEILING:
+            continue
+        b = bc.get(f)
+        if b is None or b > BC_TRAINING_CEILING:
+            out.append(f)
+    return out
+
+
+def _assess(result: dict, epistemic: float, ac, bc) -> dict:
+    """Rule gates and the reliability verdict for one ensemble prediction."""
+    novelty: List[str] = []
+    if epistemic > NOVELTY_EPISTEMIC:
+        novelty.append(
+            f"the {result['ensemble_size']} networks disagree with each other "
+            f"(epistemic {epistemic:.2f} nats) — an input unlike the training data")
+
+    if ac is None:
+        # Without the thresholds, coverage and plausibility cannot be checked,
+        # so the label cannot be called reliable however confident it is.
+        caveats = list(novelty) + [
+            "thresholds were not supplied, so coverage and plausibility were "
+            "not checked"]
+        return _verdict(caveats, novelty, [], result["confidence"])
+
+    ac = {f: v for f, v in ac.items() if v is not None}
+    bc = {f: v for f, v in (bc or {}).items() if v is not None}
+    cov = coverage(ac)
+
+    if not cov["adequate"]:
+        gated = _verdict([cov["note"]], novelty, [], result["confidence"])
+        return {**gated, "pattern": None, "pattern_source": "insufficient_frequencies",
+                "confidence": 0.0}
+
+    # The ensemble has no normal class either; the forest's normal gate is
+    # applied here too so that the two models answer the same question.
+    if within_normal_limits(ac):
+        note = (f"Thresholds within normal limits (PTA < {NORMAL_PTA_LIMIT:g} dB HL, "
+                f"WHO 2021; none above {NORMAL_FREQ_LIMIT:g} dB HL) — the ensemble "
+                "has no normal class, so the configuration it names is forced")
+        return {**_verdict([note], [], [], result["confidence"]),
+                "pattern": "normal", "pattern_source": "normal_gate",
+                "confidence": 1.0, "novel_input": False}
+
+    # Judged against the ensemble's own label, as the forest does: a deep
+    # 4 kHz noise notch does not withdraw a noise-notch label.
+    implausible = plausibility_reasons(ac, result["pattern"])
+    retest = notch_retest_note(ac, result["pattern"])
+    novelty += implausible
+    caveats = list(novelty)
+    bc_freqs = bc_outside_training(ac, bc)
+    if bc_freqs and result["pattern"] in BC_DEPENDENT_PATTERNS:
+        caveats.append(
+            "bone conduction is missing or beyond 70 dB HL at "
+            + ", ".join(f"{f} Hz" for f in bc_freqs)
+            + " where air conduction exceeds 70 dB HL; the ensemble learned the "
+            "corner audiogram from the air-bone gap a 70 dB HL bone vibrator "
+            "creates, so without it a corner audiogram reads as flat or sloping "
+            "— rely on the forest for this ear")
+    if result["confidence"] < RELIABLE_CONFIDENCE:
+        caveats.append(f"ensemble confidence {result['confidence']:.0%} is "
+                       f"below {RELIABLE_CONFIDENCE:.0%}")
+    # Same corroboration rule as the forest for an ear graded Normal hearing
+    # by its average that still has a threshold or two above 20 dB HL.
+    shape = normal_average_caveat(ac, result["pattern"])
+    if shape:
+        caveats.append(shape)
+    mismatch = label_shape_caveat(ac, result["pattern"])
+    if mismatch:
+        caveats.append(mismatch)
+    if cov["untested"]:
+        caveats.append(", ".join(f"{f} Hz" for f in cov["untested"])
+                       + " not tested — estimated from neighbouring thresholds")
+    return _verdict(caveats, novelty, bc_freqs, result["confidence"], retest)
+
+
+def _verdict(caveats: List[str], novelty: List[str], bc_freqs: List[int],
+             confidence: float, retest: Optional[str] = None) -> dict:
+    reliable = not caveats
+    if reliable:
+        note = (f"{confidence:.0%} ensemble confidence, the members agree, and "
+                "all six frequencies were measured with no plausibility flag")
+    else:
+        note = "; ".join(caveats)
+        note = note[0].upper() + note[1:]
+    if retest:
+        note = f"{note}; {retest}"
+    return {
+        "reliable": reliable,
+        "reliability_note": note,
+        "novel_input": bool(novelty),
+        "novelty_reasons": novelty,
+        "bc_outside_training": bc_freqs,
     }
 
 

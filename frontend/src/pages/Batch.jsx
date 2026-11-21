@@ -62,12 +62,14 @@ export default function Batch() {
     const head = ['name', 'age', 'occupation',
       'right_pta', 'right_grade', 'right_type', 'right_pattern',
       'left_pta', 'left_grade', 'left_type', 'left_pattern',
-      'binaural_disability_pct', 'benchmark_disability']
+      'right_pattern_reliable', 'left_pattern_reliable',
+      'binaural_disability_pct', 'benchmark_disability', 'disability_certifiable']
     const rows = data.results.map((r) => [
       r.name, r.age, r.occupation,
       r.right.pta, r.right.grade, r.right.type, r.right.pattern,
       r.left.pta, r.left.grade, r.left.type, r.left.pattern,
-      r.binaural_disability_pct, r.benchmark_disability,
+      r.right.pattern_reliable, r.left.pattern_reliable,
+      r.binaural_disability_pct, r.benchmark_disability, r.disability_certifiable,
     ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
     const blob = new Blob([[head.join(','), ...rows].join('\n')], { type: 'text/csv' })
     const a = document.createElement('a')
@@ -124,7 +126,12 @@ export default function Batch() {
           <div className="font-semibold text-slate-800">{ear.grade}</div>
           <div className="text-slate-500">
             PTA {ear.pta} · {ear.type}{ear.provisional ? '*' : ''}
-            {ear.pattern && <> · {ear.pattern}</>}
+            {ear.pattern && (
+              <span title={ear.reliability_note || undefined}>
+                {' '}· {ear.pattern}{ear.pattern_reliable === false
+                  && ear.pattern_key && ear.pattern_key !== 'normal' ? ' (unreliable)' : ''}
+              </span>
+            )}
             {ear.ood && <span className="ml-1 rounded bg-rose-100 px-1 py-0.5 text-[10px] font-bold text-rose-700">OOD</span>}
           </div>
         </>
@@ -344,9 +351,21 @@ export default function Batch() {
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               ['Hearing loss', `${data.summary.impaired_pct}%`, `${data.summary.impaired} of ${data.summary.total}`, 'text-slate-800'],
-              ['4 kHz noise notch', `${data.summary.noise_notch_pct}%`, `${data.summary.noise_notch} workers`, 'text-amber-600'],
-              ['Benchmark disability', `${data.summary.benchmark_pct}%`, `${data.summary.benchmark_disability} eligible (RPwD ≥40%)`, 'text-rose-600'],
-              ['Needs human review', data.summary.needs_review, 'atypical patterns', 'text-teal-700'],
+              ['4 kHz noise notch', `${data.summary.noise_notch_pct}%`,
+                `${data.summary.noise_notch} workers` + (data.summary.noise_notch_assessable != null
+                  ? ` · ${data.summary.noise_notch_assessable} assessable` : ''), 'text-amber-600'],
+              ['Benchmark disability', `${data.summary.benchmark_pct}%`,
+                `${data.summary.benchmark_disability - (data.summary.benchmark_not_certifiable || 0)} certifiable at ≥40% (RPwD)`
+                  + (data.summary.benchmark_not_certifiable
+                    ? ` · ${data.summary.benchmark_not_certifiable} provisional, retest first` : ''),
+                'text-rose-600'],
+              // needs_review is the triage decision (provisional type, test
+              // validity, atypical pattern, benchmark sign-off); the atypical
+              // patterns are one of its reasons, counted separately.
+              ['Needs human review', data.summary.needs_review,
+                data.summary.atypical_pattern != null
+                  ? `audiologist review · ${data.summary.atypical_pattern} atypical pattern${data.summary.atypical_pattern === 1 ? '' : 's'}`
+                  : 'atypical patterns', 'text-teal-700'],
             ].map(([label, value, sub, color]) => (
               <div key={label} className="rounded-xl bg-slate-50 p-3">
                 <div className="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">
@@ -442,9 +461,15 @@ export default function Batch() {
                     {r.binaural_disability_pct != null ? (
                       <div className="flex items-center gap-2">
                         <span className="text-[14px] font-bold text-slate-800">{r.binaural_disability_pct}%</span>
-                        {r.benchmark_disability && (
+                        {r.benchmark_disability && r.disability_certifiable !== false && (
                           <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">
                             benchmark
+                          </span>
+                        )}
+                        {r.disability_certifiable === false && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-800"
+                            title="A PTA frequency was not tested; the figure is a provisional estimate">
+                            not certifiable
                           </span>
                         )}
                       </div>
@@ -455,8 +480,10 @@ export default function Batch() {
             </tbody>
           </table>
           <div className="px-3 py-2 text-[11px] text-slate-400">
-            * = type provisional (BC incomplete) · OOD = atypical pattern, priority human
-            review · rows are ordered by clinical priority, not upload order
+            * = type provisional (bone conduction untested, incomplete or no response) ·
+            OOD = atypical pattern, priority human review · rows are ordered by clinical
+            priority, not upload order{data.summary?.noise_notch_definition
+              ? ` · noise notch = ${data.summary.noise_notch_definition}` : ''}
           </div>
         </div>
       )}

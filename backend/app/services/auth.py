@@ -378,6 +378,17 @@ PUBLIC_PATHS = (
     # Report verification, same reasoning: the person holding the printout is
     # checking it is genuine, and they are not a user of this system.
     "/api/verify/",
+    # The clinical report the QR on a printed PDF opens. Same capability-URL
+    # model as the handout above and the same trade-off, stated here rather
+    # than buried: a clinician scanning their own printout is on a phone with
+    # no session, so the link cannot require one. The key is a 16-hex-character
+    # hash of the analysis (64 bits), only the report's own prose and patient
+    # header are stored behind it, and — the real limitation — it does not
+    # expire. SCALING.md gap 4 tracks giving these links a lifetime.
+    #
+    # Note the trailing slash: the prefix matches /api/report-view/<hash> and
+    # NOT the protected POST /api/report that generates a report.
+    "/api/report-view/",
     # Rendered into an <img>, which cannot carry an Authorization header.
     # Exact — see EXACT_PUBLIC below.
     "/api/qr",

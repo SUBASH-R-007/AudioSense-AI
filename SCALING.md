@@ -38,7 +38,7 @@
 AudioSense AI is a full-battery audiometry interpretation platform: **14 page
 modules** (13 routed screens behind a sign-in gate), **72 HTTP endpoints** across
 69 paths, **~18,100 lines** of backend Python across 76 modules, **~14,600 lines**
-of frontend across 48 files, and **947 automated tests**, all passing.
+of frontend across 48 files, and **2,245 automated tests**, all passing.
 
 The clinical core covers pure-tone audiometry with masking, speech audiometry
 (SDT/SRT/WRS), immittance across eight tympanogram types, otoacoustic emissions,
@@ -53,8 +53,8 @@ and documentation. They are repeated here because they set the scaling agenda.
 
 | Caveat | Detail | Consequence for scaling |
 |---|---|---|
-| **The ML is validated on synthetic data** | 99.9% hold-out accuracy is on 12,000 audiograms the system generated itself — it measures only that the model learned its own generator. Against expert labels the rules score κ=1.0 and the ML pattern classifier 83.3% (κ=0.795) on a small bundled set. | A prospective clinical validation study is the single largest non-engineering cost in this plan. |
-| **The otoscopy atlas is smaller than it appears** | 62 labelled views, but they are crops extracted from **22 source photographs** (montage figures split by `extract_otoscope_reference.py`). Leave-one-out validation holds out one crop while its 3–5 siblings — same camera, same session, possibly the same ear — remain in the training fold. | The reported ~44% top-1 accuracy is **optimistic by an unknown margin**. A real annotated dataset is required before this feature can be relied on. |
+| **The ML is validated on synthetic data** | 99.9% hold-out accuracy is on 12,000 audiograms the system generated itself — it measures only that the model learned its own generator. The validation harness has not yet been run on clinical data: on the 12 bundled cases, written by the project team, the ML pattern classifier agrees on 11 (95% CI 65–99%), and the rules agree on all 12 only because those labels were computed from the same published tables. | A prospective clinical validation study is the single largest non-engineering cost in this plan. |
+| **The otoscopy atlas is smaller than it appears** | 62 labelled views, but they are crops extracted from **22 source photographs** (montage figures split by `extract_otoscope_reference.py`). Validation now holds out every view cut from the test photograph, so no sibling crop — same camera, same session, possibly the same ear — is in the training fold. | Measured that way, top-1 accuracy is **27%** (17/62, 95% CI 15–42% by source photograph) against 12.5% chance; the ~44% view-level figure is kept in the model card only as `validation_optimistic`. A real annotated dataset is required before this feature can be relied on. |
 | **Authentication has shipped; authorisation has not** | Environment-configured accounts, PBKDF2-HMAC-SHA256 at 600,000 rounds, HMAC-signed 12-hour session tokens, default-closed middleware over every route with a stated public allowlist, and a structural frontend gate. What does **not** exist is authorisation: no roles, no owner column, no clinic dimension, no audit actor — so every signed-in user can read, export and delete every patient. | Single-clinic deployment is viable with accounts configured. Multi-clinic is not: it needs the tenancy and audit work in gaps 1–2. |
 
 ### 1.3 Measured performance baseline
@@ -299,7 +299,7 @@ flowchart TB
 
 **Dependency direction** is one-way: `routers → clinical/ml/services → data`. The
 clinical package performs **no file, network, database or joblib I/O** — verified.
-That purity is what makes 947 tests fast and what will make the core portable when
+That purity is what makes 2,245 tests fast and what will make the core portable when
 the surrounding infrastructure is replaced.
 
 #### Current deployment
@@ -336,7 +336,7 @@ flowchart TB
         API1["FastAPI replica 1"]
         API2["FastAPI replica 2"]
         APIN["FastAPI replica N"]
-        CORE2["<b>UNCHANGED: clinical core</b><br/>22 pure modules · 947 tests"]
+        CORE2["<b>UNCHANGED: clinical core</b><br/>22 pure modules · 2,245 tests"]
         API1 --- CORE2
         API2 --- CORE2
         APIN --- CORE2
@@ -430,7 +430,7 @@ Thirteen gaps, every one traceable to something in the repository. Effort is in
 | 5 | **Audit logging** | No record of who read or deleted anything. For occupational hearing conservation — where a threshold shift becomes a compensation claim — an audiogram without tamper-evident provenance has little evidential value. | 2–3 pw |
 | 6 | **Backups & disaster recovery** | `DEPLOYMENT.md` documents data loss as expected: *"Patient records disappear after a redeploy — Expected."* No volume, no backup job, no export path. | 1–2 pw |
 | 7 | **Observability** | No structured logging, metrics, tracing or error tracking. With ~250 MB resident in a possibly-512 MB container, the realistic failure is a silent OOM nobody can attribute. | 2–3 pw |
-| 8 | **CI/CD** | **No `.github/` directory.** 947 tests exist and nothing runs them on push. The model artifact is committed, not built, so a stale model can ship indefinitely with no signal. | 1–2 pw |
+| 8 | **CI/CD** | **No `.github/` directory.** 2,245 tests exist and nothing runs them on push. The model artifact is committed, not built, so a stale model can ship indefinitely with no signal. | 1–2 pw |
 | 9 | **Rate limiting & request-size caps** | Batch reads whole CSVs into memory; digitize reads whole images; PDF and report paths are CPU-heavy. One signed-in caller can exhaust a single-worker instance; the login route itself spends ~360 ms of PBKDF2 per attempt and is public by necessity. In API mode it is also a cost-amplification vector. | 1–2 pw |
 | 10 | **Secret management** | Provider key stored as plaintext JSON; the saved file takes precedence over the environment forever after first write; `masked()` returns the last 4 characters to any signed-in caller. | 1–2 pw |
 | 11 | **Horizontal scaling** | Three concrete blockers: a module-level config global written to local disk; whole-file JSON rewrites for handouts and verification hashes; a per-process 200 MB model cache with a 1.6–2.9 s cold load. | 3–4 pw |
@@ -625,14 +625,14 @@ Stated so the number is not mistaken for a complete business plan:
 | 2 | **Clinical validation underperforms** the synthetic-data figures | **Medium–High** | Feature descope; retraining; timeline slip | Run a 200-case pilot read-out at month 9 as a go/no-go before committing the full study |
 | 3 | **Otoscopy accuracy stays below clinical utility** even with 5,000 images | Medium | Feature repositioned as retrieval-only | The product already ships this honestly — reference retrieval is the durable value, and the UI already states measured accuracy |
 | 4 | **A PHI incident** | Reduced — authentication has shipped | Existential | Residual exposure is what remains: every signed-in user sees every patient, no audit trail, no encryption at rest, and handout/verify URLs are deliberately public capability links. Single-clinic use with accounts configured is defensible; multi-clinic is gated on gaps 1–2 |
-| 5 | Key-person dependency — one author, 20 commits | High | Delivery risk | Pair up the clinical core early; the 947 tests and cited docstrings are already strong knowledge transfer |
+| 5 | Key-person dependency — one author, 20 commits | High | Delivery risk | Pair up the clinical core early; the 2,245 tests and cited docstrings are already strong knowledge transfer |
 | 6 | Offline camp model proves harder than estimated | Medium | +2–4 pw | Prefer the local-backend-on-laptop route over browser sync if reconciliation proves complex |
 | 7 | LLM provider cost or policy change | Low | Low | Offline engine is already the default with automatic fallback — no dependency to break |
 
 ### 6.1 Recommended immediate actions (first 60 days)
 
 1. **Single-clinic deployment is acceptable** once `AUDIOSENSE_USERS` and `AUDIOSENSE_SECRET` are set. **Multi-clinic remains frozen** until authorisation and audit (gaps 1–2) land — today one clinic's staff can read and delete another's records.
-2. **Add CI** — 947 tests exist and nothing runs them; this is 1–2 pw for
+2. **Add CI** — 2,245 tests exist and nothing runs them; this is 1–2 pw for
    disproportionate return.
 3. **Obtain a CDSCO classification opinion.** It is the cheapest way to remove the
    largest budget uncertainty.
@@ -822,7 +822,7 @@ All figures re-measured from the repository on 15 August 2026, after the access-
 | `frontend/src/lib/` | 6 | 1,179 |
 | `frontend/src/audio/` | 7 | 1,423 |
 | **Frontend total** | **48** | **≈ 14,800** |
-| **Tests** | **30 files** | **947 tests, all passing** |
+| **Tests** | **48 files** | **2,245 tests, all passing** |
 
 ### B.2 Interfaces
 
@@ -849,8 +849,10 @@ All figures re-measured from the repository on 15 August 2026, after the access-
 
 ### B.4 Clinical standards implemented
 
-WHO World Report on Hearing 2021 · India RPwD Act 2016 / 2018 Gazette · ASHA and
-BSA procedures · OSHA 29 CFR 1910.95 · NIOSH 1998 · ISO 7029 · ISO 389-1 ·
+WHO World Report on Hearing 2021 · India RPwD Act 2016 / Gazette S.O. 76(E) 2018
+ready reckoner (superseded by S.O. 1338(E) 2024; not yet re-verified against it)
+· ASHA and BSA procedures · OSHA 29 CFR 1910.95 · NIOSH 1998 · ISO 7029:2000
+(age norms, computed but not shown on the Results page) · ISO 389-1 ·
 ANSI S3.5-1997 (SII) · Jerger tympanogram types extended to eight per Gelfand
 *Essentials of Audiology* 4th ed. · Thornton & Raffin 1978 · Clopper–Pearson exact
 intervals · Byrne & Dillon 1986 (NAL-R) · Northern & Downs (BOA) · Chaiklin 1959 ·

@@ -175,6 +175,79 @@ def test_a_rollover_a_short_list_cannot_resolve_is_called_out():
         assert any("cannot resolve" in n for n in result["notes"])
 
 
+def test_an_unresolvable_drop_is_not_a_retrocochlear_referral():
+    """The index is a ratio, and over a low PB max a few words clear it.
+
+    6 words correct falling to 3 on a 25-word list is an index of 0.50 — past
+    the 0.45 criterion — and a difference of three words. This used to be
+    reported as rollover, which ``analyze_speech`` turns into
+    ``retrocochlear_suspicion`` and ``/api/analyze`` escalates to an urgent
+    alert recommending imaging.
+    """
+    result = S.wrs_analysis(wrs((80, 24), (110, 12)), pta=70, srt=70)
+    assert result["rollover_index"] > S.ROLLOVER_THRESHOLD
+    assert result["rollover_significant"] is False
+    # Not asserted, so it cannot reach the referral...
+    assert result["rollover"] is False
+    # ...but not discarded either.
+    assert result["rollover_provisional"] is True
+    assert any("Possible rollover" in n for n in result["notes"])
+    assert any("not a referral" in n for n in result["notes"])
+
+
+def test_an_unresolvable_drop_does_not_raise_retrocochlear_suspicion():
+    ear = EarData(ac=flat(70), srt=70,
+                  wrs=[SpeechPoint(level=80, score=24, n_words=25),
+                       SpeechPoint(level=110, score=12, n_words=25)])
+    bundle = S.analyze_speech(ear, 70.0)
+    assert bundle["wrs"]["rollover_provisional"] is True
+    assert bundle["retrocochlear_suspicion"] is False
+
+
+def test_a_resolvable_rollover_still_refers():
+    """The fix must not suppress the finding it exists to report."""
+    result = S.wrs_analysis(
+        [{"level": 65, "score": 92, "n_words": 50},
+         {"level": 95, "score": 28, "n_words": 50}], pta=45, srt=40)
+    assert result["rollover"] is True
+    assert result["rollover_provisional"] is False
+    assert any("Refer for ENT" in n for n in result["notes"])
+
+
+def test_the_rollover_minimum_reports_where_it_was_measured():
+    """A bare percentage cannot tell a two-word wobble from a collapse."""
+    result = S.wrs_analysis(
+        [{"level": 65, "score": 92, "n_words": 50},
+         {"level": 85, "score": 60, "n_words": 50},
+         {"level": 95, "score": 28, "n_words": 50}], pta=45, srt=40)
+    assert result["pb_max_level"] == 65
+    assert result["pb_min_after_max"] == 28
+    assert result["pb_min_level"] == 95
+    assert result["pb_min_n_words"] == 50
+    assert result["pb_min_ci"]["low"] < 28 < result["pb_min_ci"]["high"]
+    assert any("28% at 95 dB HL" in n for n in result["notes"])
+
+
+def test_scores_on_different_length_lists_are_tested_on_their_own_lengths():
+    """One list's length must not lend its precision to the other's score."""
+    # 60% of 50 words against 76% of 25 words. 76 sits outside the 50-word
+    # interval of 60% (45.2–73.6), so a test run entirely on that length calls
+    # the difference real — but 60 sits well inside the 25-word interval of
+    # 76% (54.9–90.6), so the shorter list cannot resolve it.
+    assert S.scores_differ(60, 76, 50) is True
+    assert S.scores_differ_unequal(60, 50, 76, 25) is False
+    # With equal lengths it reduces to the single-sided test.
+    assert S.scores_differ_unequal(92, 50, 28, 50) == S.scores_differ(92, 28, 50)
+
+
+def test_an_unequal_list_comparison_between_ears_uses_both_lengths():
+    right = S.wrs_analysis([{"level": 80, "score": 60, "n_words": 50}], pta=45)
+    left = S.wrs_analysis([{"level": 80, "score": 76, "n_words": 25}], pta=45)
+    comparison = S.compare_ears({"wrs": right}, {"wrs": left})
+    assert comparison["significant"] is False
+    assert "cannot resolve" in comparison["message"]
+
+
 def test_a_score_obtained_too_near_threshold_is_flagged_not_interpreted():
     """A poor score at threshold measures the level, not the patient."""
     low = S.wrs_analysis(wrs((45, 40)), pta=40, srt=40)

@@ -10,6 +10,7 @@
 // points invites exactly that mistake.
 
 import { useEffect, useMemo, useState } from 'react'
+import Collapsible, { Reveal } from './Collapsible.jsx'
 import {
   CartesianGrid, ErrorBar, Line, LineChart, ReferenceArea, ReferenceLine,
   ResponsiveContainer, Scatter, ComposedChart, Tooltip, XAxis, YAxis,
@@ -191,15 +192,77 @@ export default function SpeechAudiometry() {
         the right-versus-left word-score test below needs both.
       </p>
 
-      <div className="mt-4 grid gap-2 sm:grid-cols-4">
+      {/* SDT and SRT are thresholds and belong on screen. PB max and the
+          rollover index are DERIVED, and the index in particular is a ratio
+          that reads like a diagnosis — so they sit behind a click, with what
+          they mean attached. A confirmed rollover is the exception: it carries
+          a referral, so it is never hidden. */}
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
         <Row label="SDT" value={sdt?.sdt} unit="dB HL" />
+        {/* agrees === null: the SRT cannot be judged against the pure tones
+            (steep configuration or 500/1000/2000 Hz incomplete) — amber, not
+            the rose of a real disagreement. */}
         <Row label="SRT" value={srt?.srt} unit="dB HL"
-          tone={srt && !srt.agrees ? 'text-rose-700' : undefined} />
-        <Row label="PB max" value={wrs?.pb_max} unit="%"
-          tone={wrs?.adequate_level === false ? 'text-amber-700' : undefined} />
-        <Row label="Rollover index" value={wrs?.rollover_index}
-          tone={wrs?.rollover ? 'text-rose-700' : undefined} />
+          tone={srt && srt.agrees === false ? 'text-rose-700'
+            : srt && srt.agrees == null ? 'text-amber-700' : undefined} />
       </div>
+
+      {wrs?.rollover && (
+        <div className="mt-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">
+            Rollover — refer
+          </span>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-rose-900">
+            Word recognition falls from {wrs.pb_max}% at {wrs.pb_max_level} dB HL
+            to {wrs.pb_min_after_max}% at {wrs.pb_min_level} dB HL (index{' '}
+            {wrs.rollover_index}). Refer for ENT / neuro-otology assessment.
+          </p>
+        </div>
+      )}
+
+      {wrs?.rollover_provisional && (
+        <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+            Possible rollover — repeat, not refer
+          </span>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-amber-900">
+            The index ({wrs.rollover_index}) clears the criterion, but the fall
+            from {wrs.pb_max}% to {wrs.pb_min_after_max}% is inside what these
+            word lists cannot resolve. Repeat with full lists before reading it
+            as retrocochlear.
+          </p>
+        </div>
+      )}
+
+      {wrs && (
+        <Reveal className="mt-3"
+          label="Show PB max and the rollover index"
+          hideLabel="Hide PB max and the rollover index">
+          <>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Row label="PB max" value={wrs.pb_max} unit="%"
+                tone={wrs.adequate_level === false ? 'text-amber-700' : undefined} />
+              <Row label="Rollover index" value={wrs.rollover_index}
+                tone={wrs.rollover ? 'text-rose-700'
+                  : wrs.rollover_provisional ? 'text-amber-700' : undefined} />
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
+              PB max is the best word score, {wrs.n_words
+                ? `on a ${wrs.n_words}-word list` : 'on the list used'} — a
+              sample, so read its interval rather than the number. The rollover
+              index is (PB max − the lowest score above it) ÷ PB max, and it is
+              a ratio: over a low PB max a difference of a few words clears the
+              criterion on its own, which is why {wrs.rollover_criterion
+                ? 'the criterion here also requires a drop the word lists can resolve'
+                : 'it is read with the word counts'}.
+              {wrs.pb_min_after_max != null && (
+                <> Measured here from {wrs.pb_max}% at {wrs.pb_max_level} dB HL
+                  to {wrs.pb_min_after_max}% at {wrs.pb_min_level} dB HL.</>
+              )}
+            </p>
+          </>
+        </Reveal>
+      )}
 
       {/* --- performance-intensity function ------------------------------ */}
       {piData.length > 0 && (
@@ -271,16 +334,27 @@ export default function SpeechAudiometry() {
               <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
                 srt.non_organic_suspected ? 'bg-rose-100 text-rose-700'
                   : srt.agrees ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-amber-100 text-amber-700'}`}>
+                    : srt.agrees == null ? 'bg-slate-100 text-slate-600'
+                      : 'bg-amber-100 text-amber-700'}`}>
                 {srt.non_organic_suspected ? 'non-organic?'
-                  : srt.agrees ? 'agrees' : 'disagrees'}
+                  : srt.agrees ? 'agrees'
+                    : srt.agrees == null ? 'cannot judge' : 'disagrees'}
               </span>
             </div>
             <div className="mt-1.5 grid grid-cols-3 gap-1.5 text-[11px]">
               <Row label="4-frequency PTA" value={srt.pta} unit="dB" />
               <Row label="Fletcher (best 2)" value={srt.pta_fletcher} unit="dB" />
-              <Row label="PTA − SRT" value={srt.difference} unit="dB" />
+              {/* The comparator is whichever average the SRT is judged against
+                  (three-frequency, Fletcher's best two, the best single
+                  threshold, or the tested frequencies), not the 4-frequency PTA. */}
+              <Row label="Comparator − SRT" value={srt.difference} unit="dB" />
             </div>
+            {srt.comparator_label && (
+              <p className="mt-1 text-[11px] text-slate-500">
+                Comparator: {srt.comparator_label}
+                {srt.configuration ? ` · ${srt.configuration} configuration` : ''}
+              </p>
+            )}
             <Notes items={[srt.message, srt.masking_note].filter(Boolean)}
               tone={srt.agrees && !srt.masking_note ? 'slate' : 'amber'} />
           </div>
